@@ -1,11 +1,8 @@
-import Button from "@/src/components/ui/Button";
 import Card from "@/src/components/ui/Card";
 import Chip from "@/src/components/ui/Chip";
 import { Opportunity } from "@/src/services/opportunities/types";
 import { useThemeColors } from "@/src/theme/useThemeColors";
-import Ionicons from "@expo/vector-icons/Ionicons";
-import React from "react";
-import { Text, View } from "react-native";
+import { Image, Text, TouchableOpacity, View } from "react-native";
 export default function OpportunityCard({
     item,
     onPress,
@@ -14,9 +11,10 @@ export default function OpportunityCard({
     onPress?: (id: string) => void;
 }) {
     const c = useThemeColors();
+    if (!item) return null;
+    const icon = item.icon ? item.icon : null;
     return (
         <Card style={{ width: 300 }}>
-            {/* Visual (placeholder box if no image) */}
             <View
                 style={{
                     height: 140,
@@ -27,16 +25,18 @@ export default function OpportunityCard({
                     marginBottom: 10,
                 }}
             >
-                <Ionicons
-                    name={
-                        item.tags.includes("Sleep") ? "moon" :
-                            item.tags.includes("Heart") ? "heart" :
-                                item.tags.includes("Nutrition") ? "restaurant" :
-                                    "analytics" // fallback icon
-                    }
-                    size={64}
-                    color={c.text.secondary}
-                />
+                {icon && (
+                    <Image
+                        source={icon}
+                        style={{
+                            width: 56,
+                            height: 56,
+                            borderRadius: 12,
+                            marginRight: 16,
+                            backgroundColor: c.muted,
+                        }}
+                    />
+                )}
             </View>
 
             {/* Title */}
@@ -63,7 +63,19 @@ export default function OpportunityCard({
             </Text>
 
             {/* CTA */}
-            <Button title="Contribute" onPress={() => onPress?.(item.id)} style={{ marginTop: 12 }} />
+            <TouchableOpacity
+                onPress={() => onPress?.(item.id)}
+                style={{
+                    marginTop: 12,
+                    backgroundColor: c.primary,
+                    borderRadius: 8,
+                    alignSelf: "flex-start",
+                    paddingHorizontal: 16,
+                    paddingVertical: 8,
+                }}
+            >
+                <Text style={{ color: "#fff", fontWeight: "700", fontSize: 15 }}>Contribute</Text>
+            </TouchableOpacity>
         </Card>
     );
 }
