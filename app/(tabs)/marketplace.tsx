@@ -2,20 +2,22 @@ import OpportunityCard from '@/src/components/composite/opportunities/Opportunit
 import { useOpportunities } from '@/src/hooks/useOpportunities';
 import { useThemeColors } from '@/src/theme/useThemeColors';
 import { useNavigation } from '@react-navigation/native';
-import { FlatList, Text, View } from 'react-native';
+import { Dimensions, FlatList, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function MarketplaceScreen() {
   const c = useThemeColors();
   const { allOpportunities } = useOpportunities();
   const navigation = useNavigation();
+  const screenWidth = Dimensions.get('window').width;
+  const numColumns = screenWidth < 600 ? 1 : 3;
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }} edges={['top']}>
       <FlatList
         data={allOpportunities}
         keyExtractor={(item) => item.id}
-        numColumns={3}
+        numColumns={numColumns}
         ListHeaderComponent={
           <View style={{ padding: 16, paddingBottom: 0, marginBottom: 16, alignItems: 'center' }}>
             <Text style={{ fontSize: 24, fontWeight: 'bold', color: c.text.primary, textAlign: 'center' }}>Marketplace</Text>
