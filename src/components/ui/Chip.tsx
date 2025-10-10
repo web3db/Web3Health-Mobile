@@ -1,7 +1,6 @@
-import { ThemedText } from "@/components/ThemedText";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import React from "react";
-import { Pressable, View, ViewStyle } from "react-native";
+import { Pressable, Text, View, ViewStyle } from "react-native";
 
 type Props = {
   label: string;
@@ -30,7 +29,7 @@ export default function Chip({ label, selected, onPress, style }: Props) {
         style,
       ]}
     >
-      <ThemedText style={{ color: textColor }}>{label}</ThemedText>
+      <Text style={{ color: textColor }}>{label}</Text>
     </View>
   );
 

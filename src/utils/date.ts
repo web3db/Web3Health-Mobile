@@ -1,5 +1,3 @@
-// src/utils/date.ts
-// Keep your existing exports. Add the helpers below.
 
 export const makeIsoFromNow = (daysFromNow: number) => {
   const d = new Date();

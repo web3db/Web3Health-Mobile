@@ -1,11 +1,10 @@
-// src/components/ui/Button.tsx
-import { ThemedText } from "@/components/ThemedText";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import React from "react";
 import {
   ActivityIndicator,
   GestureResponderEvent,
   Pressable,
+  Text,
   TextStyle,
   View,
   ViewStyle,
@@ -44,21 +43,19 @@ function Button({
   const c = useThemeColors();
   const isDisabled = disabled || loading;
 
-  // sizing
-  const paddings: Record<ButtonSize, { px: number; py: number; radius: number; gap: number; font: number }> =
-    {
-      sm: { px: 12, py: 8, radius: 10, gap: 6, font: 14 },
-      md: { px: 14, py: 12, radius: 12, gap: 8, font: 16 },
-      lg: { px: 16, py: 14, radius: 14, gap: 10, font: 18 },
-    };
+  const paddings: Record<ButtonSize, { px: number; py: number; radius: number; gap: number; font: number }> = {
+    sm: { px: 12, py: 8, radius: 10, gap: 6, font: 14 },
+    md: { px: 14, py: 12, radius: 12, gap: 8, font: 16 },
+    lg: { px: 16, py: 14, radius: 14, gap: 10, font: 18 },
+  };
   const S = paddings[size];
 
   // colors
   const primaryBg = isDisabled ? c.muted : c.primary;
   const primaryText = c.text.inverse;
 
-  const secondaryBg = isDisabled ? c.surface : c.surface;
-  const secondaryBorder = isDisabled ? c.border : c.border;
+  const secondaryBg = c.surface;
+  const secondaryBorder = c.border;
   const secondaryText = isDisabled ? c.text.muted : c.text.primary;
 
   const ghostBg = "transparent";
@@ -92,11 +89,8 @@ function Button({
       accessibilityRole="button"
       testID={testID}
       onPress={isDisabled ? undefined : onPress}
-      style={({ pressed }) => [
-        {
-          opacity: pressed && !isDisabled ? 0.9 : 1,
-        },
-      ]}
+      style={({ pressed }) => [{ opacity: pressed && !isDisabled ? 0.9 : 1 }]}
+      disabled={isDisabled}
     >
       <View
         style={[
@@ -117,20 +111,16 @@ function Button({
       >
         {leftIcon}
         {loading ? (
-          <ActivityIndicator size="small" />
+          <ActivityIndicator size="small" color={textColor} />
         ) : (
-          <ThemedText
+          <Text
             style={[
-              {
-                color: textColor,
-                fontSize: S.font,
-                fontWeight: "600",
-              },
+              { color: textColor, fontSize: S.font, fontWeight: "600" },
               textStyle,
             ]}
           >
             {title}
-          </ThemedText>
+          </Text>
         )}
         {rightIcon}
       </View>

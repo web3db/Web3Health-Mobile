@@ -1,20 +1,39 @@
-import { fxShares } from '@/src/data/fixtures/home';
-import { Share } from '@/src/services/api/types';
+import { sharingSeed } from '@/src/data/fixtures/sharing';
+import type { Application, ApplicationStatus, ShareState } from '@/src/services/sharing/types';
 import { create } from 'zustand';
-const delay = (ms:number)=>new Promise(r=>setTimeout(r,ms));
+// import { getSharingState } from '@/src/services/sharing/mock'; // when ready
 
-type State = { highlights: Share[]; status: 'idle'|'loading'|'success'|'error'; error?: string };
-type Actions = { fetchHighlights: () => Promise<void> };
+type Actions = {
+  hydrateFromSeed: () => void;
+  setApplications: (apps: Application[]) => void;
+  fetchAll: () => Promise<void>;
+};
 
-export const useShareStore = create<State & Actions>((set) => ({
-  highlights: [], status: 'idle',
-  async fetchHighlights() {
-    set({ status: 'loading', error: undefined });
-    try {
-      await delay(250);
-      set({ highlights: fxShares, status: 'success' });
-    } catch (e:any) {
-      set({ status: 'error', error: e?.message ?? 'Failed' });
-    }
+export const useShareStore = create<ShareState & Actions>((set, get) => ({
+  ...sharingSeed,
+  hydrateFromSeed: () => set(sharingSeed),
+  setApplications: (apps) => {
+    const counts = countApps(apps);
+    set({
+      applications: apps,
+      earnings: { ...get().earnings, apps: counts },
+    });
+  },
+  fetchAll: async () => {
+    // const data = await getSharingState(); // later: real API
+    const data = sharingSeed;
+    set(data);
   },
 }));
+
+function countApps(apps: Application[]) {
+  return {
+    applied: apps.filter(a => a.status === 'APPLIED').length,
+    pending: apps.filter(a => a.status === 'PENDING').length,
+    accepted: apps.filter(a => a.status === 'ACCEPTED').length,
+    rejected: apps.filter(a => a.status === 'REJECTED').length,
+  };
+}
+
+export const selectByStatus = (status: ApplicationStatus) =>
+  (state: ShareState) => state.applications.filter(a => a.status === status);

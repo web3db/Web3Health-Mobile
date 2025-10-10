@@ -28,7 +28,7 @@ export default function AllRow() {
         }}
       >
         <Text style={{ color: c.text.primary, fontSize: 18, fontWeight: "800" }}>
-          Recommended for you
+          All Opportunities
         </Text>
         <Ionicons name="arrow-forward" size={18} color={c.text.secondary} />
       </View>
