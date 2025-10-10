@@ -1,5 +1,6 @@
 import { useOpportunitiesStore } from "@/src/store/useOpportunitiesStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { router, type Href } from "expo-router";
 import React, { useEffect } from "react";
 import { Text, View } from "react-native";
@@ -17,14 +18,21 @@ export default function RecommendedRow() {
 
   return (
     <View style={{ marginTop: 16 }}>
-      <Text
+       <View
         style={{
-          color: c.text.primary, fontSize: 18, fontWeight: "800",
-          paddingHorizontal: 16, marginBottom: 8
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          paddingHorizontal: 16,
+          marginBottom: 8,
         }}
       >
-        Recommended for you
-      </Text>
+        <Text style={{ color: c.text.primary, fontSize: 18, fontWeight: "800" }}>
+          Recommended for You
+        </Text>
+        <Ionicons name="arrow-forward" size={18} color={c.text.secondary} />
+      </View>
+      
       <Carousel
         data={recommended}
         onPressCard={goFocus}

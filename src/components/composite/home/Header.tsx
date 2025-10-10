@@ -3,17 +3,54 @@ import { useTrackingStore } from '@/src/store/useTrackingStore';
 import { useThemeColors } from '@/src/theme/useThemeColors';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
-import React from 'react';
-import { Pressable, Text, View } from 'react-native';
+import React, { useMemo } from 'react';
+import { Platform, Pressable, Text, View } from 'react-native';
 
 export default function Header() {
   const c = useThemeColors();
   const router = useRouter();
-  const syncToday = useTrackingStore(s => s.syncToday);
-  const lastSyncedAt = useTrackingStore(s => s.lastSyncedAt);
+
+  const {
+    hcInitialized,
+    hcAvailable,
+    hcLoading,
+    hcGrantedKeys,
+    hcRefresh,
+    hcGrantAll,
+    hcError,
+  } = useTrackingStore();
+
+  // Status line logic
+  const status = useMemo(() => {
+    if (Platform.OS !== 'android') {
+      return { label: 'Health Connect is Android-only', tint: c.text.muted, action: null as null | 'none' };
+    }
+    if (!hcInitialized) {
+      return { label: 'Preparing Health Connect…', tint: c.text.secondary, action: null };
+    }
+    if (hcAvailable === false) {
+      return { label: 'Health Connect not available', tint: c.warning, action: 'settings' as const };
+    }
+    const hasPerms = (hcGrantedKeys?.length ?? 0) > 0;
+    if (!hasPerms) {
+      return { label: 'Permissions needed', tint: c.warning, action: 'grant' as const };
+    }
+    if (hcLoading) {
+      return { label: 'Syncing…', tint: c.text.secondary, action: 'refresh' as const };
+    }
+    if (hcError) {
+      return { label: `Error: ${hcError}`, tint: 'tomato', action: 'refresh' as const };
+    }
+    return { label: 'Health Connect: Connected', tint: c.success, action: 'refresh' as const };
+  }, [c, hcAvailable, hcError, hcGrantedKeys, hcInitialized, hcLoading]);
+
+  const onPrimaryAction = async () => {
+    if (status.action === 'refresh') await hcRefresh();
+    if (status.action === 'grant') await hcGrantAll();
+    // 'settings' is surfaced via the drawer/screen; we avoid extra button here.
+  };
 
   const date = new Date().toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-  const freshness = lastSyncedAt ? timeAgo(new Date(lastSyncedAt)) : 'never';
 
   return (
     <View
@@ -29,26 +66,31 @@ export default function Header() {
       <View>
         <Text style={{ color: c.text.secondary, fontSize: 12 }}>{date}</Text>
         <Text style={{ color: c.text.primary, fontSize: 22, fontWeight: '800' }}>Welcome</Text>
-        <Text style={{ color: c.text.muted, fontSize: 11, marginTop: 4 }}>Synced {freshness} ago</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
+          <Dot color={status.tint} />
+          <Text style={{ color: c.text.muted, fontSize: 11 }}>{status.label}</Text>
+        </View>
       </View>
 
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Pressable onPress={syncToday} hitSlop={8} style={{ padding: 4 }}>
-          <Ionicons name="refresh" size={20} color={c.text.secondary} />
-        </Pressable>
+        {status.action && status.action !== 'none' ? (
+          <Pressable onPress={onPrimaryAction} hitSlop={8} style={{ padding: 4 }}>
+            <Ionicons
+              name={
+                status.action === 'refresh' ? 'refresh' :
+                status.action === 'grant'   ? 'key-outline' : 'settings-outline'
+              }
+              size={20}
+              color={c.text.secondary}
+            />
+          </Pressable>
+        ) : null}
         <Avatar onPress={() => router.push('/profile')} />
       </View>
     </View>
   );
 }
 
-function timeAgo(d: Date) {
-  const diff = Math.max(0, Date.now() - d.getTime());
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  const days = Math.floor(hrs / 24);
-  return `${days}d`;
+function Dot({ color }: { color: string }) {
+  return <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color }} />;
 }

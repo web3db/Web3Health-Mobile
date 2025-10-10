@@ -1,3 +1,5 @@
+// app/_layout.tsx
+import { useTrackingStore } from '@/src/store/useTrackingStore';
 import { ThemeControllerProvider, useThemeController } from '@/src/theme/ThemeController';
 import { useThemeColors } from '@/src/theme/useThemeColors';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -5,7 +7,8 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import { useFonts } from 'expo-font';
 import { Drawer } from 'expo-router/drawer';
 import { StatusBar } from 'expo-status-bar';
-import React from 'react';
+import React, { useEffect } from 'react';
+import { Platform } from 'react-native';
 import 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
@@ -13,11 +16,30 @@ function AppShell() {
   const { resolvedScheme } = useThemeController();
   const c = useThemeColors();
 
-  const [loaded] = useFonts({ SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf') });
-  if (!loaded) return null;
+  const [loaded] = useFonts({
+    SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
+  });
+
+  // 👇 also read hcInitialized so we only run initialize once
+  const { hcInitialize, hcInitialized } = useTrackingStore();
+
+  useEffect(() => {
+    if (!loaded) return;
+    if (Platform.OS !== 'android') return;
+    if (hcInitialized) return; // ✅ guard: already initialized
+
+    (async () => {
+      try {
+        await hcInitialize(); // safe & idempotent; we also guard it
+      } catch {
+        // any surfaced error will appear via the store (hcError/hcAvailable) in screens
+      }
+    })();
+  }, [loaded, hcInitialized, hcInitialize]);
+
+  if (!loaded) return null; // safe now — all hooks have already been declared
 
   const isDark = resolvedScheme === 'dark';
-
 
   return (
     <ThemeProvider value={isDark ? DarkTheme : DefaultTheme}>
@@ -34,14 +56,11 @@ function AppShell() {
         <Drawer.Screen name="StudyDetails" options={{ drawerItemStyle: { display: 'none' } }} />
         <Drawer.Screen name="(tabs)" options={{ drawerItemStyle: { display: 'none' } }} />
         <Drawer.Screen name="+not-found" options={{ drawerItemStyle: { display: 'none' } }} />
-        <Drawer.Screen
-          name="opportunities/all"
-          options={{
-            drawerItemStyle: { display: 'none' },
-          }}
-        />
+        <Drawer.Screen name="opportunities/all" options={{ drawerItemStyle: { display: 'none' } }} />
+        <Drawer.Screen name="opportunities/[id]" options={{ drawerItemStyle: { display: 'none' } }} />
+        <Drawer.Screen name="StudyDetails" options={{ drawerItemStyle: { display: 'none' } }} />
+        <Drawer.Screen name="data-assets" options={{ drawerItemStyle: { display: 'none' } }} />
 
-        {/* Drawer items for now */}
         <Drawer.Screen
           name="profile"
           options={{
@@ -60,7 +79,6 @@ function AppShell() {
             ),
           }}
         />
-
       </Drawer>
       <StatusBar style={isDark ? 'light' : 'dark'} />
     </ThemeProvider>

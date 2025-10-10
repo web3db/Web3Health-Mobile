@@ -4,13 +4,14 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import React from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-
+import BackButton from "../src/components/ui/BackButton";
 export default function SettingsScreen() {
   const c = useThemeColors();
   const { appearanceOverride, setAppearanceOverride } = useThemeController();
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>
+      <BackButton />
       <View style={{ padding: 16 }}>
         <Section title="Appearance">
           <Segmented3

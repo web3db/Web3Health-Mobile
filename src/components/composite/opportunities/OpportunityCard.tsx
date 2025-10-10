@@ -1,81 +1,86 @@
-import Card from "@/src/components/ui/Card";
-import Chip from "@/src/components/ui/Chip";
-import { Opportunity } from "@/src/services/opportunities/types";
-import { useThemeColors } from "@/src/theme/useThemeColors";
-import { Image, Text, TouchableOpacity, View } from "react-native";
-export default function OpportunityCard({
-    item,
-    onPress,
-}: {
-    item: Opportunity;
-    onPress?: (id: string) => void;
-}) {
-    const c = useThemeColors();
-    if (!item) return null;
-    const icon = item.icon ? item.icon : null;
-    return (
-        <Card style={{ width: 300 }}>
-            <View
-                style={{
-                    height: 140,
-                    borderRadius: 12,
-                    backgroundColor: c.muted,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    marginBottom: 10,
-                }}
-            >
-                {icon && (
-                    <Image
-                        source={icon}
-                        style={{
-                            width: 56,
-                            height: 56,
-                            borderRadius: 12,
-                            marginRight: 16,
-                            backgroundColor: c.muted,
-                        }}
-                    />
-                )}
-            </View>
+// src/components/composite/opportunities/OpportunityCard.tsx
+import Button from '@/src/components/ui/Button';
+import Chip from '@/src/components/ui/Chip';
+import { useThemeColors } from '@/src/theme/useThemeColors';
+import React from 'react';
+import { Image, Text, View } from 'react-native';
 
-            {/* Title */}
-            <Text style={{ color: c.text.primary, fontSize: 16, fontWeight: "800" }} numberOfLines={1}>
-                {item.title}
-            </Text>
+type CardVariant = 'compact' | 'large';
 
-            {/* Reward */}
-            <Text style={{ color: c.text.secondary, fontSize: 12, marginTop: 4 }}>
-                🏅 {item.reward.badge}
-                {typeof item.reward.credits === "number" ? ` · +${item.reward.credits} credits` : ""}
-            </Text>
+type Props = {
+  item: any;
+  onPressPrimary?: () => void;
+  variant?: CardVariant;          // NEW
+};
 
-            {/* Tags */}
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-                {item.tags.slice(0, 3).map((t) => (
-                    <Chip key={t} label={t} />
-                ))}
-            </View>
+const STYLES = {
+  compact: { hero: 120, title: 16, radius: 12, pad: 12, descLines: 2, maxTags: 2 },
+  large:   { hero: 200, title: 20, radius: 16, pad: 14, descLines: 3, maxTags: 3 },
+} as const;
 
-            {/* Description */}
-            <Text style={{ color: c.text.secondary, fontSize: 12, marginTop: 8 }} numberOfLines={2}>
-                {item.description}
-            </Text>
+export default function OpportunityCard({ item, onPressPrimary, variant = 'compact' }: Props) {
+  const c = useThemeColors();
+  const S = STYLES[variant];
 
-            {/* CTA */}
-            <TouchableOpacity
-                onPress={() => onPress?.(item.id)}
-                style={{
-                    marginTop: 12,
-                    backgroundColor: c.primary,
-                    borderRadius: 8,
-                    alignSelf: "flex-start",
-                    paddingHorizontal: 16,
-                    paddingVertical: 8,
-                }}
-            >
-                <Text style={{ color: "#fff", fontWeight: "700", fontSize: 15 }}>Contribute</Text>
-            </TouchableOpacity>
-        </Card>
-    );
+  const heroUri = item.imageUrl;
+  const tags: string[] = item.tags ?? [];
+  const metaLeft = item.category ?? item.topic ?? 'Study';
+  const metaMid  = item.duration ?? item.length ?? undefined;
+  const metaRight = item.type ?? undefined;
+
+  return (
+    <View style={{
+      backgroundColor: c.surface,
+      borderColor: c.border,
+      borderWidth: 1,
+      borderRadius: S.radius,
+      overflow: 'hidden',
+      padding: S.pad,
+    }}>
+      {/* HERO */}
+      <View style={{
+        height: S.hero,
+        borderRadius: 12,
+        backgroundColor: c.muted,
+        borderColor: c.border,
+        borderWidth: 1,
+        overflow: 'hidden',
+      }}>
+        {heroUri ? <Image source={{ uri: heroUri }} style={{ width:'100%', height:'100%' }} /> : <View style={{ flex:1 }} />}
+      </View>
+
+      {/* TITLE + META */}
+      <View style={{ marginTop: 14 }}>
+        <Text style={{ color: c.text.primary, fontSize: S.title, fontWeight: '800' }} numberOfLines={2}>
+          {item.title}
+        </Text>
+        {(item.sponsor || item.reward?.credits) && (
+          <Text style={{ color: c.text.secondary, marginTop: 6 }}>
+            {item.sponsor ? `${item.sponsor}` : ''}{item.sponsor && item.reward?.credits ? ' · ' : ''}
+            {typeof item.reward?.credits === 'number' ? `+${item.reward.credits} credits` : ''}
+          </Text>
+        )}
+      </View>
+
+      {/* CHIPS */}
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+        {metaLeft ? <Chip label={String(metaLeft)} /> : null}
+        {metaMid ? <Chip label={String(metaMid)} /> : null}
+        {metaRight ? <Chip label={String(metaRight)} /> : null}
+        {tags.slice(0, S.maxTags).map(t => <Chip key={t} label={`#${t}`} />)}
+      </View>
+
+      {/* DESCRIPTION */}
+      {item.description ? (
+        <Text style={{ color: c.text.secondary, marginTop: 10 }} numberOfLines={S.descLines}>
+          {item.description}
+        </Text>
+      ) : null}
+
+      {/* CTA */}
+      <View style={{ marginTop: 14 }}>
+        <Button title="Contribute" onPress={onPressPrimary} />
+      </View>
+    </View>
+  );
 }

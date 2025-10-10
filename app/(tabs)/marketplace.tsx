@@ -1,9 +1,30 @@
-import OpportunityCard from '@/src/components/composite/opportunities/OpportunityCard';
-import { useOpportunities } from '@/src/hooks/useOpportunities';
-import { useThemeColors } from '@/src/theme/useThemeColors';
-import { useNavigation } from '@react-navigation/native';
-import { Dimensions, FlatList, Text, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+// app/(tabs)/marketplace.tsx
+import { Link } from "expo-router";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
+import {
+  Dimensions,
+  FlatList,
+  KeyboardAvoidingView,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
+  Platform,
+  Pressable,
+  Text,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+import { useThemeColors } from "@/src/theme/useThemeColors";
+
+import OpportunityCard from "@/src/components/composite/opportunities/OpportunityCard";
+import EmptyState from "@/src/components/ui/EmptyState";
+import FiltersRow from "@/src/components/ui/FiltersRow";
+import SearchBar from "@/src/components/ui/SearchBar";
+import SortButton from "@/src/components/ui/SortButton";
+import SkeletonCard from "../../src/components/ui/SkeletonCard";
+
+import { useOpportunities } from "@/src/hooks/useOpportunities";
+import { useMarketStore as useMarketplaceStore } from "@/src/store/useMarketStore";
 
 export default function MarketplaceScreen() {
   const c = useThemeColors();
