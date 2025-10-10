@@ -53,6 +53,7 @@ function AppShell() {
           drawerInactiveTintColor: c.text.secondary,
         }}
       >
+        <Drawer.Screen name="StudyDetails" options={{ drawerItemStyle: { display: 'none' } }} />
         <Drawer.Screen name="(tabs)" options={{ drawerItemStyle: { display: 'none' } }} />
         <Drawer.Screen name="+not-found" options={{ drawerItemStyle: { display: 'none' } }} />
         <Drawer.Screen name="opportunities/all" options={{ drawerItemStyle: { display: 'none' } }} />
