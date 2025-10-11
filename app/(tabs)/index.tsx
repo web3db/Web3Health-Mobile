@@ -1,6 +1,6 @@
 import { useThemeColors } from "@/src/theme/useThemeColors";
-import React, { useEffect, useState } from "react";
-import { ScrollView, Text, TouchableOpacity, View } from "react-native";
+import React, { useEffect, useMemo, useState } from "react";
+import { Platform, Pressable, ScrollView, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 // ===== Tracking (HC) =====
 import Header from "@/src/components/composite/home/Header";
@@ -10,6 +10,7 @@ import { useTrackingStore } from "@/src/store/useTrackingStore";
 // ===== Marketplace rows =====
 import AllRow from "@/src/components/composite/opportunities/AllRow";
 import RecommendedRow from "@/src/components/composite/opportunities/RecommendedRow";
+import { useRouter } from "expo-router";
 
 function BadgeHighlight() {
   const c = useThemeColors();

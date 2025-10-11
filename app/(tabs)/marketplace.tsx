@@ -1,5 +1,5 @@
 // app/(tabs)/marketplace.tsx
-import { Link } from "expo-router";
+import { Link, useNavigation } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   Dimensions,
