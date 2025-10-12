@@ -20,9 +20,8 @@ function pushLog(msg: string) {
   HC_LOGS.push({ ts: new Date().toISOString(), msg });
   if (HC_LOGS.length > LOG_CAP) HC_LOGS.shift();
 }
-const log = (...a: any[]) => { console.log(TAG, ...a); try { pushLog(a.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')); } catch {} };
-const logErr = (label: string, e: unknown, extra?: any) =>
-  { console.log(TAG, `${label}:`, (e as any)?.message ?? e, extra ?? ''); try { pushLog(`${label}: ${(e as any)?.message ?? e}`); } catch {} };
+const log = (...a: any[]) => { console.log(TAG, ...a); try { pushLog(a.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')); } catch { } };
+const logErr = (label: string, e: unknown, extra?: any) => { console.log(TAG, `${label}:`, (e as any)?.message ?? e, extra ?? ''); try { pushLog(`${label}: ${(e as any)?.message ?? e}`); } catch { } };
 
 
 
@@ -377,7 +376,7 @@ export async function readSleepSessions(days: 7 | 30 | 90): Promise<Array<{ star
     });
 
     const recs = (out.records ?? []) as any[];
-     log('[Sleep][sessions] raw sessions count =', recs.length);
+    log('[Sleep][sessions] raw sessions count =', recs.length);
     const rows = recs.map(r => {
       const start = new Date(r.startTime);
       const end = new Date(r.endTime);
@@ -659,7 +658,7 @@ export async function readTodayDistanceMeters(): Promise<number> {
 }
 /** Raw → daily buckets fallback for Distance (meters). */
 async function rawDailyDistanceBuckets(days: number): Promise<Bucket[]> {
-  const range = lastNDays( Math.max(days, 1) );
+  const range = lastNDays(Math.max(days, 1));
   const out = await readRecords('Distance', { timeRangeFilter: range, pageSize: 1000, ascendingOrder: true });
   const recs = (out.records ?? []) as any[];
 
@@ -848,16 +847,19 @@ export async function read24hBuckets(
 ): Promise<Bucket[]> {
   try {
     const m = METRICS[metric];
+
+    // Anchor end to the current minute boundary to avoid second/millisecond drift
+    const end = new Date();
+    end.setSeconds(0, 0);
+    const start = new Date(end);
+    start.setHours(end.getHours() - 24);
+
     const rows = await aggregateGroupByDuration({
       recordType: m.recordType,
-      timeRangeFilter: (() => {
-        const end = new Date();
-        const start = new Date(end);
-        start.setHours(end.getHours() - 24);
-        return { operator: 'between', startTime: start.toISOString(), endTime: end.toISOString() };
-      })(),
+      timeRangeFilter: { operator: 'between', startTime: start.toISOString(), endTime: end.toISOString() },
       timeRangeSlicer: { duration: 'HOURS', length: 1 },
     });
+
     const key = m.aggregateKey!;
     let buckets = rows.map(b => ({
       start: b.startTime,
@@ -909,7 +911,7 @@ export async function read30dBuckets(
     // Fallback for Distance if aggregate is empty/zero
     if (metric === 'distance' && (buckets.length === 0 || sum === 0)) {
       log('[Buckets][distance] fallback rawDaily 30d');
-      buckets = await rawDailyDistanceBuckets(30); 
+      buckets = await rawDailyDistanceBuckets(30);
     }
 
     return buckets;
@@ -949,7 +951,7 @@ export async function read90dBuckets(
     // Fallback for Distance if aggregate is empty/zero
     if (metric === 'distance' && (buckets.length === 0 || sum === 0)) {
       log('[Buckets][distance] fallback rawDaily 90d');
-      buckets = await rawDailyDistanceBuckets(90); 
+      buckets = await rawDailyDistanceBuckets(90);
     }
 
     return buckets;

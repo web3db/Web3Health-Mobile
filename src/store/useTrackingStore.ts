@@ -49,6 +49,8 @@ const wait = (ms: number) => new Promise(res => setTimeout(res, ms));
 export type WindowKey = '24h' | '7d' | '30d' | '90d';
 export type MetricKey = 'steps' | 'floors' | 'distance' | 'activeCalories' | 'heartRate' | 'sleep';
 
+type NumBucket = { start: string; end?: string; value: number };
+
 export type DatasetBucket = { start: string; end?: string; value: number };
 export type HCDataset = {
   id: MetricKey;
@@ -201,6 +203,45 @@ function computeTrendForWindow(
   }
 }
 
+/** Compact the cumulative 24h series into change events only. */
+function cumulativeToChangeEvents(series: NumBucket[]) {
+  const out: Array<{ at: string; delta: number; total: number }> = [];
+  let prev = 0;
+  for (const b of series) {
+    const cur = Number(b.value || 0);
+    const inc = cur - prev;
+    if (inc > 0) out.push({ at: b.end ?? b.start, delta: inc, total: cur });
+    prev = cur;
+  }
+  return out;
+}
+
+function toCumulativeForwardFill(buckets: NumBucket[]) {
+  const sorted = [...buckets].sort((a, b) => a.start.localeCompare(b.start));
+  let cumul = 0;
+  const series: NumBucket[] = [];
+  let changeHours = 0;
+  for (const b of sorted) {
+    const inc = Number(b.value || 0);
+    if (inc > 0) { cumul += inc; changeHours += 1; }
+    series.push({ ...b, value: cumul });
+  }
+  const last = series.length ? Number(series[series.length - 1].value) || 0 : 0;
+  const events = cumulativeToChangeEvents(series);
+  return { series, last, changeHours, events };
+}
+
+/** Replace 0/empty values with last non-zero (used for HR gaps). */
+function forwardFill(buckets: NumBucket[]) {
+  let lastSeen: number | null = null;
+  return buckets.map(b => {
+    const v = Number(b.value || 0);
+    if (v > 0) { lastSeen = v; return { ...b, value: v }; }
+    return lastSeen != null ? { ...b, value: lastSeen } : b;
+  });
+}
+
+
 
 export const useTrackingStore = create<Store>((set, get) => ({
   // ---- Base init (restores fields other screens rely on) ----
@@ -253,6 +294,8 @@ export const useTrackingStore = create<Store>((set, get) => ({
   setTileOrder(order) {
     set({ tileOrder: order });
   },
+
+
 
   // ---- HC init ----
   hcWindow: '7d',
@@ -364,30 +407,91 @@ export const useTrackingStore = create<Store>((set, get) => ({
                 hcWindow === '7d' ? 7 :
                   hcWindow === '30d' ? 30 : 90;
 
-            const sumFromBuckets = uiBuckets.reduce((s, b) => s + (Number(b.value) || 0), 0);
-            const coverageCount = uiBuckets.filter(b => (Number(b.value) || 0) > 0).length;
 
-            total = sumFromBuckets;                       // <- headline total from buckets
-            latest = uiBuckets.length
-              ? Number(uiBuckets[uiBuckets.length - 1].value) || 0
-              : null;                                     // last slice if needed by UI; null if no buckets
 
-            datasets.push({
-              id: m,
-              label: HC_LABEL[m],
-              unit: HC_UNIT[m],
-              buckets: uiBuckets,
-              total,
-              latest,
-              freshnessISO: fetchedAtISO,
-              trend,
-              meta: {
-                coverageCount,
-                coverageTotal,
-              },
-            });
-            continue; // handled and pushed
+            if (hcWindow === '24h') {
+              // uiBuckets = RAW hourly increments (what we PLOT)
+              // Build a cumulative shadow series only for totals & event logs
+              const { series: cumulative, last: cumulativeLast, changeHours, events } =
+                toCumulativeForwardFill(uiBuckets as NumBucket[]);
+
+              const sumFromRaw = uiBuckets.reduce((s, b) => s + (Number(b.value) || 0), 0);
+
+              // Headline should be the day total (sum == last cumulative)
+              total = sumFromRaw;
+              latest = cumulativeLast;
+
+              datasets.push({
+                id: m,
+                label: HC_LABEL[m],
+                unit: HC_UNIT[m],
+
+                // IMPORTANT: PLOT RAW increments, NOT cumulative
+                buckets: uiBuckets,
+
+                total,
+                latest,
+                freshnessISO: fetchedAtISO,
+                trend: undefined, // no trend for 24h
+                meta: {
+                  // hours that actually had activity (non-zero raw)
+                  coverageCount: changeHours,
+                  coverageTotal, // 24
+                  // compact event log for the UI to render (optional but useful)
+                  // { at: ISO, delta: number, total: number }
+                  events,
+                  // optional: surface the last cumulative for debugging / UI badges
+                  cumulativeLast,
+                } as any,
+              });
+            } else {
+              // (unchanged) 7d/30d/90d remain raw per-day sums
+              const sumFromBuckets = uiBuckets.reduce((s, b) => s + (Number(b.value) || 0), 0);
+              total = sumFromBuckets;
+              latest = uiBuckets.length ? Number(uiBuckets[uiBuckets.length - 1].value) || 0 : null;
+
+              datasets.push({
+                id: m,
+                label: HC_LABEL[m],
+                unit: HC_UNIT[m],
+                buckets: uiBuckets,
+                total,
+                latest,
+                freshnessISO: fetchedAtISO,
+                trend,
+                meta: {
+                  coverageCount: uiBuckets.filter(b => (Number(b.value) || 0) > 0).length,
+                  coverageTotal,
+                },
+              });
+            }
+            continue;
           }
+
+          //     const sumFromBuckets = uiBuckets.reduce((s, b) => s + (Number(b.value) || 0), 0);
+          //     const coverageCount = uiBuckets.filter(b => (Number(b.value) || 0) > 0).length;
+
+          //     total = sumFromBuckets;                       // <- headline total from buckets
+          //     latest = uiBuckets.length
+          //       ? Number(uiBuckets[uiBuckets.length - 1].value) || 0
+          //       : null;                                     // last slice if needed by UI; null if no buckets
+
+          //     datasets.push({
+          //       id: m,
+          //       label: HC_LABEL[m],
+          //       unit: HC_UNIT[m],
+          //       buckets: uiBuckets,
+          //       total,
+          //       latest,
+          //       freshnessISO: fetchedAtISO,
+          //       trend,
+          //       meta: {
+          //         coverageCount,
+          //         coverageTotal,
+          //       },
+          //     });
+          //     continue; // handled and pushed
+          // }
 
           case 'heartRate': {
             try {
@@ -395,27 +499,29 @@ export const useTrackingStore = create<Store>((set, get) => ({
               if (hcWindow === '24h') {
                 const hrBuckets = await readHeartRateHourly24();
                 ui = hrBuckets.map(b => ({ start: b.start, end: b.end, value: Number(b.value || 0) }));
+                // forward-fill hourly gaps so you never see 0 bpm
+                ui = forwardFill(ui);
               } else {
                 const days = hcWindow === '7d' ? 7 : hcWindow === '30d' ? 30 : 90;
                 const hrDaily = await readHeartRateDailyBuckets(days as 7 | 30 | 90);
-                ui = hrDaily.map(b => ({ start: b.start, end: b.end, value: Number(b.value || 0) }));
+                let tmp = hrDaily.map(b => ({ start: b.start, end: b.end, value: Number(b.value || 0) }));
+                // forward-fill daily gaps too (per your "Yes")
+                ui = forwardFill(tmp);
               }
 
-              const values = ui.map(b => b.value).filter(n => n > 0);
+              const values = ui.map(b => Number(b.value || 0)).filter(n => n > 0);
               const minBpm = values.length ? Math.min(...values) : undefined;
               const maxBpm = values.length ? Math.max(...values) : undefined;
 
-              // latest: prefer live latest, else last bucket avg
+              // primary/latest: prefer the live latest; else last bucket (already forward-filled)
               let latest: number | null = null;
               let latestAgeSec: number | undefined = undefined;
-
               try {
                 const { bpm, atISO } = await readHeartRateLatest();
                 latest = bpm ?? (ui.length ? ui[ui.length - 1].value : null);
                 if (bpm != null && atISO) {
                   const t = new Date(atISO).getTime();
                   latestAgeSec = latest ? Math.round((Date.now() - t) / 1000) : undefined;
-
                 }
               } catch {
                 latest = ui.length ? ui[ui.length - 1].value : null;
@@ -424,11 +530,10 @@ export const useTrackingStore = create<Store>((set, get) => ({
               datasets.push({
                 id: m, label: HC_LABEL[m], unit: HC_UNIT[m],
                 buckets: ui,
-                total: 0,            // HR doesn't use "total"
+                total: 0,                   // HR has no "total"
                 latest,
                 freshnessISO: fetchedAtISO,
-                // If you want trend for HR, you can enable computeTrendForWindow after allowing HR as bucketable.
-                trend: computeTrendForWindow(hcWindow, m, ui),
+                trend: computeTrendForWindow(hcWindow, m, ui), // optional; ok to keep
                 meta: { minBpm, maxBpm, latestAgeSec },
               });
             } catch (e) {
@@ -442,7 +547,7 @@ export const useTrackingStore = create<Store>((set, get) => ({
                 trend: undefined,
               });
             }
-            continue; // handled and pushed
+            continue;
           }
 
           case 'sleep': {
