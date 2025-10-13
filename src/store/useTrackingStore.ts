@@ -5,6 +5,7 @@ import { create } from 'zustand';
 
 import {
   ensureInitialized,
+  getLocalTimezoneInfo,
   listGrantedMetricKeys,
   openHealthConnectSettings,
   read24hBuckets,
@@ -80,6 +81,7 @@ type HCState = {
   hcInitialized: boolean;
   hcAvailable: boolean;
   hcRunId: number;
+  hcTimezoneLabel?: string;
 };
 
 type HCActions = {
@@ -313,7 +315,9 @@ export const useTrackingStore = create<Store>((set, get) => ({
       await ensureInitialized();
       const keys = await listGrantedMetricKeys() as MetricKey[];
       log('initialize success; granted=', keys);
-      set({ hcGrantedKeys: keys, hcError: undefined, hcInitialized: true, hcAvailable: true });
+      const tz = getLocalTimezoneInfo().label; 
+      log('initialize success; granted=', keys, 'tz=', tz);
+      set({ hcGrantedKeys: keys, hcError: undefined, hcInitialized: true, hcAvailable: true, hcTimezoneLabel: tz });
     } catch (e) {
       logE('initialize failed', e);
       set({
@@ -348,6 +352,8 @@ export const useTrackingStore = create<Store>((set, get) => ({
     const myRun = hcRunId + 1;
     set({ hcLoading: true, hcError: undefined, hcRunId: myRun });
     const fetchedAtISO = new Date().toISOString();
+    const tz = getLocalTimezoneInfo().label;
+    log('[HC] Using timezone:', tz);
     try {
       const granted = await listGrantedMetricKeys() as MetricKey[];
       log('refresh window=', hcWindow, 'granted=', granted);
@@ -536,16 +542,16 @@ export const useTrackingStore = create<Store>((set, get) => ({
                   const v = Number(ui[i].value || 0);
                   if (v > 0) { latest = v; break; }
                 }
-                if (latest == null) latest = null; 
+                if (latest == null) latest = null;
               }
 
               datasets.push({
                 id: m, label: HC_LABEL[m], unit: HC_UNIT[m],
-                buckets: ui,                 
+                buckets: ui,
                 total: 0,
                 latest,
                 freshnessISO: fetchedAtISO,
-                trend: computeTrendForWindow(hcWindow, m, ui), 
+                trend: computeTrendForWindow(hcWindow, m, ui),
                 meta: {
                   minBpm, maxBpm,
                   latestAgeSec,
@@ -658,6 +664,7 @@ export const useTrackingStore = create<Store>((set, get) => ({
         set({
           hcDatasets: datasets,
           hcGrantedKeys: same ? prev : granted,
+          hcTimezoneLabel: tz,
         });
       }
 

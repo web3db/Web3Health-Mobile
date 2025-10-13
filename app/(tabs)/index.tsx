@@ -10,7 +10,6 @@ import { useTrackingStore } from "@/src/store/useTrackingStore";
 
 // ===== Marketplace rows =====
 import AllRow from "@/src/components/composite/opportunities/AllRow";
-import RecommendedRow from "@/src/components/composite/opportunities/RecommendedRow";
 
 function BadgeHighlight() {
   const c = useThemeColors();
@@ -123,10 +122,10 @@ export default function HomeScreen() {
         </View>
 
         {/* Badge highlight (contribution) */}
-        <BadgeHighlight />
+        {/* <BadgeHighlight /> */}
 
         {/* Recommended (matching algo → top 10) */}
-        <RecommendedRow />
+        {/* <RecommendedRow /> */}
 
         {/* All (recent → top 10) */}
         <AllRow />

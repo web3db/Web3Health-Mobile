@@ -22,6 +22,7 @@ export default function MetricDetails() {
     hcInitialized,
     hcAvailable,
     hcGrantedKeys,
+    hcTimezoneLabel,
   } = useTrackingStore();
 
   const onWindowChange = useCallback(
@@ -99,6 +100,21 @@ export default function MetricDetails() {
 
   const isHourly = hcWindow === '24h';
 
+  const tzLabel = useMemo(() => {
+    if (hcTimezoneLabel) return hcTimezoneLabel;
+    try {
+      const iana = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const offsetMinutes = -new Date().getTimezoneOffset(); // minutes east of UTC
+      const sign = offsetMinutes >= 0 ? '+' : '-';
+      const abs = Math.abs(offsetMinutes);
+      const hh = String(Math.floor(abs / 60)).padStart(2, '0');
+      const mm = String(abs % 60).padStart(2, '0');
+      return `${iana ?? 'Local'} (UTC${sign}${hh}:${mm})`;
+    } catch {
+      return 'Local time';
+    }
+  }, [hcTimezoneLabel]);
+
   const breakdownRows = useMemo(() => {
     const rows = [...numericBuckets].sort(
       (a, b) => new Date(b.start).getTime() - new Date(a.start).getTime()
@@ -159,6 +175,13 @@ export default function MetricDetails() {
           <View style={{ marginTop: 8 }}>
             <DataWindowSelector value={hcWindow} onChange={onWindowChange} />
           </View>
+          {/* Timezone badge */}
+          <Text
+            accessibilityLabel="Current timezone"
+            style={{ color: c.text.secondary, opacity: 0.7, fontSize: 12, marginTop: 6 }}
+          >
+            Using timezone: {tzLabel}
+          </Text>
         </View>
 
         {/* Optional error banner */}
@@ -177,6 +200,7 @@ export default function MetricDetails() {
           />
           <Stat label="Trend" value={trendLabel} />
           <Stat label="Freshness" value={freshnessLabel} />
+          <Stat label="Timezone" value={tzLabel} />
         </View>
 
         {/* Chart */}
@@ -190,7 +214,10 @@ export default function MetricDetails() {
         </View>
 
         {/* Breakdown */}
-         <View style={{ paddingHorizontal: 16, marginTop: 16 }}>
+        <View style={{ paddingHorizontal: 16, marginTop: 16 }}>
+          <Text style={{ color: c.text.secondary, opacity: 0.7, fontSize: 12, marginBottom: 6 }}>
+            Timestamps shown in {tzLabel}
+          </Text>
           {breakdownRows.slice(0, visibleCount).map((b, i) => (
             <Text key={i} style={{ color: c.text.secondary, marginBottom: 4 }}>
               {formatBucketStamp(b.start, isHourly)} — {Math.round(Number(b.value || 0))} {d.unit}

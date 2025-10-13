@@ -29,11 +29,11 @@ const logErr = (label: string, e: unknown, extra?: any) => { console.log(TAG, `$
 /** ───────────────────────── Time helpers ───────────────────────── */
 type Between = { operator: 'between'; startTime: string; endTime: string };
 
-function todayRange(): Between {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // local midnight
-  return { operator: 'between', startTime: start.toISOString(), endTime: now.toISOString() };
-}
+// function todayRange(): Between {
+//   const now = new Date();
+//   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // local midnight
+//   return { operator: 'between', startTime: start.toISOString(), endTime: now.toISOString() };
+// }
 
 /** 7 full days ending now (used for daily buckets). */
 function lastNDays(days: number): Between {
@@ -433,7 +433,7 @@ export async function readSleepHourlyBuckets24(): Promise<Bucket[]> {
 /** Heart-rate → 24 hourly buckets of avg BPM, newest last. */
 export async function readHeartRateHourly24(): Promise<Bucket[]> {
   const end = new Date();
-  end.setSeconds(0, 0);          
+  end.setSeconds(0, 0);
   const start = new Date(end);
   start.setHours(end.getHours() - 24);
 
@@ -482,7 +482,7 @@ export async function readHeartRateHourly24(): Promise<Bucket[]> {
 
 async function latestHeartRateSample(): Promise<{ bpm: number | null; atISO?: string }> {
   try {
-    const out = await readRecords('HeartRate', { timeRangeFilter: todayRange(), pageSize: 1, ascendingOrder: false });
+    const out = await readRecords('HeartRate', { timeRangeFilter: todayRangeLocal(), pageSize: 1, ascendingOrder: false });
     const rec: any = out.records?.[0];
     const lastSample = Array.isArray(rec?.samples) ? rec.samples[rec.samples.length - 1] : undefined;
     const bpm = Number(lastSample?.beatsPerMinute);
@@ -537,7 +537,7 @@ export async function readHeartRateDailyBuckets(days: 7 | 30 | 90): Promise<Buck
 /** Latest heart-rate BPM today */
 async function latestHeartRateBpm(): Promise<number | null> {
   try {
-    const out = await readRecords('HeartRate', { timeRangeFilter: todayRange(), pageSize: 1, ascendingOrder: false });
+    const out = await readRecords('HeartRate', { timeRangeFilter: todayRangeLocal(), pageSize: 1, ascendingOrder: false });
     const rec: any = out.records?.[0];
     const last = rec?.samples?.[rec.samples.length - 1]?.beatsPerMinute;
     return Number.isFinite(last) ? last : null;
@@ -570,7 +570,7 @@ async function latestRespiratoryRate(): Promise<number | null> {
 export async function readTodayStepsTotal(): Promise<number> {
   if (Platform.OS !== 'android') return 0;
   if (!(await hasReadPermission('steps'))) return 0;
-  const range = todayRange();
+  const range = todayRangeLocal();
   try {
     const res = await aggregateRecord({ recordType: 'Steps', timeRangeFilter: range });
     const total = (res as any)?.result?.COUNT_TOTAL ?? 0;
@@ -588,7 +588,7 @@ export async function readTodayStepsTotal(): Promise<number> {
 export async function readTodayFloorsTotal(): Promise<number> {
   if (Platform.OS !== 'android') return 0;
   if (!(await hasReadPermission('floors'))) return 0;
-  const range = todayRange();
+  const range = todayRangeLocal();
   try {
     const res = await aggregateRecord({ recordType: 'FloorsClimbed', timeRangeFilter: range });
     const total = (res as any)?.result?.FLOORS_CLIMBED_TOTAL ?? 0;
@@ -641,7 +641,7 @@ function toKilocalories(r: any): number {
 export async function readTodayDistanceMeters(): Promise<number> {
   if (Platform.OS !== 'android') return 0;
   if (!(await hasReadPermission('distance'))) { log('[Distance] permission not granted'); return 0; }
-  const range = todayRange();
+  const range = todayRangeLocal();
   log('readTodayDistanceMeters() called');
   try {
     log('[Distance] calling aggregate');
@@ -694,7 +694,7 @@ async function rawDailyDistanceBuckets(days: number): Promise<Bucket[]> {
 
 /** Raw → hourly (last 24h) buckets fallback for Distance (meters). */
 async function rawHourlyDistanceBuckets24(): Promise<Bucket[]> {
-  const range = todayRange(); // good enough; records “today”
+  const range = todayRangeLocal();// good enough; records “today”
   const out = await readRecords('Distance', { timeRangeFilter: range, pageSize: 1000, ascendingOrder: true });
   const recs = (out.records ?? []) as any[];
 
@@ -731,7 +731,7 @@ async function rawHourlyDistanceBuckets24(): Promise<Bucket[]> {
 export async function readTodayActiveCaloriesKcal(): Promise<number> {
   if (Platform.OS !== 'android') return 0;
   if (!(await hasReadPermission('activeCalories'))) { log('[ActiveCals] permission not granted'); return 0; }
-  const range = todayRange();
+  const range = todayRangeLocal();
   log('readTodayActiveCaloriesKcal() called');
   try {
     log('[ActiveCals] calling aggregate');
@@ -776,7 +776,7 @@ export async function readLatestWeightKg(): Promise<number | null> {
 export async function readTodaySleepTotalMinutes(): Promise<number> {
   if (Platform.OS !== 'android') return 0;
   if (!(await hasReadPermission('sleep'))) return 0;
-  const ms = await sumSleepDurationMs(todayRange());
+  const ms = await sumSleepDurationMs(todayRangeLocal());
   return Math.round(ms / 60000);
 }
 
@@ -810,9 +810,14 @@ export async function read7dBuckets(
 
   const m = METRICS[metric];
   try {
+    const endLocal = new Date();
+    endLocal.setSeconds(0, 0);
+    const startLocal = new Date(endLocal);
+    startLocal.setDate(endLocal.getDate() - 7);
+
     const rows = await aggregateGroupByDuration({
       recordType: m.recordType,
-      timeRangeFilter: lastNDaysZ(7),
+      timeRangeFilter: lastNDaysLocal(7),
       timeRangeSlicer: { duration: 'DAYS', length: 1 },
     });
 
@@ -834,12 +839,77 @@ export async function read7dBuckets(
     return buckets;
   } catch (e) {
     logErr(`read7dBuckets(${metric}) error`, e);
-    if (metric === 'distance') {
-      log('[Buckets][distance] agg failed → raw fallback 7d');
-      return await rawDailyDistanceBuckets(7);
-    }
+    if (metric === 'distance') return await rawDailyDistanceBuckets(7);
     return [];
   }
+}
+
+
+/** Local timezone helpers (handles DST because offset is read at that instant) */
+function tzOffsetHHMM(d: Date) {
+  const mins = -d.getTimezoneOffset();
+  const sign = mins >= 0 ? '+' : '-';
+  const hh = String(Math.floor(Math.abs(mins) / 60)).padStart(2, '0');
+  const mm = String(Math.abs(mins) % 60).padStart(2, '0');
+  return `UTC${sign}${hh}:${mm}`;
+}
+export function localTzLabel() {
+  const z = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return `${z} (${tzOffsetHHMM(new Date())})`;
+}
+
+/** local midnight helper */
+const localMidnight = (d = new Date()) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
+/** [local midnight → now] */
+function todayRangeLocal(): Between {
+  const now = new Date();
+  const start = localMidnight(now);
+  return { operator: 'between', startTime: start.toISOString(), endTime: now.toISOString() };
+}
+
+/** [local midnight N days ago → local midnight tomorrow]  (used for 7/30/90 daily buckets) */
+function lastNDaysLocal(days: number): Between {
+  const end = localMidnight();  // today 00:00 local
+  end.setDate(end.getDate() + 1); // tomorrow 00:00 local
+  const start = new Date(end);
+  start.setDate(start.getDate() - days);
+  return { operator: 'between', startTime: start.toISOString(), endTime: end.toISOString() };
+}
+
+/** [now-24h → now] rounded to minute (used for 24H hourly buckets) */
+function last24hLocal(): Between {
+  const end = new Date(); end.setSeconds(0, 0);
+  const start = new Date(end); start.setHours(end.getHours() - 24);
+  return { operator: 'between', startTime: start.toISOString(), endTime: end.toISOString() };
+}
+
+/** Convert HC’s UTC boundaries back to local ISO (for display & bucketing in UI) */
+function toLocalFromUTCISO(iso: string) {
+  const d = new Date(iso);                   // parses as UTC
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString();
+}
+
+
+/** ───────────────────── Local timezone info (for UI/logs) ───────────────────── */
+export type TimezoneInfo = {
+  iana?: string;          // e.g., "America/New_York"
+  offsetMinutes: number;  // minutes east of UTC (NY in summer = +240)
+  offsetStr: string;      // e.g., "UTC-04:00"
+  label: string;          // e.g., "America/New_York (UTC-04:00)"
+};
+
+export function getLocalTimezoneInfo(d: Date = new Date()): TimezoneInfo {
+  const iana = Intl.DateTimeFormat().resolvedOptions().timeZone; // best effort
+  const offsetMinutes = -d.getTimezoneOffset(); // minutes east of UTC
+  const sign = offsetMinutes >= 0 ? '+' : '-';
+  const abs = Math.abs(offsetMinutes);
+  const hh = String(Math.floor(abs / 60)).padStart(2, '0');
+  const mm = String(abs % 60).padStart(2, '0');
+  const offsetStr = `UTC${sign}${hh}:${mm}`;
+  const label = `${iana ?? 'Local'} (${offsetStr})`;
+  log('[TZ] Using timezone:', label);
+  return { iana, offsetMinutes, offsetStr, label };
 }
 
 
@@ -849,15 +919,16 @@ export async function read24hBuckets(
   try {
     const m = METRICS[metric];
 
-    // Anchor end to the current minute boundary to avoid second/millisecond drift
-    const end = new Date();
-    end.setSeconds(0, 0);
-    const start = new Date(end);
-    start.setHours(end.getHours() - 24);
+    // Anchor to the current minute boundary
+    const endLocal = new Date();
+    endLocal.setSeconds(0, 0);
+    const startLocal = new Date(endLocal);
+    startLocal.setHours(endLocal.getHours() - 24);
 
+    // Shift the *range* into UTC so 1-hour slices align to local clock hours
     const rows = await aggregateGroupByDuration({
       recordType: m.recordType,
-      timeRangeFilter: { operator: 'between', startTime: start.toISOString(), endTime: end.toISOString() },
+      timeRangeFilter: last24hLocal(),
       timeRangeSlicer: { duration: 'HOURS', length: 1 },
     });
 
@@ -887,15 +958,19 @@ export async function read24hBuckets(
   }
 }
 
+
 // Daily buckets for the last 30 days
 export async function read30dBuckets(
   metric: Exclude<MetricKey, 'heartRate' | 'weight' | 'sleep' | 'respiratoryRate'>
 ): Promise<Bucket[]> {
   try {
     const m = METRICS[metric];
+    const endLocal = new Date(); endLocal.setSeconds(0, 0);
+    const startLocal = new Date(endLocal); startLocal.setDate(endLocal.getDate() - 30);
+
     const rows = await aggregateGroupByDuration({
       recordType: m.recordType,
-      timeRangeFilter: lastNDaysZ(30),
+      timeRangeFilter: lastNDaysLocal(30),
       timeRangeSlicer: { duration: 'DAYS', length: 1 },
     });
 
@@ -909,22 +984,18 @@ export async function read30dBuckets(
     const sum = buckets.reduce((s, x) => s + (x.value || 0), 0);
     log('[Buckets][agg]', metric, '30d len=', buckets.length, 'sum=', sum);
 
-    // Fallback for Distance if aggregate is empty/zero
     if (metric === 'distance' && (buckets.length === 0 || sum === 0)) {
       log('[Buckets][distance] fallback rawDaily 30d');
       buckets = await rawDailyDistanceBuckets(30);
     }
-
     return buckets;
   } catch (e) {
     logErr(`read30dBuckets(${metric}) error`, e);
-    if (metric === 'distance') {
-      log('[Buckets][distance] agg failed → raw fallback 30d');
-      return await rawDailyDistanceBuckets(30);
-    }
+    if (metric === 'distance') return await rawDailyDistanceBuckets(30);
     return [];
   }
 }
+
 
 
 // Daily buckets for the last 90 days
@@ -933,9 +1004,12 @@ export async function read90dBuckets(
 ): Promise<Bucket[]> {
   try {
     const m = METRICS[metric];
+    const endLocal = new Date(); endLocal.setSeconds(0, 0);
+    const startLocal = new Date(endLocal); startLocal.setDate(endLocal.getDate() - 90);
+
     const rows = await aggregateGroupByDuration({
       recordType: m.recordType,
-      timeRangeFilter: lastNDaysZ(90),
+      timeRangeFilter: lastNDaysLocal(90),
       timeRangeSlicer: { duration: 'DAYS', length: 1 },
     });
 
@@ -949,23 +1023,17 @@ export async function read90dBuckets(
     const sum = buckets.reduce((s, x) => s + (x.value || 0), 0);
     log('[Buckets][agg]', metric, '90d len=', buckets.length, 'sum=', sum);
 
-    // Fallback for Distance if aggregate is empty/zero
     if (metric === 'distance' && (buckets.length === 0 || sum === 0)) {
       log('[Buckets][distance] fallback rawDaily 90d');
       buckets = await rawDailyDistanceBuckets(90);
     }
-
     return buckets;
   } catch (e) {
     logErr(`read90dBuckets(${metric}) error`, e);
-    if (metric === 'distance') {
-      log('[Buckets][distance] agg failed → raw fallback 90d');
-      return await rawDailyDistanceBuckets(90);
-    }
+    if (metric === 'distance') return await rawDailyDistanceBuckets(90);
     return [];
   }
 }
-
 
 
 

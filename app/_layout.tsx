@@ -20,24 +20,23 @@ function AppShell() {
     SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
   });
 
-  // 👇 also read hcInitialized so we only run initialize once
   const { hcInitialize, hcInitialized } = useTrackingStore();
 
   useEffect(() => {
     if (!loaded) return;
     if (Platform.OS !== 'android') return;
-    if (hcInitialized) return; // ✅ guard: already initialized
+    if (hcInitialized) return; 
 
     (async () => {
       try {
-        await hcInitialize(); // safe & idempotent; we also guard it
+        await hcInitialize(); 
       } catch {
-        // any surfaced error will appear via the store (hcError/hcAvailable) in screens
+        
       }
     })();
   }, [loaded, hcInitialized, hcInitialize]);
 
-  if (!loaded) return null; // safe now — all hooks have already been declared
+  if (!loaded) return null; 
 
   const isDark = resolvedScheme === 'dark';
 

@@ -5,55 +5,57 @@ import { useThemeColors } from '@/src/theme/useThemeColors';
 import React from 'react';
 import { Image, Text, View } from 'react-native';
 
-type CardVariant = 'compact' | 'large';
-
 type Props = {
   item: any;
   onPressPrimary?: () => void;
-  variant?: CardVariant;          // NEW
 };
 
-const STYLES = {
-  compact: { hero: 120, title: 16, radius: 12, pad: 12, descLines: 2, maxTags: 2 },
-  large:   { hero: 200, title: 20, radius: 16, pad: 14, descLines: 3, maxTags: 3 },
-} as const;
-
-export default function OpportunityCard({ item, onPressPrimary, variant = 'compact' }: Props) {
+export default function OpportunityCard({ item, onPressPrimary }: Props) {
   const c = useThemeColors();
-  const S = STYLES[variant];
 
-  const heroUri = item.imageUrl;
+  // Larger “hero” area + bigger title to make the card feel substantial
+  const heroUri = item.imageUrl; // optional in your seed
   const tags: string[] = item.tags ?? [];
   const metaLeft = item.category ?? item.topic ?? 'Study';
   const metaMid  = item.duration ?? item.length ?? undefined;
   const metaRight = item.type ?? undefined;
 
   return (
-    <View style={{
-      backgroundColor: c.surface,
-      borderColor: c.border,
-      borderWidth: 1,
-      borderRadius: S.radius,
-      overflow: 'hidden',
-      padding: S.pad,
-    }}>
-      {/* HERO */}
-      <View style={{
-        height: S.hero,
-        borderRadius: 12,
-        backgroundColor: c.muted,
+    <View
+      style={{
+        backgroundColor: c.surface,
         borderColor: c.border,
         borderWidth: 1,
+        borderRadius: 16,
         overflow: 'hidden',
-      }}>
-        {heroUri ? <Image source={{ uri: heroUri }} style={{ width:'100%', height:'100%' }} /> : <View style={{ flex:1 }} />}
+        padding: 14,
+      }}
+    >
+      {/* HERO */}
+      <View
+        style={{
+          height: 200, // ↑ bump from ~140 to 200 for presence
+          borderRadius: 12,
+          backgroundColor: c.muted,
+          borderColor: c.border,
+          borderWidth: 1,
+          overflow: 'hidden',
+        }}
+      >
+        {heroUri ? (
+          <Image source={{ uri: heroUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+        ) : (
+          <View style={{ flex: 1 }} />
+        )}
       </View>
 
-      {/* TITLE + META */}
+      {/* TITLE + SPONSOR */}
       <View style={{ marginTop: 14 }}>
-        <Text style={{ color: c.text.primary, fontSize: S.title, fontWeight: '800' }} numberOfLines={2}>
+        <Text style={{ color: c.text.primary, fontSize: 20, fontWeight: '800' }} numberOfLines={2}>
           {item.title}
         </Text>
+
+        {/* Sponsor / meta line (keep subtle) */}
         {(item.sponsor || item.reward?.credits) && (
           <Text style={{ color: c.text.secondary, marginTop: 6 }}>
             {item.sponsor ? `${item.sponsor}` : ''}{item.sponsor && item.reward?.credits ? ' · ' : ''}
@@ -62,17 +64,17 @@ export default function OpportunityCard({ item, onPressPrimary, variant = 'compa
         )}
       </View>
 
-      {/* CHIPS */}
+      {/* TAGS / META CHIPS */}
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
         {metaLeft ? <Chip label={String(metaLeft)} /> : null}
         {metaMid ? <Chip label={String(metaMid)} /> : null}
         {metaRight ? <Chip label={String(metaRight)} /> : null}
-        {tags.slice(0, S.maxTags).map(t => <Chip key={t} label={`#${t}`} />)}
+        {tags.slice(0, 3).map((t) => <Chip key={t} label={`#${t}`} />)}
       </View>
 
       {/* DESCRIPTION */}
       {item.description ? (
-        <Text style={{ color: c.text.secondary, marginTop: 10 }} numberOfLines={S.descLines}>
+        <Text style={{ color: c.text.secondary, marginTop: 10 }} numberOfLines={3}>
           {item.description}
         </Text>
       ) : null}
