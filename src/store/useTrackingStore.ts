@@ -498,43 +498,60 @@ export const useTrackingStore = create<Store>((set, get) => ({
               let ui: DatasetBucket[] = [];
               if (hcWindow === '24h') {
                 const hrBuckets = await readHeartRateHourly24();
-                ui = hrBuckets.map(b => ({ start: b.start, end: b.end, value: Number(b.value || 0) }));
-                // forward-fill hourly gaps so you never see 0 bpm
-                ui = forwardFill(ui);
+                ui = hrBuckets.map(b => ({
+                  start: b.start,
+                  end: b.end,
+                  value: Number(b.value || 0)  // 0 means "no sample" for this hour
+                }));
               } else {
                 const days = hcWindow === '7d' ? 7 : hcWindow === '30d' ? 30 : 90;
                 const hrDaily = await readHeartRateDailyBuckets(days as 7 | 30 | 90);
-                let tmp = hrDaily.map(b => ({ start: b.start, end: b.end, value: Number(b.value || 0) }));
-                // forward-fill daily gaps too (per your "Yes")
-                ui = forwardFill(tmp);
+                ui = hrDaily.map(b => ({
+                  start: b.start,
+                  end: b.end,
+                  value: Number(b.value || 0)
+                }));
               }
 
               const values = ui.map(b => Number(b.value || 0)).filter(n => n > 0);
               const minBpm = values.length ? Math.min(...values) : undefined;
               const maxBpm = values.length ? Math.max(...values) : undefined;
-
-              // primary/latest: prefer the live latest; else last bucket (already forward-filled)
               let latest: number | null = null;
               let latestAgeSec: number | undefined = undefined;
               try {
                 const { bpm, atISO } = await readHeartRateLatest();
-                latest = bpm ?? (ui.length ? ui[ui.length - 1].value : null);
-                if (bpm != null && atISO) {
-                  const t = new Date(atISO).getTime();
-                  latestAgeSec = latest ? Math.round((Date.now() - t) / 1000) : undefined;
+                if (Number.isFinite(bpm as any) && (bpm as any) > 0) {
+                  latest = bpm!;
+                  if (atISO) {
+                    const t = new Date(atISO).getTime();
+                    latestAgeSec = Math.round((Date.now() - t) / 1000);
+                  }
                 }
               } catch {
                 latest = ui.length ? ui[ui.length - 1].value : null;
               }
 
+              if (latest == null || latest <= 0) {
+                for (let i = ui.length - 1; i >= 0; i--) {
+                  const v = Number(ui[i].value || 0);
+                  if (v > 0) { latest = v; break; }
+                }
+                if (latest == null) latest = null; 
+              }
+
               datasets.push({
                 id: m, label: HC_LABEL[m], unit: HC_UNIT[m],
-                buckets: ui,
-                total: 0,                   // HR has no "total"
+                buckets: ui,                 
+                total: 0,
                 latest,
                 freshnessISO: fetchedAtISO,
-                trend: computeTrendForWindow(hcWindow, m, ui), // optional; ok to keep
-                meta: { minBpm, maxBpm, latestAgeSec },
+                trend: computeTrendForWindow(hcWindow, m, ui), 
+                meta: {
+                  minBpm, maxBpm,
+                  latestAgeSec,
+                  coverageCount: ui.filter(b => (Number(b.value) || 0) > 0).length,
+                  coverageTotal: hcWindow === '24h' ? 24 : (hcWindow === '7d' ? 7 : (hcWindow === '30d' ? 30 : 90)),
+                }
               });
             } catch (e) {
               logE('hr read failed', e);

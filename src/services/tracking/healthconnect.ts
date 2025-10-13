@@ -433,6 +433,7 @@ export async function readSleepHourlyBuckets24(): Promise<Bucket[]> {
 /** Heart-rate → 24 hourly buckets of avg BPM, newest last. */
 export async function readHeartRateHourly24(): Promise<Bucket[]> {
   const end = new Date();
+  end.setSeconds(0, 0);          
   const start = new Date(end);
   start.setHours(end.getHours() - 24);
 
