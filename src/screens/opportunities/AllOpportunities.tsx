@@ -1,9 +1,9 @@
 import OpportunityCard from "@/src/components/composite/opportunities/OpportunityCard";
 import { useOpportunitiesStore } from "@/src/store/useOpportunitiesStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
-import { useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import React from "react";
-import { FlatList, Text, View } from "react-native";
+import { FlatList, Pressable, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function AllOpportunitiesScreen() {
@@ -12,16 +12,19 @@ export default function AllOpportunitiesScreen() {
   const params = useLocalSearchParams<{ focus?: string }>();
 
   const data = recent.length ? recent : recommended; // simple fallback
+  const renderItem = ({ item }: { item: any }) => (
+    <Pressable onPress={() => router.push({ pathname: "/opportunities/[id]", params: { id: String(item.id) } })}>
+      <OpportunityCard item={item} />
+    </Pressable>
+  );
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>
       <FlatList
         data={data}
         keyExtractor={(item) => item.id}
+        renderItem={renderItem}
         contentContainerStyle={{ padding: 16, gap: 12 }}
-        renderItem={({ item }) => (
-          <OpportunityCard item={item} onPress={() => {}} />
-        )}
         ListHeaderComponent={
           <View style={{ marginBottom: 8 }}>
             <Text style={{ color: c.text.primary, fontSize: 22, fontWeight: "800" }}>

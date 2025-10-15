@@ -3,9 +3,6 @@ import { RefreshControl, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import ActiveSharesList from '@/src/components/composite/sharing/ActiveSharesList';
-import ApplicationsByStatus from '@/src/components/composite/sharing/ApplicationsByStatus';
-import BadgesGrid from '@/src/components/composite/sharing/BadgesGrid';
-import SharingOverviewCard from '@/src/components/composite/sharing/SharingOverviewCard';
 import { useThemeColors } from '@/src/theme/useThemeColors';
 
 import { useShareStore } from '@/src/store/useShareStore';
@@ -48,10 +45,10 @@ export default function SharingScreen() {
           </View>
         ) : (
           <>
-            <SharingOverviewCard />
+            {/* <SharingOverviewCard /> */}
             <ActiveSharesList />
-            <ApplicationsByStatus />
-            <BadgesGrid />
+            {/* <ApplicationsByStatus /> */}
+            {/* <BadgesGrid /> */}
           </>
         )}
       </ScrollView>

@@ -1,4 +1,4 @@
-import { getRecentTop10, getRecommendedTop10 } from "@/src/services/opportunities/mock";
+import { getRecommendedTop10 } from "@/src/services/opportunities/mock";
 import { Opportunity } from "@/src/services/opportunities/types";
 import { create } from "zustand";
 
@@ -34,7 +34,8 @@ export const useOpportunitiesStore = create<State & Actions>((set) => ({
   async fetchRecent() {
     set({ allStatus: "loading", error: undefined });
     try {
-      const data = await getRecentTop10();
+      // const data = await getRecentTop10();
+      const data = await getRecommendedTop10();
       set({ recent: data, allStatus: "success" });
     } catch (e: any) {
       set({ allStatus: "error", error: e?.message ?? "Failed to load recent" });

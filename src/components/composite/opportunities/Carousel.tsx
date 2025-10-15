@@ -1,3 +1,4 @@
+// Carousel.tsx
 import { Opportunity } from "@/src/services/opportunities/types";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import React from "react";
@@ -16,19 +17,25 @@ export default function Carousel({
   viewAllLabel?: string;
 }) {
   const c = useThemeColors();
-  const items = data.slice(0, 10); // enforce top-10 in UI as well
+  const items = data.slice(0, 10);
 
   return (
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
       contentContainerStyle={{ paddingHorizontal: 12, gap: 12 }}
+      decelerationRate={0} // gentle swipe feel
+      snapToAlignment="start"
+      scrollEventThrottle={16}
     >
       {items.map((op) => (
-        <OpportunityCard key={op.id} item={op} onPress={onPressCard} />
+        <OpportunityCard
+          key={String(op.id)}
+          item={op}
+          onPress={() => onPressCard?.(String(op.id))}
+        />
       ))}
 
-      {/* View All card */}
       <Pressable
         onPress={onPressViewAll}
         style={{

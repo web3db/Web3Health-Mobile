@@ -3,24 +3,24 @@ import Button from '@/src/components/ui/Button';
 import Chip from '@/src/components/ui/Chip';
 import { useThemeColors } from '@/src/theme/useThemeColors';
 import React from 'react';
-import { Image, Text, View } from 'react-native';
+import { Image, Pressable, Text, View } from 'react-native';
 
 type Props = {
   item: any;
-  onPressPrimary?: () => void;
+  onPress?: () => void;           // NEW: tap the whole card
+  onPressPrimary?: () => void;    // existing CTA
 };
 
-export default function OpportunityCard({ item, onPressPrimary }: Props) {
+export default function OpportunityCard({ item, onPress, onPressPrimary }: Props) {
   const c = useThemeColors();
 
-  // Larger “hero” area + bigger title to make the card feel substantial
-  const heroUri = item.imageUrl; // optional in your seed
+  const heroUri = item.imageUrl;
   const tags: string[] = item.tags ?? [];
   const metaLeft = item.category ?? item.topic ?? 'Study';
   const metaMid  = item.duration ?? item.length ?? undefined;
   const metaRight = item.type ?? undefined;
 
-  return (
+  const CardBody = (
     <View
       style={{
         backgroundColor: c.surface,
@@ -34,7 +34,7 @@ export default function OpportunityCard({ item, onPressPrimary }: Props) {
       {/* HERO */}
       <View
         style={{
-          height: 200, // ↑ bump from ~140 to 200 for presence
+          height: 200,
           borderRadius: 12,
           backgroundColor: c.muted,
           borderColor: c.border,
@@ -54,11 +54,10 @@ export default function OpportunityCard({ item, onPressPrimary }: Props) {
         <Text style={{ color: c.text.primary, fontSize: 20, fontWeight: '800' }} numberOfLines={2}>
           {item.title}
         </Text>
-
-        {/* Sponsor / meta line (keep subtle) */}
         {(item.sponsor || item.reward?.credits) && (
           <Text style={{ color: c.text.secondary, marginTop: 6 }}>
-            {item.sponsor ? `${item.sponsor}` : ''}{item.sponsor && item.reward?.credits ? ' · ' : ''}
+            {item.sponsor ? `${item.sponsor}` : ''}
+            {item.sponsor && item.reward?.credits ? ' · ' : ''}
             {typeof item.reward?.credits === 'number' ? `+${item.reward.credits} credits` : ''}
           </Text>
         )}
@@ -81,8 +80,17 @@ export default function OpportunityCard({ item, onPressPrimary }: Props) {
 
       {/* CTA */}
       <View style={{ marginTop: 14 }}>
-        <Button title="Contribute" onPress={onPressPrimary} />
+        <Button title="Contribute" onPress={onPressPrimary ?? onPress} />
       </View>
     </View>
+  );
+
+  // If a parent supplies onPress, make the whole card tappable.
+  return onPress ? (
+    <Pressable onPress={onPress} accessibilityRole="button">
+      {CardBody}
+    </Pressable>
+  ) : (
+    CardBody
   );
 }

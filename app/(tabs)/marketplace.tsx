@@ -1,15 +1,14 @@
-import { Link } from "expo-router";
+import { router } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useRef } from "react";
 import {
-  Dimensions,
   FlatList,
   KeyboardAvoidingView,
   NativeScrollEvent,
   NativeSyntheticEvent,
   Platform,
-  Pressable,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -18,15 +17,15 @@ import { useThemeColors } from "@/src/theme/useThemeColors";
 import OpportunityCard from "@/src/components/composite/opportunities/OpportunityCard";
 import EmptyState from "@/src/components/ui/EmptyState";
 import SearchBar from "@/src/components/ui/SearchBar";
+import SkeletonCard from "@/src/components/ui/SkeletonCard";
 import SortButton from "@/src/components/ui/SortButton";
-import SkeletonCard from "../../src/components/ui/SkeletonCard";
 
 import { useOpportunities } from "@/src/hooks/useOpportunities";
 import { useMarketStore as useMarketplaceStore } from "@/src/store/useMarketStore";
 
 export default function MarketplaceScreen() {
   const c = useThemeColors();
-  const listRef = useRef<FlatList>(null);
+  const listRef = useRef<FlatList<any>>(null);
 
   // Store state (Marketplace-only)
   const {
@@ -36,47 +35,49 @@ export default function MarketplaceScreen() {
     selectedTags,
     minCredits,
     sort,
-    savedIds,
     lastListOffset,
     loadAll,
     setQuery,
-    toggleTag,
-    setMinCredits,
     setSort,
     clearFilters,
     setListOffset,
     filteredItems,
+    loadMore,
+    hasNext,
   } = useMarketplaceStore();
 
-  // Facets from seed (normalized)
-  const { categories, popularTags } = useOpportunities();
+  // Facets (kept for later filters UI)
+  useOpportunities();
 
-  // Responsive columns
-  const screenWidth = Dimensions.get("window").width;
-  const numColumns = screenWidth < 600 ? 1 : 2;
+  // Responsive columns (updates on rotation)
+  const { width } = useWindowDimensions();
+  const numColumns = width < 600 ? 1 : 2;
 
-  // Derived list (depend on inputs so recompute correctly)
+  // Derived list
   const data = useMemo(
     () => filteredItems(),
     [items, query, selectedTags, minCredits, sort] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
-  // Load data on mount
+  // --- Prevent double-fetch in dev (Strict Mode) ---
+  const didInit = useRef(false);
   useEffect(() => {
-    loadAll();
+    if (didInit.current) return;
+    didInit.current = true;
+    loadAll({ page: 1, pageSize: 10 });
   }, [loadAll]);
 
-  // Restore scroll after data mounts
+  // --- Restore scroll offset once on first paint (if any) ---
   useEffect(() => {
-    const id = setTimeout(() => {
-      if (lastListOffset && listRef.current) {
-        listRef.current.scrollToOffset({ offset: lastListOffset, animated: false });
-      }
-    }, 0);
-    return () => clearTimeout(id);
+    if (lastListOffset && lastListOffset > 0 && listRef.current) {
+      const id = setTimeout(() => {
+        listRef.current?.scrollToOffset({ offset: lastListOffset, animated: false });
+      }, 0);
+      return () => clearTimeout(id);
+    }
   }, [lastListOffset]);
 
-  // Keyboard-safe onScroll capture
+  // Track current scroll position for persistence
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       setListOffset(e.nativeEvent.contentOffset.y);
@@ -84,13 +85,38 @@ export default function MarketplaceScreen() {
     [setListOffset]
   );
 
-  // Cycle sort
+  // Toggle sort
   const onToggleSort = useCallback(() => {
     setSort(sort === "newest" ? "reward" : "newest");
   }, [sort, setSort]);
 
-  // no-op category handler (wired later)
-  const onToggleCategory = useCallback((/* cat: string */) => { }, []);
+  // Stable key extractor
+  const keyExtractor = useCallback((item: { id: string | number }) => String(item.id), []);
+
+  // Navigate to details
+  const renderItem = useCallback(
+    ({ item }: { item: any }) => (
+      <View style={{ flex: 1, paddingHorizontal: numColumns > 1 ? 6 : 0, marginBottom: 12 }}>
+        <OpportunityCard
+          item={item}
+          onPress={() => router.push({ pathname: "/opportunities/[id]", params: { id: String(item.id) } })}
+        />
+      </View>
+    ),
+    [numColumns]
+  );
+
+  // Guard onEndReached firing multiple times during momentum/short lists
+  const reachedDuringMomentum = useRef(false);
+  const handleEndReached = useCallback(() => {
+    if (loading || !hasNext || reachedDuringMomentum.current) return;
+    reachedDuringMomentum.current = true;
+    loadMore();
+  }, [loading, hasNext, loadMore]);
+
+  const onMomentumScrollBegin = useCallback(() => {
+    reachedDuringMomentum.current = false;
+  }, []);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }} edges={["top", "left", "right", "bottom"]}>
@@ -112,30 +138,39 @@ export default function MarketplaceScreen() {
             <SortButton sort={sort} onToggle={onToggleSort} />
           </View>
 
-          {/* Filters */}
-          {/* <View style={{ marginBottom: 12 }}>
-            <FiltersRow
-              categories={categories}
-              tags={popularTags}
-              selectedCategories={[]} // categories optional for now
-              selectedTags={selectedTags}
-              minCredits={minCredits}
-              onToggleCategory={onToggleCategory}
-              onToggleTag={toggleTag}
-              onSetMinCredits={setMinCredits}
-              onClearAll={clearFilters}
-            />
-          </View> */}
-
           {/* List */}
           <FlatList
             ref={listRef}
             data={data}
-            keyExtractor={(item) => item.id}
-            onScroll={onScroll}
+            keyExtractor={keyExtractor}
+            renderItem={renderItem}
             numColumns={numColumns}
             style={{ backgroundColor: c.bg }}
             columnWrapperStyle={numColumns > 1 ? { gap: 12 } : undefined}
+            // Scrolling performance
+            scrollEventThrottle={16}
+            decelerationRate={Platform.OS === "ios" ? "normal" : 0.98}
+            initialNumToRender={10}
+            maxToRenderPerBatch={10}
+            windowSize={7}
+            removeClippedSubviews={Platform.OS === "android"} // avoids white flash on iOS
+            // Scroll state + pagination
+            onScroll={onScroll}
+            onEndReachedThreshold={0.5}
+            onMomentumScrollBegin={onMomentumScrollBegin}
+            onEndReached={handleEndReached}
+            // Footer / Empty
+            ListFooterComponent={
+              loading ? (
+                <View style={{ paddingVertical: 16 }}>
+                  <Text style={{ textAlign: "center" }}>Loading…</Text>
+                </View>
+              ) : !hasNext ? (
+                <View style={{ paddingVertical: 16 }}>
+                  <Text style={{ textAlign: "center", opacity: 0.6 }}>No more postings</Text>
+                </View>
+              ) : null
+            }
             ListEmptyComponent={
               loading ? (
                 <View style={{ paddingHorizontal: 8, gap: 12, paddingVertical: 16 }}>
@@ -148,21 +183,12 @@ export default function MarketplaceScreen() {
                 <EmptyState onReset={clearFilters} />
               )
             }
-            renderItem={({ item }) => (
-              <View style={{ flex: 1, paddingHorizontal: numColumns > 1 ? 6 : 0, marginBottom: 12 }}>
-                <Link href={{ pathname: "/opportunities/[id]", params: { id: item.id } }} asChild>
-                  <Pressable accessibilityRole="button">
-                    <OpportunityCard item={item as any} />
-                  </Pressable>
-                </Link>
-              </View>
-            )}
             contentContainerStyle={{
               paddingBottom: 24,
               paddingTop: 4,
               maxWidth: 720,
-              alignSelf: 'center',
-              width: '100%',
+              alignSelf: "center",
+              width: "100%",
               paddingHorizontal: 4,
             }}
             showsVerticalScrollIndicator={false}
