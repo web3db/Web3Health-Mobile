@@ -12,12 +12,56 @@ export function mapPostingToOpportunity(
     rewardAny?.value ?? rewardAny?.rewardValue ?? null; // number | null
   const rewardTypeId =
     rewardAny?.rewardTypeId ?? null;                    // number | null
-    const rewardTypeName =
-  rewardAny?.rewardTypeName ?? null;
+  const rewardTypeName =
+    rewardAny?.rewardTypeName ?? null;
 
   // --- metrics normalization (three shapes: number[], {id,name}[], {metricId,displayName}[]) ---
   let metricsNamed: { id: number; name: string }[] | undefined;
   let metricIdsFromMetrics: number[] | undefined;
+  let policiesNamed: { id: number; name: string }[] | undefined;
+
+
+  if (metricsNamed && metricsNamed.length > 0) {
+    const byId = new Map<number, string>();
+    for (const m of metricsNamed) {
+      const name = String(m.name ?? "");
+      const isNumericName = /^\d+$/.test(name);
+      const existing = byId.get(m.id);
+
+      // If we don't have one yet, take it. If we do, prefer the non-numeric label.
+      if (!existing || (!/^\d+$/.test(existing) && isNumericName)) {
+        // keep existing non-numeric over numeric; otherwise set new
+        if (!existing) byId.set(m.id, name);
+      } else if (!existing && isNumericName) {
+        byId.set(m.id, name);
+      } else if (!/^\d+$/.test(name)) {
+        byId.set(m.id, name);
+      }
+    }
+    metricsNamed = Array.from(byId.entries()).map(([id, name]) => ({ id, name }));
+  }
+
+
+
+  if (Array.isArray(p.viewPolicies) && p.viewPolicies.length > 0) {
+    const first = p.viewPolicies[0] as any;
+    if (first && typeof first === "object") {
+      if ("id" in first) {
+        // [{ id, name }]
+        policiesNamed = (p.viewPolicies as any[]).map((v) => ({
+          id: Number(v.id),
+          name: String(v.name),
+        }));
+      } else if ("viewPolicyId" in first) {
+        // [{ viewPolicyId, displayName }]
+        policiesNamed = (p.viewPolicies as any[]).map((v) => ({
+          id: Number(v.viewPolicyId),
+          name: String(v.displayName ?? v.viewPolicyId),
+        }));
+      }
+    }
+  }
+
 
   if (Array.isArray(p.metrics) && p.metrics.length > 0) {
     const first = p.metrics[0] as any;
@@ -81,7 +125,7 @@ export function mapPostingToOpportunity(
 
     reward:
       rewardValue != null || rewardTypeId != null
-        ? { credits: rewardValue ?? undefined, typeId: rewardTypeId ?? undefined ,  typeName: rewardTypeName ?? undefined,}
+        ? { credits: rewardValue ?? undefined, typeId: rewardTypeId ?? undefined, typeName: rewardTypeName ?? undefined, }
         : undefined,
 
     createdAt: p.createdOn ?? null,
@@ -101,9 +145,7 @@ export function mapPostingToOpportunity(
     healthConditions: healthNamed,
 
     viewPolicyIds: p.viewPolicyIds ?? [],
-    viewPolicies: p.viewPolicies
-      ? p.viewPolicies.map((v) => ({ id: Number(v.id), name: String(v.name) }))
-      : undefined,
+    viewPolicies: policiesNamed,
 
     tags: p.tags ?? [],
 

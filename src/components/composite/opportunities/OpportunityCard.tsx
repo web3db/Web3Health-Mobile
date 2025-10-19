@@ -9,32 +9,39 @@ type Props = {
   item: any;
   onPress?: () => void;           // NEW: tap the whole card
   onPressPrimary?: () => void;    // existing CTA
+
+  variant?: 'default' | 'carousel';
+  cardWidth?: number;
 };
 
-export default function OpportunityCard({ item, onPress, onPressPrimary }: Props) {
+
+export default function OpportunityCard({ item, onPress, onPressPrimary, variant = 'default', cardWidth }: Props) {
   const c = useThemeColors();
 
   const heroUri = item.imageUrl;
   const tags: string[] = item.tags ?? [];
   const metaLeft = item.category ?? item.topic ?? 'Study';
-  const metaMid  = item.duration ?? item.length ?? undefined;
+  const metaMid = item.duration ?? item.length ?? undefined;
   const metaRight = item.type ?? undefined;
-
+  const heroHeight = variant === 'carousel' ? 140 : 200;
   const CardBody = (
     <View
       style={{
+        width: variant === 'carousel' && cardWidth ? cardWidth : undefined,
         backgroundColor: c.surface,
         borderColor: c.border,
         borderWidth: 1,
         borderRadius: 16,
         overflow: 'hidden',
         padding: 14,
+        flexShrink: 0,
+        alignSelf: 'stretch',
       }}
     >
       {/* HERO */}
       <View
         style={{
-          height: 200,
+          height: heroHeight,
           borderRadius: 12,
           backgroundColor: c.muted,
           borderColor: c.border,
@@ -73,7 +80,7 @@ export default function OpportunityCard({ item, onPress, onPressPrimary }: Props
 
       {/* DESCRIPTION */}
       {item.description ? (
-        <Text style={{ color: c.text.secondary, marginTop: 10 }} numberOfLines={3}>
+        <Text style={{ color: c.text.secondary, marginTop: 10 }} numberOfLines={3} ellipsizeMode="tail">
           {item.description}
         </Text>
       ) : null}

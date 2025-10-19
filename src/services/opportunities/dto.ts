@@ -23,18 +23,18 @@ export type PostingDTO = {
 
   // reward (list vs detail)
   reward?:
-    | { rewardTypeId?: number; value?: number | null }   // list style
-    | { rewardTypeId?: number; rewardTypeName?: string; rewardValue?: number | null } // detail style
-    | null;
+  | { rewardTypeId?: number; value?: number | null }   // list style
+  | { rewardTypeId?: number; rewardTypeName?: string; rewardValue?: number | null } // detail style
+  | null;
 
   // data requirements
   dataCoverageDaysRequired?: number | null;
 
   // metrics (three shapes across list/detail)
   metrics?:
-    | number[]                                                    // list: [101, 110]
-    | { id: number; name: string }[]                              // list/style A
-    | { metricId: number; displayName: string | null }[];         // detail/style B
+  | number[]                                                    // list: [101, 110]
+  | { id: number; name: string }[]                              // list/style A
+  | { metricId: number; displayName: string | null }[];         // detail/style B
   metricIds?: number[];                                           // some list items use this instead
 
   // eligibility (two shapes)
@@ -43,12 +43,14 @@ export type PostingDTO = {
 
   healthConditionIds?: number[];
   healthConditions?:
-    | { id: number; name: string }[]                              // list/style A
-    | { healthConditionId: number; displayName: string | null }[];// detail/style B
+  | { id: number; name: string }[]                              // list/style A
+  | { healthConditionId: number; displayName: string | null }[];// detail/style B
 
   // policies
   viewPolicyIds?: number[];
-  viewPolicies?: { id: number; name: string }[];
+  viewPolicies?:
+  | { id: number; name: string }[]                       // list/style A
+  | { viewPolicyId: number; displayName: string }[];     // detail/style B
 
   // tags
   tags?: string[];

@@ -9,7 +9,10 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "UIBackgroundModes": ["processing"]  
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -49,6 +52,8 @@
       ],
       "expo-secure-store",
       "expo-health-connect",
+      "expo-background-task",
+      "expo-notifications",
       [
         "expo-build-properties",
         {

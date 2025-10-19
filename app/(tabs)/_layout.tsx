@@ -8,6 +8,7 @@ import { DrawerActions, useNavigation } from '@react-navigation/native';
 import { Tabs } from 'expo-router';
 import React from 'react';
 import { Platform, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const TabIcon = ({
   name,
@@ -26,9 +27,9 @@ const TabIcon = ({
 export default function TabLayout() {
   const c = useThemeColors();
   const navigation = useNavigation<DrawerNavigationProp<ParamListBase>>();
-
+  const insets = useSafeAreaInsets();
   return (
-    <Tabs
+     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: c.text.primary,
@@ -36,11 +37,22 @@ export default function TabLayout() {
         tabBarButton: HapticTab,
         tabBarBackground: TabBarBackground,
         tabBarStyle: Platform.select({
-          ios: { position: 'absolute' },
-          default: {
+          ios: {
+            position: 'absolute',
+            // iOS already handles safe area, but keeping padding helps consistency
+            height: 56 + insets.bottom,
+            paddingBottom: Math.max(insets.bottom, 8),
+            paddingTop: 6,
             backgroundColor: c.bg,
             borderTopColor: c.border,
-            height: 60,
+          },
+          default: {
+            // Android: explicitly account for the bottom system bar
+            height: 56 + insets.bottom,
+            paddingBottom: Math.max(insets.bottom, 8),
+            paddingTop: 6,
+            backgroundColor: c.bg,
+            borderTopColor: c.border,
           },
         }),
         tabBarLabelStyle: { fontSize: 11, marginBottom: 6 },
