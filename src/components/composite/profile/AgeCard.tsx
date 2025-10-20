@@ -1,14 +1,17 @@
 import { computeAge, useProfileStore } from '@/src/store/useProfileStore';
 import { useThemeColors } from '@/src/theme/useThemeColors';
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Text, TextInput, View } from 'react-native';
 
 export default function AgeCard() {
   const c = useThemeColors();
-  const { profile, update } = useProfileStore();
-  if (!profile) return null;
+  const { profile, edits, updateLocal } = useProfileStore();
 
-  const age = computeAge(profile.birthYear, profile.birthDate);
+  // ✅ Hooks always run in the same order
+  const birthYear = (edits.BirthYear ?? profile?.BirthYear) ?? null;
+  const age = useMemo(() => (birthYear ? computeAge(birthYear) : null), [birthYear]);
+
+  if (!profile) return null; // ✅ after hooks
 
   return (
     <View style={{
@@ -17,7 +20,7 @@ export default function AgeCard() {
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
         <Text style={{ color: c.text.primary, fontSize: 16, fontWeight: '700' }}>Age</Text>
         <Text style={{ color: c.text.secondary, fontWeight: '600' }}>
-          {age != null ? `${age} yrs` : '—'}
+          {birthYear ? (age != null ? `${age} yrs` : '—') : '—'}
         </Text>
       </View>
 
@@ -25,32 +28,15 @@ export default function AgeCard() {
         <View style={{ flex: 1 }}>
           <Text style={{ color: c.text.secondary, marginBottom: 6 }}>Birth year</Text>
           <TextInput
-            value={String(profile.birthYear ?? '')}
+            value={birthYear != null ? String(birthYear) : ''}
             onChangeText={(t) => {
-              const n = parseInt(t || '0', 10);
-              if (!Number.isNaN(n)) update({ birthYear: n });
+              const n = parseInt(t || '', 10);
+              updateLocal({ BirthYear: Number.isFinite(n) ? n : undefined });
             }}
             keyboardType="number-pad"
             inputMode="numeric"
-            placeholder="1999"
+            placeholder="1995"
             placeholderTextColor={c.text.muted}
-            style={{
-              color: c.text.primary,
-              backgroundColor: c.elevated,
-              borderColor: c.border, borderWidth: 1, borderRadius: 10,
-              paddingHorizontal: 12, paddingVertical: 8,
-            }}
-          />
-        </View>
-
-        <View style={{ flex: 1 }}>
-          <Text style={{ color: c.text.secondary, marginBottom: 6 }}>Birth date (optional)</Text>
-          <TextInput
-            value={profile.birthDate ?? ''}
-            onChangeText={(t) => update({ birthDate: t })}
-            placeholder="YYYY-MM-DD"
-            placeholderTextColor={c.text.muted}
-            autoCapitalize="none"
             style={{
               color: c.text.primary,
               backgroundColor: c.elevated,

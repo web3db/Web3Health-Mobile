@@ -2,6 +2,7 @@
 import Button from "@/src/components/ui/Button";
 import Chip from "@/src/components/ui/Chip";
 import { testFlags } from '@/src/config/featureFlags';
+import { useCurrentUserId } from "@/src/hooks/useCurrentUserId";
 import { getSessionByPosting } from '@/src/services/sharing/api';
 import { getShareRuntimeConfig } from '@/src/services/sharing/constants';
 import type { MetricCode } from '@/src/services/sharing/summarizer';
@@ -152,6 +153,7 @@ export default function OpportunityDetails() {
   const sessionId = useShareStore(s => s.sessionId);
   const isProcessing = !!engine?.currentDueDayIndex;
   const completed = (engine?.segmentsSent ?? 0) >= (segmentsExpected ?? 0);
+  const userId = useCurrentUserId();
   const {
     getByIdSafe,
     savedIds,
@@ -168,6 +170,12 @@ export default function OpportunityDetails() {
     source?: 'ACTIVE' | 'LATEST';
   }>(null);
   const [sessionLookupLoading, setSessionLookupLoading] = useState(false);
+  function sameLookup(a: typeof sessionLookup, b: typeof sessionLookup) {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    return a.sessionId === b.sessionId && a.statusName === b.statusName && a.source === b.source;
+  }
+
 
   // Keep last selected pieces of the share store to detect meaningful changes
   const shareSnapRef = useRef<{ status: string; sent: number; due: number | null }>({
@@ -178,30 +186,30 @@ export default function OpportunityDetails() {
 
 
   const refreshSessionLookup = useCallback(async () => {
-    if (!item) return;
-    const userId = 1; // TODO: real user id
+    if (!item || userId == null) return;
     const postingId = Number((item as any).postingId ?? (item as any).id);
     setSessionLookupLoading(true);
     try {
       const res = await getSessionByPosting(postingId, userId).catch(() => null);
       if (res) {
-        setSessionLookup({
+        const next = {
           sessionId: res.sessionId,
           statusName: res.statusName,
           source: res.source as 'ACTIVE' | 'LATEST',
-        });
+        };
+        setSessionLookup((prev) => (sameLookup(prev, next) ? prev : next));
       } else {
-        setSessionLookup(null);
+        setSessionLookup((prev) => (prev === null ? prev : null));
       }
+
     } finally {
       setSessionLookupLoading(false);
     }
-  }, [item]);
+  }, [item, userId]);
 
   useEffect(() => {
-    if (item) refreshSessionLookup();
-  }, [item, refreshSessionLookup]);
-
+    if (item && userId != null) refreshSessionLookup();
+  }, [item, userId, refreshSessionLookup]);
   // Keep UI in sync: refresh on screen focus and when share engine progresses
   useFocusEffect(
     useCallback(() => {
@@ -244,28 +252,28 @@ export default function OpportunityDetails() {
     let mounted = true;
     (async () => {
       try {
-        if (!item) return;
-        // TEMP — same placeholder userId used in handleApply
-        const userId = 1;
+        if (!item || userId == null) return;
         const postingId = Number((item as any).postingId ?? (item as any).id);
         setSessionLookupLoading(true);
         const res = await getSessionByPosting(postingId, userId).catch(() => null);
         if (!mounted) return;
         if (res) {
-          setSessionLookup({
+          const next = {
             sessionId: res.sessionId,
             statusName: res.statusName,
             source: res.source as 'ACTIVE' | 'LATEST',
-          });
+          };
+          setSessionLookup((prev) => (sameLookup(prev, next) ? prev : next));
         } else {
-          setSessionLookup(null);
+          setSessionLookup((prev) => (prev === null ? prev : null));
         }
+
       } finally {
         if (mounted) setSessionLookupLoading(false);
       }
     })();
     return () => { mounted = false; };
-  }, [item]);
+  }, [item, userId]);
 
   useEffect(() => {
     let mounted = true;
@@ -310,6 +318,10 @@ export default function OpportunityDetails() {
 
   const handleApply = useCallback(async () => {
     if (!item) return;
+    if (userId == null) {
+      Alert.alert('Sign in required', 'Please sign in to apply and start sharing.');
+      return;
+    }
 
     const metricMap = buildMetricMapStrict(item) as Partial<Record<MetricCode, number>>;
     const codes = Object.keys(metricMap) as MetricCode[];
@@ -331,7 +343,6 @@ export default function OpportunityDetails() {
           text: 'OK',
           onPress: async () => {
             try {
-              const userId = 1; // TEMP
               const postingId = Number((item as any).postingId ?? (item as any).id);
               await startSession(postingId, userId, metricMap, days);
               setSessionLookup((prev) => ({
@@ -340,11 +351,6 @@ export default function OpportunityDetails() {
                 source: 'ACTIVE',
               }));
               refreshSessionLookup();
-              console.log('[OppDetails] startSession →', {
-                postingId, userId, metricMap, days,
-                itemMetrics: item.metrics, itemMetricIds: item.metricIds,
-              });
-
               Alert.alert(
                 'Sharing started',
                 __DEV__
@@ -359,7 +365,7 @@ export default function OpportunityDetails() {
         },
       ]
     );
-  }, [item, startSession]);
+  }, [item, startSession, userId, refreshSessionLookup]);
 
   if (!item) {
     return (
@@ -392,12 +398,13 @@ export default function OpportunityDetails() {
   const apiStatusUpper = (sessionLookup?.statusName || '').toUpperCase();
 
   const { applyTitle, applyDisabled } = useMemo(() => {
+    if (userId == null) return { applyTitle: 'Sign in to apply', applyDisabled: true };
     if (sessionLookupLoading) return { applyTitle: 'Checking…', applyDisabled: true };
     if (apiStatusUpper === 'ACTIVE') return { applyTitle: 'Already sharing', applyDisabled: true };
     if (apiStatusUpper === 'COMPLETED') return { applyTitle: 'Completed', applyDisabled: true };
     if (apiStatusUpper === 'CANCELLED') return { applyTitle: 'Apply', applyDisabled: false };
     return { applyTitle: 'Apply', applyDisabled: false };
-  }, [apiStatusUpper, sessionLookupLoading]);
+  }, [userId, sessionLookupLoading, apiStatusUpper]);
 
 
 
@@ -485,7 +492,6 @@ export default function OpportunityDetails() {
       await Promise.resolve(); // let UI breathe
     }
   }, [segmentsExpected, enterSimulation, mode]);
-
 
 
   return (
@@ -724,6 +730,16 @@ export default function OpportunityDetails() {
             ) : null}
           </View>
         )}
+
+        {userId == null && (
+          <View style={{ backgroundColor: c.surface, borderColor: c.border, borderWidth: 1, borderRadius: 12, padding: 12 }}>
+            <Text style={{ color: c.text.primary, fontWeight: '700' }}>Sign in required</Text>
+            <Text style={{ color: c.text.secondary, marginTop: 4 }}>
+              Sign in to check your session and apply.
+            </Text>
+          </View>
+        )}
+
 
         {/* CTAs */}
         <View style={{ flexDirection: "row", columnGap: 12, rowGap: 12, flexWrap: "wrap", marginTop: 4 }}>

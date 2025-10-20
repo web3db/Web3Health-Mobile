@@ -1,27 +1,39 @@
 import Chip from '@/src/components/ui/Chip';
 import { bmiCategory, computeBMI, useProfileStore } from '@/src/store/useProfileStore';
 import { useThemeColors } from '@/src/theme/useThemeColors';
-import React, { useCallback } from 'react';
+import React, { useMemo } from 'react';
 import { Text, TextInput, View } from 'react-native';
+
+function unitLabels(measurementSystemId?: number | null) {
+  // Fallback to Metric if unknown
+  if (measurementSystemId === 2) return { height: 'in', weight: 'lb' };
+  return { height: 'cm', weight: 'kg' };
+}
 
 export default function BodyMetricsCard() {
   const c = useThemeColors();
-  const { profile, update, toggleUnits } = useProfileStore();
+  const { profile, edits, updateLocal } = useProfileStore();
 
-  // ❗ Hooks must be called before any conditional return
-  const setUnits = useCallback((u: 'metric' | 'imperial') => {
-    toggleUnits(u);
-  }, [toggleUnits]);
+  // ✅ Hooks (and all derived values used by hooks) must run before any early return
+  const msId = (edits.MeasurementSystemId ?? profile?.MeasurementSystemId ?? 1) as number;
+  const { height: heightUnit, weight: weightUnit } = unitLabels(msId);
 
-  if (!profile) return null;
+  const heightVal = edits.HeightNum ?? profile?.HeightNum ?? null;
+  const weightVal = edits.WeightNum ?? profile?.WeightNum ?? null;
 
-  const bmi = computeBMI(
-    profile.height.value ?? null,
-    profile.height.unit,
-    profile.weight.value ?? null,
-    profile.weight.unit
-  );
+  const bmi = useMemo(() => {
+    return computeBMI(
+      heightVal,
+      heightUnit as 'cm' | 'in',
+      weightVal,
+      weightUnit as 'kg' | 'lb'
+    );
+  }, [heightVal, heightUnit, weightVal, weightUnit]);
+
   const cat = bmiCategory(bmi);
+
+  // You can still bail from rendering after hooks have run
+  if (!profile) return null;
 
   return (
     <View style={{
@@ -30,8 +42,16 @@ export default function BodyMetricsCard() {
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
         <Text style={{ color: c.text.primary, fontSize: 16, fontWeight: '700' }}>Body metrics</Text>
         <View style={{ flexDirection: 'row', gap: 8 }}>
-          <Chip label="Metric"   selected={profile.units === 'metric'}   onPress={() => setUnits('metric')} />
-          <Chip label="Imperial" selected={profile.units === 'imperial'} onPress={() => setUnits('imperial')} />
+          <Chip
+            label="Metric"
+            selected={msId === 1}
+            onPress={() => updateLocal({ MeasurementSystemId: 1 /* optionally set HeightUnitId/WeightUnitId here */ })}
+          />
+          <Chip
+            label="Imperial"
+            selected={msId === 2}
+            onPress={() => updateLocal({ MeasurementSystemId: 2 /* optionally set HeightUnitId/WeightUnitId here */ })}
+          />
         </View>
       </View>
 
@@ -39,17 +59,17 @@ export default function BodyMetricsCard() {
       <View style={{ flexDirection: 'row', gap: 10 }}>
         <View style={{ flex: 1 }}>
           <Text style={{ color: c.text.secondary, marginBottom: 6 }}>
-            Height ({profile.height.unit})
+            Height ({heightUnit})
           </Text>
           <TextInput
-            value={profile.height.value != null ? String(profile.height.value) : ''}
+            value={heightVal != null ? String(heightVal) : ''}
             onChangeText={(t) => {
               const n = Number(t);
-              update({ height: { value: Number.isFinite(n) ? n : null, unit: profile.height.unit } });
+              updateLocal({ HeightNum: Number.isFinite(n) ? n : undefined });
             }}
             keyboardType="number-pad"
             inputMode="numeric"
-            placeholder={profile.height.unit === 'cm' ? '175' : '69'}
+            placeholder={heightUnit === 'cm' ? '175' : '69'}
             placeholderTextColor={c.text.muted}
             style={{
               color: c.text.primary,
@@ -62,17 +82,17 @@ export default function BodyMetricsCard() {
 
         <View style={{ flex: 1 }}>
           <Text style={{ color: c.text.secondary, marginBottom: 6 }}>
-            Weight ({profile.weight.unit})
+            Weight ({weightUnit})
           </Text>
           <TextInput
-            value={profile.weight.value != null ? String(profile.weight.value) : ''}
+            value={weightVal != null ? String(weightVal) : ''}
             onChangeText={(t) => {
               const n = Number(t);
-              update({ weight: { value: Number.isFinite(n) ? n : null, unit: profile.weight.unit } });
+              updateLocal({ WeightNum: Number.isFinite(n) ? n : undefined });
             }}
             keyboardType="number-pad"
             inputMode="numeric"
-            placeholder={profile.weight.unit === 'kg' ? '72' : '159'}
+            placeholder={weightUnit === 'kg' ? '72' : '159'}
             placeholderTextColor={c.text.muted}
             style={{
               color: c.text.primary,

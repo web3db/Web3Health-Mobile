@@ -10,6 +10,11 @@ export interface MeasureWeight {
   unit: 'kg' | 'lb';
 }
 
+export type {
+  PatchUserBody,
+  ProfileEdit, UserProfile
+} from "@/src/services/profile/api";
+
 export interface Profile {
   id: string;
   displayName?: string;

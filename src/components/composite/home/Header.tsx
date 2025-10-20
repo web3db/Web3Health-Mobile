@@ -1,4 +1,5 @@
 import Avatar from '@/src/components/ui/Avatar';
+import { useProfileStore } from '@/src/store/useProfileStore';
 import { useTrackingStore } from '@/src/store/useTrackingStore';
 import { useThemeColors } from '@/src/theme/useThemeColors';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -10,6 +11,19 @@ export default function Header() {
   const c = useThemeColors();
   const router = useRouter();
 
+  // 🔹 read only what we need to avoid extra re-renders
+  const rawName = useProfileStore(s => s.profile?.Name ?? null);
+  const rawEmail = useProfileStore(s => s.profile?.Email ?? null);
+
+  // "Welcome, Mohit" if available, else just "Welcome"
+  const welcomeLine = useMemo(() => {
+    const candidate = (rawName?.trim()?.length ? rawName!.trim() : null)
+      ?? (rawEmail && rawEmail.includes('@') ? rawEmail.split('@')[0] : null);
+    if (!candidate) return 'Welcome';
+    const first = candidate.split(/\s+/)[0]; // first name only
+    return `Welcome, ${first}`;
+  }, [rawName, rawEmail]);
+
   const {
     hcInitialized,
     hcAvailable,
@@ -20,7 +34,6 @@ export default function Header() {
     hcError,
   } = useTrackingStore();
 
-  // Status line logic
   const status = useMemo(() => {
     if (Platform.OS !== 'android') {
       return { label: 'Health Connect is Android-only', tint: c.text.muted, action: null as null | 'none' };
@@ -47,7 +60,6 @@ export default function Header() {
   const onPrimaryAction = async () => {
     if (status.action === 'refresh') await hcRefresh();
     if (status.action === 'grant') await hcGrantAll();
-    // 'settings' is surfaced via the drawer/screen; we avoid extra button here.
   };
 
   const date = new Date().toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
@@ -65,7 +77,9 @@ export default function Header() {
     >
       <View>
         <Text style={{ color: c.text.secondary, fontSize: 12 }}>{date}</Text>
-        <Text style={{ color: c.text.primary, fontSize: 22, fontWeight: '800' }}>Welcome</Text>
+        <Text style={{ color: c.text.primary, fontSize: 22, fontWeight: '800' }}>
+          {welcomeLine}
+        </Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
           <Dot color={status.tint} />
           <Text style={{ color: c.text.muted, fontSize: 11 }}>{status.label}</Text>

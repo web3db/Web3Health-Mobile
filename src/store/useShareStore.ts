@@ -7,7 +7,7 @@ import { Alert, AppState, Platform, ToastAndroid } from 'react-native';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-import { cancelShareSession, createSession, getSessionByPosting } from '@/src/services/sharing/api';
+import { cancelShareSession, createSession, getSessionByPosting, getSharingDashboard } from '@/src/services/sharing/api';
 
 import {
   computeWindowForDayIndex,
@@ -33,6 +33,13 @@ import { GRACE_WAIT_MS, getShareRuntimeConfig } from '@/src/services/sharing/con
 import type { ShareSessionState, ShareStatus } from '@/src/services/sharing/types';
 
 const TAG = '[SHARE][Store]';
+
+// Debug gating (silent by default)
+const SHARE_DEBUG = __DEV__ && process.env.EXPO_PUBLIC_SHARE_DEBUG === '1';
+
+// Global readiness switch (set true post-login, set false on sign-out)
+const isShareReady = () => (globalThis as any).__SHARE_READY__ === true;
+
 
 type WindowRef = { dayIndex: number; fromUtc: string; toUtc: string };
 
@@ -61,6 +68,16 @@ type StoreState = {
   // metric map (MetricCode -> MetricId)
   metricMap: Partial<Record<MetricCode, number>>;
 
+  dashboard?: {
+    userId: number;
+    userDisplayName: string | null;
+    sharedPostingsCount: number;
+    activeCount: number;
+    completedCount: number;
+    cancelledCount: number;
+  };
+  fetchDashboard: (userId: number) => Promise<void>;
+
   // actions
   startSession: (
     postingId: number,
@@ -84,6 +101,7 @@ type StoreState = {
   enterSimulation: () => void;
   simulateNextDay: () => Promise<void>;
   exitSimulation: () => void;
+
 };
 
 const nowISO = () => new Date().toISOString();
@@ -135,7 +153,7 @@ const initialEngine: ShareSessionState = {
 
 const STORE_NAME = 'share-store-v2';
 
-const partialize = (s: StoreState): Partial<StoreState> => ({
+const basePartialize = (s: StoreState): Partial<StoreState> => ({
   sessionId: s.sessionId,
   postingId: s.postingId,
   userId: s.userId,
@@ -187,7 +205,7 @@ export const useShareStore = create<StoreState>()(
       status: 'PAUSED',
       metricMap: {},
       engine: { ...initialEngine },
-
+      dashboard: undefined,
       async startSession(postingId, userId, metricMap, segmentsExpected) {
         try {
           console.log(TAG, 'startSession → begin', { postingId, userId, segmentsExpected, metricMap });
@@ -317,6 +335,11 @@ export const useShareStore = create<StoreState>()(
       },
 
       async sendFirstSegment() {
+
+        if (!isShareReady()) {
+          if (SHARE_DEBUG) console.log(`${TAG} sendFirstSegment → not ready; skipping`);
+          return;
+        }
         const st = get();
         if (!st.sessionId || !st.postingId || !st.userId || !st.cycleAnchorUtc || !st.joinTimeLocalISO) return;
 
@@ -383,6 +406,11 @@ export const useShareStore = create<StoreState>()(
       },
 
       async sendNextIfDue() {
+        if (!isShareReady()) {
+          if (SHARE_DEBUG) console.log(`${TAG} sendNextIfDue → not ready; skipping`);
+          return;
+        }
+
         const st = get();
         if (!st.sessionId || st.status !== 'ACTIVE') return;
 
@@ -427,6 +455,11 @@ export const useShareStore = create<StoreState>()(
       },
 
       async catchUpIfNeeded() {
+        if (!isShareReady()) {
+          if (SHARE_DEBUG) console.log(`${TAG} catchUpIfNeeded → not ready; skipping`);
+          return;
+        }
+
         const st = get();
         if (!st.sessionId || st.status !== 'ACTIVE') return;
 
@@ -457,6 +490,11 @@ export const useShareStore = create<StoreState>()(
 
       // Call this on focus + short interval (e.g., 5s in DEV, 60s in PROD)
       async tick() {
+        if (!isShareReady()) {
+          if (SHARE_DEBUG) console.log(`${TAG} tick → not ready; skipping`);
+          return;
+        }
+
         const st = get();
         if (__DEV__) console.log(`${TAG} tick → engine gate`, { status: st.engine.status, storeStatus: st.status });
 
@@ -565,6 +603,11 @@ export const useShareStore = create<StoreState>()(
       },
 
       async simulateNextDay() {
+        if (!isShareReady()) {
+          if (SHARE_DEBUG) console.log(`${TAG} simulateNextDay → not ready; skipping`);
+          return;
+        }
+
         const st = get();
         if (!testFlags.TEST_MODE) return;
         if (st.engine.mode !== 'SIM') {
@@ -728,13 +771,35 @@ export const useShareStore = create<StoreState>()(
         }
       },
 
+      async fetchDashboard(userId: number) {
+        try {
+          const data = await getSharingDashboard(userId);
+          set({
+            dashboard: {
+              userId: data.userId,
+              userDisplayName: data.userDisplayName ?? null,
+              sharedPostingsCount: data.sharedPostingsCount ?? 0,
+              activeCount: data.activeCount ?? 0,
+              completedCount: data.completedCount ?? 0,
+              cancelledCount: data.cancelledCount ?? 0,
+            },
+          });
+        } catch (e) {
+          console.warn('[Sharing][Dashboard] load error', e);
+          // optional: set({ dashboard: undefined })
+        }
+      },
+
     }),
 
     {
       name: STORE_NAME,
       version,
       storage: createJSONStorage(() => AsyncStorage),
-      partialize,
+      partialize: (s) => ({
+        ...basePartialize(s),
+        dashboard: s.dashboard, // <-- persist dashboard too
+      }),
       migrate,
       onRehydrateStorage: () => (_rehydratedState, error) => {
         if (error) {
@@ -744,7 +809,26 @@ export const useShareStore = create<StoreState>()(
 
         try {
           const s = useShareStore.getState();
-          if (__DEV__) {
+          // if (__DEV__) {
+          //   console.log(`${TAG} rehydrated`, {
+          //     ok: true,
+          //     sessionId: s?.sessionId,
+          //     status: s?.status,
+          //     engine: s?.engine && {
+          //       status: s.engine.status,
+          //       mode: s.engine.mode,
+          //       cycleAnchorUtc: s.engine.cycleAnchorUtc,
+          //       lastSentDayIndex: s.engine.lastSentDayIndex,
+          //       nextRetryAtUtc: s.engine.nextRetryAtUtc,
+          //       noDataRetryCount: s.engine.noDataRetryCount,
+          //       graceAppliedForDay: s.engine.graceAppliedForDay,
+          //     },
+          //     originalCycleAnchorUtc: s?.originalCycleAnchorUtc,
+          //   });
+          // }
+
+          if (SHARE_DEBUG) {
+            // eslint-disable-next-line no-console
             console.log(`${TAG} rehydrated`, {
               ok: true,
               sessionId: s?.sessionId,
@@ -761,6 +845,7 @@ export const useShareStore = create<StoreState>()(
               originalCycleAnchorUtc: s?.originalCycleAnchorUtc,
             });
           }
+
 
           if (
             s.engine?.status === 'ACTIVE' &&

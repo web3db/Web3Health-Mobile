@@ -9,21 +9,14 @@ const TAG = '[SHARE][Focus]';
 
 /**
  * Polls tick() only while sharing is ACTIVE and engine is in NORMAL mode.
- * - NORMAL mode: tick on focus + foreground + interval (fast in DEV, slower in PROD).
- * - SIM mode or simulationLock: NO auto-interval and NO auto-tick on focus/foreground.
- *   (User drives progression via the Dev Panel to avoid racing/double-ticks.)
+ * - NORMAL: tick on focus + foreground + interval (fast in DEV, slower in PROD)
+ * - SIM or simulationLock: NO auto-interval and NO auto-tick on focus/foreground
  */
 export function useAppFocusSharingTick(activePollSeconds: number = (__DEV__ ? 5 : 60)) {
-  const tick = useShareStore((s) => s.tick);
-  const sessionId = useShareStore((s) => s.sessionId);
-  const storeStatus = useShareStore((s) => s.status); // 'ACTIVE' | 'PAUSED' | 'CANCELLED' | 'COMPLETE'
-  const engine = useShareStore((s) => s.engine);
+  // Read the *function* once per call; use getState() inside effects to avoid dep churn.
+  const tickFn = useShareStore((s) => s.tick);
 
-  const isStoreActive = !!sessionId && storeStatus === 'ACTIVE';
-  const isNormalMode = engine?.mode === 'NORMAL' && !engine?.simulationLock;
-  const shouldRunInterval = isStoreActive && isNormalMode;
-
-  // In React Native, setInterval returns a number (not NodeJS.Timer)
+  // In React Native, setInterval returns a number
   const intervalRef = useRef<number | null>(null);
 
   // One-time runtime banner so you know sim knobs are set right
@@ -34,13 +27,21 @@ export function useAppFocusSharingTick(activePollSeconds: number = (__DEV__ ? 5 
     }
   }, []);
 
-  // Helper: small debug snapshot from store (no re-render)
+  // Pure guard: evaluate on demand (NO state subscriptions here)
+  const canAutoTick = useCallback(() => {
+    const s = useShareStore.getState();
+    const eng = s.engine;
+    const isStoreActive = !!s.sessionId && s.status === 'ACTIVE';
+    const isNormalMode = eng?.mode === 'NORMAL' && !eng?.simulationLock;
+    return isStoreActive && isNormalMode;
+  }, []);
+
   const logStateSnapshot = useCallback(() => {
     if (!__DEV__) return;
     const s = useShareStore.getState();
     const eng = s.engine;
-    console.log(TAG, shouldRunInterval ? 'snapshot (active)' : 'snapshot (idle)', {
-      status: s.status,                 // ACTIVE | PAUSED | CANCELLED | COMPLETE
+    console.log(TAG, canAutoTick() ? 'snapshot (active)' : 'snapshot (idle)', {
+      status: s.status,
       sessionId: s.sessionId,
       postingId: s.postingId,
       userId: s.userId,
@@ -49,41 +50,40 @@ export function useAppFocusSharingTick(activePollSeconds: number = (__DEV__ ? 5 
         status: eng.status,
         mode: eng.mode,
         simulationLock: !!eng.simulationLock,
-        cycleAnchorUtcISO: new Date(eng.cycleAnchorUtc).toISOString(),
-        lastSentDayIndex: eng.lastSentDayIndex,
-        segmentsSent: eng.segmentsSent,
-        currentDueDayIndex: eng.currentDueDayIndex,
-        noDataRetryCount: eng.noDataRetryCount,
-        nextRetryAtISO: eng.nextRetryAtUtc ? new Date(eng.nextRetryAtUtc).toISOString() : null,
-        graceAppliedForDay: eng.graceAppliedForDay,
+        cycleAnchorUtcISO: eng?.cycleAnchorUtc ? new Date(eng.cycleAnchorUtc).toISOString() : null,
+        lastSentDayIndex: eng?.lastSentDayIndex,
+        segmentsSent: eng?.segmentsSent,
+        currentDueDayIndex: eng?.currentDueDayIndex,
+        noDataRetryCount: eng?.noDataRetryCount,
+        nextRetryAtISO: eng?.nextRetryAtUtc ? new Date(eng.nextRetryAtUtc).toISOString() : null,
+        graceAppliedForDay: eng?.graceAppliedForDay,
       },
     });
-  }, [shouldRunInterval]);
+  }, [canAutoTick]);
 
-  // Run when screen gains focus
+  // Focus-driven tick/interval: depends ONLY on poll seconds (stable while focused)
   useFocusEffect(
     useCallback(() => {
       if (__DEV__) {
         console.log(
           TAG,
-          `focus → ${shouldRunInterval ? 'tick() + start interval' : 'no auto-tick (SIM or inactive)'}`,
+          `focus → ${canAutoTick() ? 'tick() + start interval' : 'no auto-tick (SIM or inactive)'}`,
           { activePollSeconds }
         );
       }
 
       logStateSnapshot();
 
-      // Only auto-tick on focus when NORMAL mode (prevents race during SIM/manual steps)
-      if (shouldRunInterval) {
-        tick();
-      }
-
-      // Start interval only while NORMAL mode + ACTIVE
-      if (shouldRunInterval) {
+      if (canAutoTick()) {
+        // one eager tick on focus
+        tickFn();
+        // start interval (once per focus)
         const id = setInterval(() => {
-          if (__DEV__) console.log(TAG, 'interval (active,NORMAL) → tick()');
-          logStateSnapshot();
-          tick();
+          if (canAutoTick()) {
+            if (__DEV__) console.log(TAG, 'interval → tick()');
+            logStateSnapshot();
+            tickFn();
+          }
         }, activePollSeconds * 1000) as unknown as number;
         intervalRef.current = id;
       }
@@ -96,30 +96,28 @@ export function useAppFocusSharingTick(activePollSeconds: number = (__DEV__ ? 5 
           intervalRef.current = null;
         }
       };
-    }, [tick, activePollSeconds, shouldRunInterval, logStateSnapshot])
+    }, [activePollSeconds, canAutoTick, logStateSnapshot, tickFn])
   );
 
-  // Also listen to OS app state (foreground events)
+  // AppState foreground tick: subscribe ONCE, decide at call time
   useEffect(() => {
     const onChange = (state: AppStateStatus) => {
       if (state === 'active') {
         if (__DEV__) {
           console.log(
             TAG,
-            `AppState active → ${shouldRunInterval ? 'tick() (NORMAL)' : 'no auto-tick (SIM or inactive)'}`
+            `AppState active → ${canAutoTick() ? 'tick() (NORMAL)' : 'no auto-tick (SIM or inactive)'}`
           );
         }
         logStateSnapshot();
-
-        // Only auto-tick on foreground when NORMAL mode
-        if (shouldRunInterval) {
-          tick();
+        if (canAutoTick()) {
+          tickFn();
         }
       }
     };
+
     const sub = AppState.addEventListener('change', onChange);
-    return () => {
-      sub.remove?.();
-    };
-  }, [tick, logStateSnapshot, shouldRunInterval]);
+    return () => sub.remove?.();
+    // ⬇️ No store-driven deps here—read from getState() inside handlers
+  }, [canAutoTick, logStateSnapshot, tickFn]);
 }
