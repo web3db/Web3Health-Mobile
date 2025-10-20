@@ -43,7 +43,10 @@ function Button({
   const c = useThemeColors();
   const isDisabled = disabled || loading;
 
-  const paddings: Record<ButtonSize, { px: number; py: number; radius: number; gap: number; font: number }> = {
+  const paddings: Record<
+    ButtonSize,
+    { px: number; py: number; radius: number; gap: number; font: number }
+  > = {
     sm: { px: 12, py: 8, radius: 10, gap: 6, font: 14 },
     md: { px: 14, py: 12, radius: 12, gap: 8, font: 16 },
     lg: { px: 16, py: 14, radius: 14, gap: 10, font: 18 },
@@ -109,7 +112,12 @@ function Button({
           style,
         ]}
       >
-        {leftIcon}
+        {typeof leftIcon === "string" ? (
+          <Text style={{ color: textColor }}>{leftIcon}</Text>
+        ) : (
+          leftIcon
+        )}
+
         {loading ? (
           <ActivityIndicator size="small" color={textColor} />
         ) : (
@@ -122,7 +130,12 @@ function Button({
             {title}
           </Text>
         )}
-        {rightIcon}
+
+        {typeof rightIcon === "string" ? (
+          <Text style={{ color: textColor }}>{rightIcon}</Text>
+        ) : (
+          rightIcon
+        )}
       </View>
     </Pressable>
   );

@@ -612,9 +612,10 @@ export default function OpportunityDetails() {
                 </View>
               ) : (
                 <Text style={{ color: c.text.secondary }}>
-                  Metrics: {metricIdsArr.join(", ")}
+                  Metrics: {metricIdsArr.length ? metricIdsArr.join(", ") : '—'}
                 </Text>
               )}
+
             </View>
           );
         })()}
