@@ -6,14 +6,15 @@ import { useAuthStore } from '@/src/store/useAuthStore';
 import { useRegisterStore } from '@/src/store/useRegisterStore';
 import { useThemeColors } from '@/src/theme/useThemeColors';
 import { RegisterFormSchema } from '@/src/utils/validation';
-import { useUser } from '@clerk/clerk-expo';
+import { useAuth, useUser } from '@clerk/clerk-expo';
+import { useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import { Alert, ScrollView, Text, TextInput, View } from 'react-native';
-
 export default function RegisterForm() {
   const c = useThemeColors();
   const { user } = useUser();
-
+  const router = useRouter();
+  const { signOut } = useAuth();
   const {
     name, birthYear,
     email, clerkId,
@@ -70,6 +71,8 @@ export default function RegisterForm() {
       useAuthStore.getState().setUserId(created.userId);
       Alert.alert('Success', 'Your profile has been created.');
       reset();
+      await signOut();
+
     } catch (e: any) {
       Alert.alert('Register failed', e?.message || 'Failed to register.');
     } finally {

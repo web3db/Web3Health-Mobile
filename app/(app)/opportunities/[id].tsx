@@ -288,8 +288,8 @@ export default function OpportunityDetails() {
           const legacyFn = loadById as unknown as (a: string) => any;
           return legacyFn(String(id));
         });
-
-        if (mounted && fetched && (!item || item.id !== fetched.id)) {
+        // always prefer fresh fetched data, even if the same id
+        if (mounted && fetched) {
           setItem(fetched);
         } else if (__DEV__ && mounted && !fetched && cached) {
           console.log("[OpportunityDetails] using cached list-level item");

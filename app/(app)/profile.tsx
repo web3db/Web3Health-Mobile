@@ -10,13 +10,9 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-// If you use Zustand's shallow import, you can import it and apply to selectors
-// import { shallow } from 'zustand/shallow';
 
 export default function ProfileScreen() {
   const c = useThemeColors();
-
-  // ✅ Select only what this screen needs (prevents global re-renders)
   const profile = useProfileStore((s) => s.profile);
   const loading = useProfileStore((s) => s.loading);
   const error   = useProfileStore((s) => s.error);
@@ -27,7 +23,6 @@ export default function ProfileScreen() {
 
   const [saving, setSaving] = useState(false);
 
-  // ✅ Call fetch exactly once on mount; avoid [fetch] as a dep (can change identity)
   const fetchRef = useRef(fetch);
   useEffect(() => {
     fetchRef.current();

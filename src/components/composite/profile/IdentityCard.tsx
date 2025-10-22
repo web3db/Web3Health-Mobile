@@ -1,9 +1,11 @@
 import Chip from '@/src/components/ui/Chip';
-import { getRaces, getSexes, type Option } from '@/src/services/profile/api';
+import { getHealthConditions, getRaces, getSexes, type Option } from '@/src/services/profile/api';
 import { useProfileStore } from '@/src/store/useProfileStore';
 import { useThemeColors } from '@/src/theme/useThemeColors';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Text, View } from 'react-native';
+
+type HCRow = { HealthConditionId: number; DisplayName?: string | null; Code?: string | null };
 
 export default function IdentityCard() {
   const c = useThemeColors();
@@ -11,6 +13,7 @@ export default function IdentityCard() {
 
   const [sexes, setSexes] = useState<Option[]>([]);
   const [races, setRaces] = useState<Option[]>([]);
+  const [healthConds, setHealthConds] = useState<Option[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -20,10 +23,15 @@ export default function IdentityCard() {
     (async () => {
       try {
         setLoading(true);
-        const [sx, rc] = await Promise.all([getSexes(), getRaces()]);
+        const [sx, rc, hc] = await Promise.all([
+          getSexes(),
+          getRaces(),
+          getHealthConditions(), // must return Option[]
+        ]);
         if (!mounted) return;
         setSexes(sx);
         setRaces(rc);
+        setHealthConds(hc);
         setErr(null);
       } catch (e: any) {
         if (!mounted) return;
@@ -32,34 +40,41 @@ export default function IdentityCard() {
         if (mounted) setLoading(false);
       }
     })();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   // current values (null-safe)
-  const sexId  = edits?.SexId  ?? profile?.SexId  ?? null;
+  const sexId = edits?.SexId ?? profile?.SexId ?? null;
   const raceId = edits?.RaceId ?? profile?.RaceId ?? null;
+  const isReady = !!profile;
+  // selected HealthCondition ids from store.edits (fallback to profile)
+  const selectedHCIds: number[] = useMemo(() => {
+    if (Array.isArray(edits?.selectedHealthConditionIds)) {
+      return edits.selectedHealthConditionIds!;
+    }
+    const list = (profile?.HealthConditions as { HealthConditionId: number }[] | undefined) ?? [];
+    return list.map(r => r.HealthConditionId).filter((n): n is number => Number.isFinite(n));
+  }, [edits?.selectedHealthConditionIds, profile?.HealthConditions]);
 
-  // map id → label helpers
+  const toggleHC = (id: number) => {
+    if (!isReady) return;
+    const set = new Set(selectedHCIds);
+    set.has(id) ? set.delete(id) : set.add(id);
+    updateLocal?.({ selectedHealthConditionIds: Array.from(set) });
+  };
+
   const findLabel = (opts: Option[] | undefined, id: number | null) =>
     (id != null ? opts?.find(o => o.id === id)?.label : undefined);
 
-  const sexLabelSelected  = findLabel(sexes, sexId);
   const raceLabelSelected = findLabel(races, raceId);
 
-  // ✅ Use API shape: profile.HealthConditions (capital H)
-  // Expected item shape: { HealthConditionId, DisplayName?, Code? ... }
-  const hcLabels: string[] = useMemo(() => {
-    const list =
-      (profile?.HealthConditions as
-        | { HealthConditionId: number; DisplayName?: string | null; Code?: string | null }[]
-        | undefined) ?? [];
-
-    return list
-      .map(o => (o?.DisplayName?.trim() || o?.Code?.trim() || ''))
-      .filter(Boolean);
-  }, [profile?.HealthConditions]);
-
-  const isReady = !!profile;
+  const selectedHCLabels = useMemo(() => {
+    if (!selectedHCIds.length) return [];
+    const map = new Map(healthConds.map(o => [o.id, o.label]));
+    return selectedHCIds.map(id => map.get(id)).filter(Boolean) as string[];
+  }, [selectedHCIds, healthConds]);
 
   return (
     <View
@@ -126,18 +141,31 @@ export default function IdentityCard() {
         ) : null}
       </View>
 
-      {/* Health Conditions (show selected labels if present; none otherwise) */}
+      {/* Health Conditions — now editable multi-select */}
       <View style={{ gap: 6, marginTop: 8 }}>
         <Text style={{ color: c.text.secondary, marginBottom: 4 }}>Health Conditions</Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-          {hcLabels.length ? (
-            hcLabels.map((lbl, i) => (
-              <Chip key={`${lbl}-${i}`} label={lbl} selected={true} onPress={() => {}} />
-            ))
+          {loading && healthConds.length === 0 ? (
+            <Text style={{ color: c.text.muted }}>Loading…</Text>
+          ) : healthConds.length === 0 ? (
+            <Text style={{ color: c.text.muted }}>None available</Text>
           ) : (
-            <Text style={{ color: c.text.muted }}>None</Text>
+            healthConds.map(h => (
+              <Chip
+                key={h.id}
+                label={h.label}
+                selected={selectedHCIds.includes(h.id)}
+                onPress={() => toggleHC(h.id)}
+              />
+            ))
           )}
         </View>
+
+        {selectedHCLabels.length > 0 ? (
+          <Text style={{ color: c.text.muted, fontSize: 12, marginTop: 2 }}>
+            Selected: {selectedHCLabels.join(', ')}
+          </Text>
+        ) : null}
       </View>
     </View>
   );

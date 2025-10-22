@@ -1,4 +1,6 @@
+// Header.tsx
 import Avatar from '@/src/components/ui/Avatar';
+import { selectEmail as selectAuthEmail, selectName as selectAuthName, useAuthStore } from '@/src/store/useAuthStore'; // ⬅️ NEW
 import { useProfileStore } from '@/src/store/useProfileStore';
 import { useTrackingStore } from '@/src/store/useTrackingStore';
 import { useThemeColors } from '@/src/theme/useThemeColors';
@@ -11,18 +13,31 @@ export default function Header() {
   const c = useThemeColors();
   const router = useRouter();
 
-  // 🔹 read only what we need to avoid extra re-renders
-  const rawName = useProfileStore(s => s.profile?.Name ?? null);
+  // 🔹 minimal selectors to avoid re-renders
+  const authName  = useAuthStore(selectAuthName);    
+  const authEmail = useAuthStore(selectAuthEmail);   
+
+  const rawName  = useProfileStore(s => s.profile?.Name ?? null);
   const rawEmail = useProfileStore(s => s.profile?.Email ?? null);
 
-  // "Welcome, Mohit" if available, else just "Welcome"
   const welcomeLine = useMemo(() => {
-    const candidate = (rawName?.trim()?.length ? rawName!.trim() : null)
-      ?? (rawEmail && rawEmail.includes('@') ? rawEmail.split('@')[0] : null);
-    if (!candidate) return 'Welcome';
-    const first = candidate.split(/\s+/)[0]; // first name only
-    return `Welcome, ${first}`;
-  }, [rawName, rawEmail]);
+    // Prefer auth.name (instant), then profile.Name, then email local-part
+    const primary =
+      (authName && authName.trim()) ||
+      (rawName && rawName.trim()) ||
+      null;
+
+    if (primary) {
+      const first = primary.split(/\s+/)[0];
+      return `Welcome, ${first}`;
+    }
+
+    const email = authEmail || rawEmail || null;
+    if (email && email.includes('@')) {
+      return `Welcome, ${email.split('@')[0]}`;
+    }
+    return 'Welcome';
+  }, [authName, authEmail, rawName, rawEmail]);
 
   const {
     hcInitialized,
@@ -65,16 +80,7 @@ export default function Header() {
   const date = new Date().toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 
   return (
-    <View
-      style={{
-        paddingHorizontal: 16,
-        paddingTop: 8,
-        paddingBottom: 12,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-      }}
-    >
+    <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
       <View>
         <Text style={{ color: c.text.secondary, fontSize: 12 }}>{date}</Text>
         <Text style={{ color: c.text.primary, fontSize: 22, fontWeight: '800' }}>
@@ -90,10 +96,7 @@ export default function Header() {
         {status.action && status.action !== 'none' ? (
           <Pressable onPress={onPrimaryAction} hitSlop={8} style={{ padding: 4 }}>
             <Ionicons
-              name={
-                status.action === 'refresh' ? 'refresh' :
-                status.action === 'grant'   ? 'key-outline' : 'settings-outline'
-              }
+              name={status.action === 'refresh' ? 'refresh' : status.action === 'grant' ? 'key-outline' : 'settings-outline'}
               size={20}
               color={c.text.secondary}
             />
