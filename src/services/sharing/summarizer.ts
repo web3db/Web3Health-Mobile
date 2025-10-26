@@ -275,3 +275,14 @@ export async function summarizeWindow(
     return null;
   }
 }
+
+export async function checkMetricPermissionsForMap(
+  metricMap: Partial<Record<MetricCode, number>>
+): Promise<{ ok: boolean; missing: MetricCode[] }> {
+  const present = (Object.keys(metricMap ?? {}) as MetricCode[]).filter(Boolean);
+  const missing: MetricCode[] = [];
+  for (const m of present) {
+    if (!(await permissionOk(m))) missing.push(m);
+  }
+  return { ok: missing.length === 0, missing };
+}

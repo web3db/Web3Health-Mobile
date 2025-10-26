@@ -9,24 +9,35 @@
 // • After 3 consecutive no-data retries on the same day → status = CANCELLED.
 // • On successful upload → clear retries, advance lastSentDayIndex, increment segmentsSent.
 
-import { uploadSegment } from './api';
+import { uploadSegment } from "./api";
 import {
   GRACE_WAIT_MS,
   MAX_RETRIES,
   RETRY_INTERVAL_MS,
   getShareRuntimeConfig,
-} from './constants';
-import { summarizeWindow, type MetricCode } from './summarizer';
-import type {
-  ShareSessionState,
-  UploadSegmentResult,
-} from './types';
+} from "./constants";
+import { summarizeWindow, type MetricCode } from "./summarizer";
+import type { ShareSessionState, UploadSegmentResult } from "./types";
 
-const TAG = '[SHARE][Producer]';
+const TAG = "[SHARE][Producer]";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Segment payload building (per your existing structure)
-// ─────────────────────────────────────────────────────────────────────────────
+const DEFAULT_UNIT: Record<
+  MetricCode,
+  SegmentPayload["metrics"][number]["unitCode"]
+> = {
+  STEPS: "COUNT",
+  FLOORS: "COUNT",
+  DISTANCE: "M",
+  KCAL: "KCAL",
+  HR: "BPM",
+  SLEEP: "MIN",
+};
+
+export type WindowDiagnostics = {
+  unavailable: MetricCode[]; // permission missing or read error
+  zeroData: MetricCode[]; // readable, but no data in [from,to)
+  hadAnyData: boolean; // at least one metric had meaningful data
+};
 
 export type SegmentPayload = {
   sessionId: number;
@@ -47,11 +58,11 @@ export type SegmentPayload = {
     computedJson?: any;
   }>;
 };
-
 /**
  * Build a segment payload by summarizing each requested metric inside [fromUtc, toUtc).
- * Uses REAL device data only. If any metric shows a meaningful value (total>0 or samples>0),
- * the segment is considered hasData=true.
+ * - Always includes ALL requested metricIds in the payload.
+ * - Marks payload.hasData=true if ANY metric has meaningful data (total>0 or samples>0).
+ * - Returns diagnostics so the caller can message the user.
  */
 export async function buildSegmentPayload(
   window: { fromUtc: string; toUtc: string; dayIndex: number },
@@ -62,21 +73,55 @@ export async function buildSegmentPayload(
     metricMap: Record<MetricCode, number>; // e.g. { STEPS:101, HR:110, KCAL:140 }
     probeOnly?: boolean; // for Day-0 decisions, optional
   }
-): Promise<SegmentPayload> {
+): Promise<{ payload: SegmentPayload; diag: WindowDiagnostics }> {
   const { fromUtc, toUtc, dayIndex } = window;
-  console.log(TAG, 'Building payload', { dayIndex, fromUtc, toUtc });
+  console.log(TAG, "Building payload", { dayIndex, fromUtc, toUtc });
 
-  const metricsOut: SegmentPayload['metrics'] = [];
+  const metricsOut: SegmentPayload["metrics"] = [];
   let anyData = false;
 
-  for (const [code, metricId] of Object.entries(ctx.metricMap) as Array<[MetricCode, number]>) {
-    const s = await summarizeWindow(code, fromUtc, toUtc, ctx.probeOnly ? { probeOnly: true } : undefined);
-    if (!s) continue;
+  const diag: WindowDiagnostics = {
+    unavailable: [],
+    zeroData: [],
+    hadAnyData: false,
+  };
 
+  for (const [code, metricId] of Object.entries(ctx.metricMap) as Array<
+    [MetricCode, number]
+  >) {
+    const s = await summarizeWindow(
+      code,
+      fromUtc,
+      toUtc,
+      ctx.probeOnly ? { probeOnly: true } : undefined
+    );
+
+    // Unreadable metric (no permission / read error) → include placeholder row
+    if (!s) {
+      diag.unavailable.push(code);
+      metricsOut.push({
+        metricId,
+        unitCode: DEFAULT_UNIT[code],
+        totalValue: null,
+        avgValue: null,
+        minValue: null,
+        maxValue: null,
+        samplesCount: 0,
+        computedJson: { status: "UNAVAILABLE" },
+      });
+      continue;
+    }
+
+    // Readable metric: decide if it has meaningful data
     const meaningful =
       (s.totalValue != null && Number(s.totalValue) > 0) ||
       (s.samplesCount != null && Number(s.samplesCount) > 0);
-    anyData = anyData || meaningful;
+
+    if (!meaningful) {
+      diag.zeroData.push(code);
+    } else {
+      anyData = true;
+    }
 
     metricsOut.push({
       metricId,
@@ -86,9 +131,14 @@ export async function buildSegmentPayload(
       minValue: s.minValue ?? null,
       maxValue: s.maxValue ?? null,
       samplesCount: s.samplesCount ?? null,
-      computedJson: s.computedJson ?? null,
+      computedJson: {
+        ...(s.computedJson ?? {}),
+        status: meaningful ? "OK" : "NO_DATA",
+      },
     });
   }
+
+  diag.hadAnyData = anyData;
 
   const payload: SegmentPayload = {
     sessionId: ctx.sessionId,
@@ -101,9 +151,8 @@ export async function buildSegmentPayload(
     metrics: metricsOut,
   };
 
-  console.log(TAG, 'hasData=', anyData, 'metrics=', metricsOut.length);
-  // console.log(TAG, 'Payload ↓\n' + JSON.stringify(payload, null, 2));
-  return payload;
+  console.log(TAG, "hasData=", anyData, "metrics=", metricsOut.length);
+  return { payload, diag };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -116,9 +165,9 @@ function iso(t: number | null | undefined) {
 
 /** Normalize whatever the API returns into an internal UploadSegmentResult shape. */
 function normalizeUploadResult(raw: any): UploadSegmentResult {
-  const hasOk = typeof raw?.ok === 'boolean';
-  const ok = hasOk ? !!raw.ok : (!!raw?.status && !raw?.error);
-  const status = typeof raw?.status === 'string' ? raw.status : undefined;
+  const hasOk = typeof raw?.ok === "boolean";
+  const ok = hasOk ? !!raw.ok : !!raw?.status && !raw?.error;
+  const status = typeof raw?.status === "string" ? raw.status : undefined;
   const error = raw?.error ? String(raw.error) : undefined;
   return { ok, status, error };
 }
@@ -130,7 +179,7 @@ function normalizeUploadResult(raw: any): UploadSegmentResult {
  *  - NO_DATA retries up to MAX_RETRIES, spaced by RETRY_INTERVAL_MS
  *  - CANCELLED after 3 missed retries on that same day
  *
- * Returns the **updated** ShareSessionState for persistence in the store.
+ * Returns { state, diag } so the caller can message the user.
  */
 export async function processDueWindow(
   window: { fromUtc: string; toUtc: string; dayIndex: number },
@@ -142,7 +191,7 @@ export async function processDueWindow(
   },
   state: ShareSessionState,
   nowUtc: number = Date.now()
-): Promise<ShareSessionState> {
+): Promise<{ state: ShareSessionState; diag?: WindowDiagnostics }> {
   // One-time config banner per app lifetime
   if (!(global as any).__SHARE_CONFIG_LOGGED__) {
     (global as any).__SHARE_CONFIG_LOGGED__ = true;
@@ -151,16 +200,16 @@ export async function processDueWindow(
 
   if (state.status !== 'ACTIVE') {
     console.log(TAG, 'skip: status != ACTIVE', { status: state.status, dayIdx: window.dayIndex });
-    return state;
+    return { state };
   }
 
-  // NEW: idempotency/duplicate-guard — never re-send an already-sent index
+  // Idempotency — never re-send an already-sent index
   if (state.lastSentDayIndex != null && window.dayIndex <= state.lastSentDayIndex) {
     console.log(TAG, 'skip: already sent', {
       requestedDayIdx: window.dayIndex,
       lastSentDayIndex: state.lastSentDayIndex,
     });
-    return state;
+    return { state };
   }
 
   if (state.currentDueDayIndex !== window.dayIndex) {
@@ -182,23 +231,24 @@ export async function processDueWindow(
       secondsRemaining: Math.max(0, Math.ceil((state.nextRetryAtUtc - nowUtc) / 1000)),
       noDataRetryCount: state.noDataRetryCount,
     });
-    return state;
+    return { state };
   }
 
-  // One-time grace per new due day to absorb provider write latency
-  // IMPORTANT: do NOT apply grace to Day-0 (that window is midnight→join, not a tick)
+  // One-time grace per new due day to absorb provider write latency (not for Day-0)
   if (window.dayIndex !== 0 && GRACE_WAIT_MS > 0 && state.graceAppliedForDay !== window.dayIndex) {
     console.log(TAG, 'grace-wait', { dayIdx: window.dayIndex, ms: GRACE_WAIT_MS });
     return {
-      ...state,
-      currentDueDayIndex: window.dayIndex,
-      nextRetryAtUtc: nowUtc + GRACE_WAIT_MS,
-      graceAppliedForDay: window.dayIndex,
+      state: {
+        ...state,
+        currentDueDayIndex: window.dayIndex,
+        nextRetryAtUtc: nowUtc + GRACE_WAIT_MS,
+        graceAppliedForDay: window.dayIndex,
+      }
     };
   }
 
-  // Build payload from REAL data
-  const payload = await buildSegmentPayload(window, {
+  // Build payload from REAL data (now returns { payload, diag })
+  const { payload, diag } = await buildSegmentPayload(window, {
     sessionId: ctx.sessionId,
     postingId: ctx.postingId,
     userId: ctx.userId,
@@ -213,13 +263,17 @@ export async function processDueWindow(
         reason: 'NO_DATA_RETRIES_EXHAUSTED',
         failedDayIndex: window.dayIndex,
         retries: newCount,
+        diag,
       });
       return {
-        ...state,
-        status: 'CANCELLED',
-        currentDueDayIndex: window.dayIndex,
-        noDataRetryCount: newCount,
-        nextRetryAtUtc: null,
+        state: {
+          ...state,
+          status: 'CANCELLED',
+          currentDueDayIndex: window.dayIndex,
+          noDataRetryCount: newCount,
+          nextRetryAtUtc: null,
+        },
+        diag,
       };
     }
 
@@ -228,29 +282,31 @@ export async function processDueWindow(
       dayIdx: window.dayIndex,
       noDataRetryCount: newCount,
       nextRetryAtISO: new Date(nextRetryAtUtc).toISOString(),
+      diag,
     });
 
     return {
-      ...state,
-      currentDueDayIndex: window.dayIndex,
-      noDataRetryCount: newCount,
-      nextRetryAtUtc,
+      state: {
+        ...state,
+        currentDueDayIndex: window.dayIndex,
+        noDataRetryCount: newCount,
+        nextRetryAtUtc,
+      },
+      diag,
     };
   }
 
   // Upload segment — pass the FULL SegmentPayload (matches your API expectation)
   const rawRes: any = await uploadSegment(payload as any);
-
-  // Normalize to a stable shape the engine understands
   const res: UploadSegmentResult = normalizeUploadResult(rawRes);
 
   if (res.ok) {
     console.log('[SHARE][API] upload success', {
       dayIndex: payload.dayIndex,
       status: res.status ?? 'ACTIVE',
+      diag,
     });
 
-    // Build next engine snapshot
     const next: ShareSessionState = {
       ...state,
       lastSentDayIndex: payload.dayIndex,
@@ -261,22 +317,19 @@ export async function processDueWindow(
       graceAppliedForDay: null,
     };
 
-    // ✅ Normalize status to COMPLETE when done
     const expected = next.segmentsExpected ?? 0;
     const sent = next.segmentsSent ?? 0;
-    if (res.status === 'COMPLETE' || (expected > 0 && sent >= expected)) {
-      next.status = 'COMPLETE';
-    } else {
-      next.status = 'ACTIVE';
-    }
+    next.status = (res.status === 'COMPLETE' || (expected > 0 && sent >= expected)) ? 'COMPLETE' : 'ACTIVE';
 
-    return next;
+    return { state: next, diag };
   } else {
     console.warn('[SHARE][API] upload failed', {
       dayIndex: payload.dayIndex,
       error: res.error,
+      diag,
     });
-    // Upload errors can have their own retry policy; for now we keep state unchanged.
-    return state;
+    // Keep state unchanged; caller can decide UX
+    return { state, diag };
   }
 }
+

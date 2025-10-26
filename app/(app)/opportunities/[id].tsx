@@ -1,17 +1,30 @@
 // app/opportunities/[id].tsx
 import Button from "@/src/components/ui/Button";
 import Chip from "@/src/components/ui/Chip";
-import { testFlags } from '@/src/config/featureFlags';
+import { testFlags } from "@/src/config/featureFlags";
 import { useCurrentUserId } from "@/src/hooks/useCurrentUserId";
-import { getSessionByPosting } from '@/src/services/sharing/api';
-import { getShareRuntimeConfig } from '@/src/services/sharing/constants';
-import type { MetricCode } from '@/src/services/sharing/summarizer';
+import { getSessionByPosting } from "@/src/services/sharing/api";
+import { getShareRuntimeConfig } from "@/src/services/sharing/constants";
+import {
+  checkMetricPermissionsForMap,
+  type MetricCode,
+} from "@/src/services/sharing/summarizer";
 import { useMarketStore as useMarketplaceStore } from "@/src/store/useMarketStore";
-import { useShareStore } from '@/src/store/useShareStore';
+import {
+  computeNextWindowFromSnapshot,
+  formatTimeLeftLabel,
+  useShareStore,
+} from "@/src/store/useShareStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Alert, Linking, Platform, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 // --- tiny helpers (local to this file to keep it self-contained) ---
@@ -42,6 +55,25 @@ const SUPPORTED: Record<MetricCode, true> = {
   SLEEP: true,
 };
 
+const labelOfMetric = (m: string) => {
+  switch (m) {
+    case "STEPS":
+      return "Steps";
+    case "FLOORS":
+      return "Floors";
+    case "DISTANCE":
+      return "Distance";
+    case "KCAL":
+      return "Active Calories";
+    case "HR":
+      return "Heart Rate";
+    case "SLEEP":
+      return "Sleep";
+    default:
+      return String(m);
+  }
+};
+
 // Normalize names → MetricCode
 function normalizeMetricCode(raw?: string | null): MetricCode | undefined {
   if (!raw) return;
@@ -49,12 +81,13 @@ function normalizeMetricCode(raw?: string | null): MetricCode | undefined {
 
   if ((SUPPORTED as any)[s]) return s as MetricCode;
 
-  if (s.includes('STEP')) return 'STEPS';
-  if (s.includes('FLOOR')) return 'FLOORS';
-  if (s.includes('DISTANCE')) return 'DISTANCE';
-  if (s.includes('KCAL') || s.includes('CALOR') || s.includes('ACTIVE ENERGY')) return 'KCAL';
-  if (s === 'HR' || s.includes('HEART RATE')) return 'HR';
-  if (s.includes('SLEEP')) return 'SLEEP';
+  if (s.includes("STEP")) return "STEPS";
+  if (s.includes("FLOOR")) return "FLOORS";
+  if (s.includes("DISTANCE")) return "DISTANCE";
+  if (s.includes("KCAL") || s.includes("CALOR") || s.includes("ACTIVE ENERGY"))
+    return "KCAL";
+  if (s === "HR" || s.includes("HEART RATE")) return "HR";
+  if (s.includes("SLEEP")) return "SLEEP";
   return;
 }
 
@@ -69,7 +102,7 @@ function buildMetricMapStrict(
     ? (posting.metrics as AnyMetricRow[])
     : [];
 
-  if (__DEV__) console.log('[OppDetails] posting.metrics =', metricsArr);
+  if (__DEV__) console.log("[OppDetails] posting.metrics =", metricsArr);
 
   for (const m of metricsArr) {
     const code =
@@ -83,29 +116,37 @@ function buildMetricMapStrict(
   }
 
   const metricIdsArr: number[] = Array.isArray(posting?.metricIds)
-    ? posting.metricIds as number[]
+    ? (posting.metricIds as number[])
     : [];
 
-  if (__DEV__) console.log('[OppDetails] posting.metricIds =', metricIdsArr);
+  if (__DEV__) console.log("[OppDetails] posting.metricIds =", metricIdsArr);
 
-  if (metricIdsArr.length > 0 && Array.isArray(metricCatalog) && metricCatalog.length > 0) {
+  if (
+    metricIdsArr.length > 0 &&
+    Array.isArray(metricCatalog) &&
+    metricCatalog.length > 0
+  ) {
     const idSet = new Set<number>(metricIdsArr);
-    if (__DEV__) console.log('[OppDetails] metricCatalog size =', metricCatalog.length);
+    if (__DEV__)
+      console.log("[OppDetails] metricCatalog size =", metricCatalog.length);
     for (const row of metricCatalog) {
       const code = normalizeMetricCode(row.code);
       if (code && idSet.has(row.metricId) && SUPPORTED[code]) {
         out[code] = row.metricId;
       }
     }
-  } else if (metricIdsArr.length > 0 && (!metricCatalog || metricCatalog.length === 0)) {
+  } else if (
+    metricIdsArr.length > 0 &&
+    (!metricCatalog || metricCatalog.length === 0)
+  ) {
     if (__DEV__) {
       console.log(
-        '[OppDetails] metricIds present but no catalog provided — cannot resolve codes from IDs yet'
+        "[OppDetails] metricIds present but no catalog provided — cannot resolve codes from IDs yet"
       );
     }
   }
 
-  if (__DEV__) console.log('[OppDetails] buildMetricMapStrict →', out);
+  if (__DEV__) console.log("[OppDetails] buildMetricMapStrict →", out);
   return out;
 }
 
@@ -118,18 +159,25 @@ function windowForDayIndex(anchorISO: string, dayIdx: number) {
   const anchorMs = Date.parse(anchorISO);
   const toMs = anchorMs + dayIdx * ONE_DAY_MS;
   const fromMs = toMs - ONE_DAY_MS;
-  return { fromUtc: new Date(fromMs).toISOString(), toUtc: new Date(toMs).toISOString() };
+  return {
+    fromUtc: new Date(fromMs).toISOString(),
+    toUtc: new Date(toMs).toISOString(),
+  };
 }
 
 function fmtUTC(iso: string) {
-  return new Date(iso).toISOString().replace('.000Z', 'Z');
+  return new Date(iso).toISOString().replace(".000Z", "Z");
 }
 
 function fmtLocal(iso: string) {
   // 24h local for clarity in QA; shows date + time
   return new Date(iso).toLocaleString(undefined, {
-    year: 'numeric', month: 'short', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false,
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
   });
 }
 
@@ -137,71 +185,83 @@ export default function OpportunityDetails() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const c = useThemeColors();
-  const startSession = useShareStore(s => s.startSession);
-  const status = useShareStore(s => s.status);
-  const segmentsExpected = useShareStore(s => s.segmentsExpected);
-  const enterSimulation = useShareStore(s => s.enterSimulation);
-  const simulateNextDay = useShareStore(s => s.simulateNextDay);
-  const exitSimulation = useShareStore(s => s.exitSimulation);
-  const mode = useShareStore(s => s.engine.mode);
-  const cycleAnchorUtc = useShareStore(s => s.cycleAnchorUtc);
-  const originalCycleAnchorUtc = useShareStore(s => s.originalCycleAnchorUtc);
-  const engine = useShareStore(s => s.engine);
-  const setBackdatedAnchorTestOnly = useShareStore(s => s.setBackdatedAnchorTestOnly);
-  const tick = useShareStore(s => s.tick);
-  const catchUpIfNeeded = useShareStore(s => s.catchUpIfNeeded);
-  const sessionId = useShareStore(s => s.sessionId);
+  const startSession = useShareStore((s) => s.startSession);
+  const status = useShareStore((s) => s.status);
+  const segmentsExpected = useShareStore((s) => s.segmentsExpected);
+  const enterSimulation = useShareStore((s) => s.enterSimulation);
+  const simulateNextDay = useShareStore((s) => s.simulateNextDay);
+  const exitSimulation = useShareStore((s) => s.exitSimulation);
+  const mode = useShareStore((s) => s.engine.mode);
+  const cycleAnchorUtc = useShareStore((s) => s.cycleAnchorUtc);
+  const originalCycleAnchorUtc = useShareStore((s) => s.originalCycleAnchorUtc);
+  const engine = useShareStore((s) => s.engine);
+  const setBackdatedAnchorTestOnly = useShareStore(
+    (s) => s.setBackdatedAnchorTestOnly
+  );
+  const tick = useShareStore((s) => s.tick);
+  const catchUpIfNeeded = useShareStore((s) => s.catchUpIfNeeded);
+  const sessionId = useShareStore((s) => s.sessionId);
   const isProcessing = !!engine?.currentDueDayIndex;
   const completed = (engine?.segmentsSent ?? 0) >= (segmentsExpected ?? 0);
   const userId = useCurrentUserId();
-  const {
-    getByIdSafe,
-    savedIds,
-    toggleSave,
-    loadById,
-    loading,
-  } = useMarketplaceStore();
+  const { getByIdSafe, savedIds, toggleSave, loadById, loading } =
+    useMarketplaceStore();
+  const lastDiag = useShareStore((s) => s.lastWindowDiag);
+  const snapshot = useShareStore((s) => s.snapshot);
+  const fetchSessionSnapshot = useShareStore((s) => s.fetchSessionSnapshot);
 
-  const cached = useMemo(() => (id ? getByIdSafe(String(id)) : undefined), [getByIdSafe, id]);
+  const cached = useMemo(
+    () => (id ? getByIdSafe(String(id)) : undefined),
+    [getByIdSafe, id]
+  );
   const [item, setItem] = useState(cached);
   const [sessionLookup, setSessionLookup] = useState<null | {
     sessionId: number;
     statusName?: string | null;
-    source?: 'ACTIVE' | 'LATEST';
+    source?: "ACTIVE" | "LATEST";
   }>(null);
   const [sessionLookupLoading, setSessionLookupLoading] = useState(false);
   function sameLookup(a: typeof sessionLookup, b: typeof sessionLookup) {
     if (a === b) return true;
     if (!a || !b) return false;
-    return a.sessionId === b.sessionId && a.statusName === b.statusName && a.source === b.source;
+    return (
+      a.sessionId === b.sessionId &&
+      a.statusName === b.statusName &&
+      a.source === b.source
+    );
   }
 
-
   // Keep last selected pieces of the share store to detect meaningful changes
-  const shareSnapRef = useRef<{ status: string; sent: number; due: number | null }>({
-    status: String(useShareStore.getState().status ?? ''),
+  const shareSnapRef = useRef<{
+    status: string;
+    sent: number;
+    due: number | null;
+  }>({
+    status: String(useShareStore.getState().status ?? ""),
     sent: Number(useShareStore.getState().engine?.segmentsSent ?? 0),
-    due: (useShareStore.getState().engine?.currentDueDayIndex ?? null) as number | null,
+    due: (useShareStore.getState().engine?.currentDueDayIndex ?? null) as
+      | number
+      | null,
   });
-
 
   const refreshSessionLookup = useCallback(async () => {
     if (!item || userId == null) return;
     const postingId = Number((item as any).postingId ?? (item as any).id);
     setSessionLookupLoading(true);
     try {
-      const res = await getSessionByPosting(postingId, userId).catch(() => null);
+      const res = await getSessionByPosting(postingId, userId).catch(
+        () => null
+      );
       if (res) {
         const next = {
           sessionId: res.sessionId,
           statusName: res.statusName,
-          source: res.source as 'ACTIVE' | 'LATEST',
+          source: res.source as "ACTIVE" | "LATEST",
         };
         setSessionLookup((prev) => (sameLookup(prev, next) ? prev : next));
       } else {
         setSessionLookup((prev) => (prev === null ? prev : null));
       }
-
     } finally {
       setSessionLookupLoading(false);
     }
@@ -210,23 +270,52 @@ export default function OpportunityDetails() {
   useEffect(() => {
     if (item && userId != null) refreshSessionLookup();
   }, [item, userId, refreshSessionLookup]);
+
+  useEffect(() => {
+    if (!item || userId == null) return;
+    const postingId = Number((item as any).postingId ?? (item as any).id);
+    if (!postingId) return;
+    fetchSessionSnapshot(userId, postingId);
+  }, [item, userId, fetchSessionSnapshot]);
+
+  const [nowTick, setNowTick] = useState(Date.now());
+
+  useFocusEffect(
+    useCallback(() => {
+      const id = setInterval(() => setNowTick(Date.now()), 60_000);
+      return () => clearInterval(id as unknown as number);
+    }, [])
+  );
+
   // Keep UI in sync: refresh on screen focus and when share engine progresses
   useFocusEffect(
     useCallback(() => {
       // Refresh when the screen gains focus
       refreshSessionLookup();
 
+      // Also refresh backend snapshot on focus (server-clock truth)
+      (async () => {
+        const postingId = Number((item as any)?.postingId ?? (item as any)?.id);
+        if (userId != null && postingId) {
+          await useShareStore
+            .getState()
+            .fetchSessionSnapshot(userId, postingId);
+        }
+      })();
+
       // Sync the snapshot before listening
       shareSnapRef.current = {
-        status: String(useShareStore.getState().status ?? ''),
+        status: String(useShareStore.getState().status ?? ""),
         sent: Number(useShareStore.getState().engine?.segmentsSent ?? 0),
-        due: (useShareStore.getState().engine?.currentDueDayIndex ?? null) as number | null,
+        due: (useShareStore.getState().engine?.currentDueDayIndex ?? null) as
+          | number
+          | null,
       };
 
       // Subscribe to the whole store; do our own selection+diff
       const unsubscribe = useShareStore.subscribe((s) => {
         const next = {
-          status: String(s.status ?? ''),
+          status: String(s.status ?? ""),
           sent: Number(s.engine?.segmentsSent ?? 0),
           due: (s.engine?.currentDueDayIndex ?? null) as number | null,
         };
@@ -240,13 +329,20 @@ export default function OpportunityDetails() {
           // update snapshot *first* to avoid duplicate refreshes
           shareSnapRef.current = next;
           refreshSessionLookup();
+          const postingId = Number(
+            (item as any)?.postingId ?? (item as any)?.id
+          );
+          if (userId != null && postingId) {
+            void useShareStore
+              .getState()
+              .fetchSessionSnapshot(userId, postingId);
+          }
         }
       });
 
       return () => unsubscribe();
-    }, [refreshSessionLookup])
+    }, [refreshSessionLookup, item, userId])
   );
-
 
   useEffect(() => {
     let mounted = true;
@@ -255,24 +351,27 @@ export default function OpportunityDetails() {
         if (!item || userId == null) return;
         const postingId = Number((item as any).postingId ?? (item as any).id);
         setSessionLookupLoading(true);
-        const res = await getSessionByPosting(postingId, userId).catch(() => null);
+        const res = await getSessionByPosting(postingId, userId).catch(
+          () => null
+        );
         if (!mounted) return;
         if (res) {
           const next = {
             sessionId: res.sessionId,
             statusName: res.statusName,
-            source: res.source as 'ACTIVE' | 'LATEST',
+            source: res.source as "ACTIVE" | "LATEST",
           };
           setSessionLookup((prev) => (sameLookup(prev, next) ? prev : next));
         } else {
           setSessionLookup((prev) => (prev === null ? prev : null));
         }
-
       } finally {
         if (mounted) setSessionLookupLoading(false);
       }
     })();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [item, userId]);
 
   useEffect(() => {
@@ -283,11 +382,16 @@ export default function OpportunityDetails() {
 
     (async () => {
       try {
-        const forceFn = loadById as unknown as (a: string, b?: { force?: boolean }) => any;
-        const fetched = await forceFn(String(id), { force: true }).catch(async () => {
-          const legacyFn = loadById as unknown as (a: string) => any;
-          return legacyFn(String(id));
-        });
+        const forceFn = loadById as unknown as (
+          a: string,
+          b?: { force?: boolean }
+        ) => any;
+        const fetched = await forceFn(String(id), { force: true }).catch(
+          async () => {
+            const legacyFn = loadById as unknown as (a: string) => any;
+            return legacyFn(String(id));
+          }
+        );
         // always prefer fresh fetched data, even if the same id
         if (mounted && fetched) {
           setItem(fetched);
@@ -299,11 +403,13 @@ export default function OpportunityDetails() {
       }
     })();
 
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [id, loadById]);
 
   useEffect(() => {
-    if (__DEV__) console.log('[OppDetails] item (cached or fetched) =', item);
+    if (__DEV__) console.log("[OppDetails] item (cached or fetched) =", item);
   }, [item]);
 
   // keep the ORIGINAL join anchor for consistent backdating
@@ -311,55 +417,97 @@ export default function OpportunityDetails() {
   useEffect(() => {
     if (cycleAnchorUtc && !originalAnchorRef.current) {
       originalAnchorRef.current = cycleAnchorUtc;
-      if (__DEV__) console.log('[OppDetails][TEST] original anchor set =', cycleAnchorUtc);
+      if (__DEV__)
+        console.log("[OppDetails][TEST] original anchor set =", cycleAnchorUtc);
     }
   }, [cycleAnchorUtc]);
-
 
   const handleApply = useCallback(async () => {
     if (!item) return;
     if (userId == null) {
-      Alert.alert('Sign in required', 'Please sign in to apply and start sharing.');
+      Alert.alert(
+        "Sign in required",
+        "Please sign in to apply and start sharing."
+      );
       return;
     }
 
-    const metricMap = buildMetricMapStrict(item) as Partial<Record<MetricCode, number>>;
+    const metricMap = buildMetricMapStrict(item) as Partial<
+      Record<MetricCode, number>
+    >;
     const codes = Object.keys(metricMap) as MetricCode[];
     if (codes.length === 0) {
-      console.log('[OppDetails] No resolvable metrics for posting', { item });
-      Alert.alert('Unsupported', 'This posting’s metrics cannot be resolved yet. Please try again later.');
+      console.log("[OppDetails] No resolvable metrics for posting", { item });
+      Alert.alert(
+        "Unsupported",
+        "This posting’s metrics cannot be resolved yet. Please try again later."
+      );
       return;
     }
 
     const days = Number(item.dataCoverageDaysRequired ?? 5);
-    const simNote = __DEV__ ? '\n\n(DEV mode: “days” advance quickly for testing)' : '';
+    const simNote = __DEV__
+      ? "\n\n(DEV mode: “days” advance quickly for testing)"
+      : "";
 
     Alert.alert(
-      'Share your data?',
-      `We’ll collect and share the requested metrics for ${days} day${days === 1 ? '' : 's'}.${simNote}`,
+      "Share your data?",
+      `We’ll collect and share the requested metrics for ${days} day${days === 1 ? "" : "s"}.${simNote}`,
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: "Cancel", style: "cancel" },
         {
-          text: 'OK',
+          text: "OK",
           onPress: async () => {
             try {
-              const postingId = Number((item as any).postingId ?? (item as any).id);
+              const postingId = Number(
+                (item as any).postingId ?? (item as any).id
+              );
+              const probe = await checkMetricPermissionsForMap(
+                metricMap as Record<MetricCode, number>
+              );
+              if (!probe.ok) {
+                const missingLabels = probe.missing
+                  .map(labelOfMetric)
+                  .join(", ");
+                const msg =
+                  `We don’t have permission for:\n• ${missingLabels}\n\n` +
+                  `You can still start sharing; those metrics will be reported as unavailable until you grant access.`;
+                const cont = await new Promise<boolean>((resolve) => {
+                  Alert.alert("Missing permissions", msg, [
+                    {
+                      text: "Cancel",
+                      style: "cancel",
+                      onPress: () => resolve(false),
+                    },
+                    { text: "Start anyway", onPress: () => resolve(true) },
+                  ]);
+                });
+                if (!cont) return;
+              }
+
               await startSession(postingId, userId, metricMap, days);
               setSessionLookup((prev) => ({
                 sessionId: prev?.sessionId ?? 0,
-                statusName: 'ACTIVE',
-                source: 'ACTIVE',
+                statusName: "ACTIVE",
+                source: "ACTIVE",
               }));
               refreshSessionLookup();
+              const pid = Number((item as any).postingId ?? (item as any).id);
+              if (userId != null && pid) {
+                void useShareStore.getState().fetchSessionSnapshot(userId, pid);
+              }
               Alert.alert(
-                'Sharing started',
+                "Sharing started",
                 __DEV__
-                  ? 'First segment will send now.\nDay progression is accelerated for testing.'
-                  : 'We’ll send your first segment now and continue every 24 hours.'
+                  ? "First segment will send now.\nDay progression is accelerated for testing."
+                  : "We’ll send your first segment now and continue every 24 hours."
               );
             } catch (e) {
-              console.log('[OppDetails] startSession error', e);
-              Alert.alert('Error', 'Failed to start sharing. Please try again.');
+              console.log("[OppDetails] startSession error", e);
+              Alert.alert(
+                "Error",
+                "Failed to start sharing. Please try again."
+              );
             }
           },
         },
@@ -369,13 +517,18 @@ export default function OpportunityDetails() {
 
   if (!item) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }} edges={["top", "left", "right", "bottom"]}>
+      <SafeAreaView
+        style={{ flex: 1, backgroundColor: c.bg }}
+        edges={["top", "left", "right", "bottom"]}
+      >
         <ScrollView
           style={{ backgroundColor: c.bg }}
           contentContainerStyle={{ padding: 16, paddingBottom: 32 }}
           keyboardShouldPersistTaps="handled"
         >
-          <Text style={{ color: c.text.primary, fontSize: 20, fontWeight: "800" }}>
+          <Text
+            style={{ color: c.text.primary, fontSize: 20, fontWeight: "800" }}
+          >
             {loading ? "Loading…" : "Opportunity not found"}
           </Text>
           {!loading && (
@@ -384,7 +537,11 @@ export default function OpportunityDetails() {
                 The opportunity you’re looking for isn’t available.
               </Text>
               <View style={{ marginTop: 16 }}>
-                <Button title="Back" onPress={() => router.back()} variant="secondary" />
+                <Button
+                  title="Back"
+                  onPress={() => router.back()}
+                  variant="secondary"
+                />
               </View>
             </>
           )}
@@ -395,18 +552,21 @@ export default function OpportunityDetails() {
 
   const saved = savedIds?.includes(item.id);
 
-  const apiStatusUpper = (sessionLookup?.statusName || '').toUpperCase();
+  const apiStatusUpper = (sessionLookup?.statusName || "").toUpperCase();
 
   const { applyTitle, applyDisabled } = useMemo(() => {
-    if (userId == null) return { applyTitle: 'Sign in to apply', applyDisabled: true };
-    if (sessionLookupLoading) return { applyTitle: 'Checking…', applyDisabled: true };
-    if (apiStatusUpper === 'ACTIVE') return { applyTitle: 'Already sharing', applyDisabled: true };
-    if (apiStatusUpper === 'COMPLETED') return { applyTitle: 'Completed', applyDisabled: true };
-    if (apiStatusUpper === 'CANCELLED') return { applyTitle: 'Apply', applyDisabled: false };
-    return { applyTitle: 'Apply', applyDisabled: false };
+    if (userId == null)
+      return { applyTitle: "Sign in to apply", applyDisabled: true };
+    if (sessionLookupLoading)
+      return { applyTitle: "Checking…", applyDisabled: true };
+    if (apiStatusUpper === "ACTIVE")
+      return { applyTitle: "Already sharing", applyDisabled: true };
+    if (apiStatusUpper === "COMPLETED")
+      return { applyTitle: "Completed", applyDisabled: true };
+    if (apiStatusUpper === "CANCELLED")
+      return { applyTitle: "Apply", applyDisabled: false };
+    return { applyTitle: "Apply", applyDisabled: false };
   }, [userId, sessionLookupLoading, apiStatusUpper]);
-
-
 
   // ─────────────────────────────────────────────────────────────────────────────
   // NEW: Sim helpers (use ORIGINAL anchor; always 24h blocks)
@@ -418,7 +578,14 @@ export default function OpportunityDetails() {
 
   const nextWindowPreview = (() => {
     const baseIso = originalCycleAnchorUtc ?? cycleAnchorUtc;
-    if (!testFlags.TEST_MODE || !sessionId || status !== 'ACTIVE' || !baseIso || nextTargetIdx <= 0 || completed) {
+    if (
+      !testFlags.TEST_MODE ||
+      !sessionId ||
+      status !== "ACTIVE" ||
+      !baseIso ||
+      nextTargetIdx <= 0 ||
+      completed
+    ) {
       return null;
     }
     const t0 = Date.parse(baseIso);
@@ -432,8 +599,6 @@ export default function OpportunityDetails() {
       toLocal: fmtLocal(toUtc),
     };
   })();
-
-
 
   // const backdateToDayIndexAndTick = useCallback((targetDayIdx: number) => {
   //   if (!testFlags.TEST_MODE) return;
@@ -473,18 +638,24 @@ export default function OpportunityDetails() {
     if (!segmentsExpected) return;
     if ((engine?.lastSentDayIndex ?? 0) >= segmentsExpected) return;
     if (completed) return;
-    if (mode !== 'SIM') enterSimulation();
+    if (mode !== "SIM") enterSimulation();
     await simulateNextDay();
-  }, [segmentsExpected, engine?.lastSentDayIndex, simulateNextDay, enterSimulation, mode]);
+  }, [
+    segmentsExpected,
+    engine?.lastSentDayIndex,
+    simulateNextDay,
+    enterSimulation,
+    mode,
+  ]);
 
   const simAllRemaining = useCallback(async () => {
     if (!testFlags.TEST_MODE) return;
     if (!segmentsExpected) return;
     if (completed) return;
-    if (mode !== 'SIM') enterSimulation();
-    for (; ;) {
+    if (mode !== "SIM") enterSimulation();
+    for (;;) {
       const s = useShareStore.getState();
-      if (s.status !== 'ACTIVE') break;
+      if (s.status !== "ACTIVE") break;
       const sent = s.engine?.segmentsSent ?? 0;
       const expected = s.segmentsExpected ?? 0;
       if (sent >= expected) break;
@@ -493,9 +664,11 @@ export default function OpportunityDetails() {
     }
   }, [segmentsExpected, enterSimulation, mode]);
 
-
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }} edges={["top", "left", "right", "bottom"]}>
+    <SafeAreaView
+      style={{ flex: 1, backgroundColor: c.bg }}
+      edges={["top", "left", "right", "bottom"]}
+    >
       <ScrollView
         style={{ backgroundColor: c.bg }}
         contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 12 }}
@@ -503,8 +676,14 @@ export default function OpportunityDetails() {
       >
         {/* Title + Sponsor */}
         <View style={{ gap: 6 }}>
-          <Text style={{ color: c.text.primary, fontSize: 22, fontWeight: "800" }}>{item.title}</Text>
-          {item.sponsor ? <Text style={{ color: c.text.secondary }}>{item.sponsor}</Text> : null}
+          <Text
+            style={{ color: c.text.primary, fontSize: 22, fontWeight: "800" }}
+          >
+            {item.title}
+          </Text>
+          {item.sponsor ? (
+            <Text style={{ color: c.text.secondary }}>{item.sponsor}</Text>
+          ) : null}
         </View>
 
         {/* Quick facts */}
@@ -519,8 +698,14 @@ export default function OpportunityDetails() {
           }}
         >
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-            {typeof item.reward?.credits === "number" ? <Chip label={`+${item.reward.credits}`} /> : null}
-            {item.createdAt ? <Chip label={`Posted: ${new Date(item.createdAt).toLocaleDateString()}`} /> : null}
+            {typeof item.reward?.credits === "number" ? (
+              <Chip label={`+${item.reward.credits}`} />
+            ) : null}
+            {item.createdAt ? (
+              <Chip
+                label={`Posted: ${new Date(item.createdAt).toLocaleDateString()}`}
+              />
+            ) : null}
             {item.applyOpenAt && item.applyCloseAt ? (
               <Chip
                 label={`Apply: ${new Date(item.applyOpenAt).toLocaleDateString()} → ${new Date(
@@ -528,17 +713,27 @@ export default function OpportunityDetails() {
                 ).toLocaleDateString()}`}
               />
             ) : null}
-            {typeof item.daysRemaining === "number" ? <Chip label={`Days left: ${item.daysRemaining}`} /> : null}
+            {typeof item.daysRemaining === "number" ? (
+              <Chip label={`Days left: ${item.daysRemaining}`} />
+            ) : null}
             {typeof item.dataCoverageDaysRequired === "number" ? (
               <Chip label={`Requires ${item.dataCoverageDaysRequired} days`} />
             ) : null}
             {(item as any).postingStatusCode ? (
               <Chip label={`Status: ${(item as any).postingStatusCode}`} />
             ) : null}
-            {item.reward?.typeName ? <Chip label={item.reward.typeName} /> : null}
-            {apiStatusUpper === 'ACTIVE' ? <Chip label="Sharing: Active" /> : null}
-            {apiStatusUpper === 'COMPLETED' ? <Chip label="Sharing: Completed" /> : null}
-            {apiStatusUpper === 'CANCELLED' ? <Chip label="Sharing: Cancelled" /> : null}
+            {item.reward?.typeName ? (
+              <Chip label={item.reward.typeName} />
+            ) : null}
+            {apiStatusUpper === "ACTIVE" ? (
+              <Chip label="Sharing: Active" />
+            ) : null}
+            {apiStatusUpper === "COMPLETED" ? (
+              <Chip label="Sharing: Completed" />
+            ) : null}
+            {apiStatusUpper === "CANCELLED" ? (
+              <Chip label="Sharing: Cancelled" />
+            ) : null}
           </View>
         </View>
 
@@ -554,7 +749,11 @@ export default function OpportunityDetails() {
               gap: 8,
             }}
           >
-            <Text style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}>Overview</Text>
+            <Text
+              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
+            >
+              Overview
+            </Text>
             <Text style={{ color: c.text.secondary }}>{item.description}</Text>
           </View>
         )}
@@ -569,8 +768,8 @@ export default function OpportunityDetails() {
             : [];
 
           if (__DEV__) {
-            console.log('[OppDetails][UI] metricsArr=', metricsArr);
-            console.log('[OppDetails][UI] metricIdsArr=', metricIdsArr);
+            console.log("[OppDetails][UI] metricsArr=", metricsArr);
+            console.log("[OppDetails][UI] metricIdsArr=", metricIdsArr);
           }
 
           if (metricsArr.length === 0 && metricIdsArr.length === 0) return null;
@@ -580,7 +779,12 @@ export default function OpportunityDetails() {
           metricsArr.forEach((m, idx) => {
             const id = (m.id ?? m.metricId ?? idx) as number;
             const label = String(
-              m.displayName ?? m.name ?? m.code ?? (m.id ?? m.metricId ?? 'metric')
+              m.displayName ??
+                m.name ??
+                m.code ??
+                m.id ??
+                m.metricId ??
+                "metric"
             ); // ← force to string
             const sig = `${id}|${label}`;
             if (!seen.has(sig)) {
@@ -600,22 +804,29 @@ export default function OpportunityDetails() {
                 gap: 8,
               }}
             >
-              <Text style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}>
+              <Text
+                style={{
+                  color: c.text.primary,
+                  fontSize: 16,
+                  fontWeight: "700",
+                }}
+              >
                 Requested Data
               </Text>
 
               {deduped.length > 0 ? (
-                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                <View
+                  style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}
+                >
                   {deduped.map(({ id, label, idx }) => (
                     <Chip key={`met-${id}-${idx}`} label={label} />
                   ))}
                 </View>
               ) : (
                 <Text style={{ color: c.text.secondary }}>
-                  Metrics: {metricIdsArr.length ? metricIdsArr.join(", ") : '—'}
+                  Metrics: {metricIdsArr.length ? metricIdsArr.join(", ") : "—"}
                 </Text>
               )}
-
             </View>
           );
         })()}
@@ -625,34 +836,40 @@ export default function OpportunityDetails() {
           item.maxAge != null ||
           hasAny(item.healthConditions) ||
           hasAny(item.healthConditionIds)) && (
-            <View
-              style={{
-                backgroundColor: c.surface,
-                borderColor: c.border,
-                borderWidth: 1,
-                borderRadius: 12,
-                padding: 12,
-                gap: 8,
-              }}
+          <View
+            style={{
+              backgroundColor: c.surface,
+              borderColor: c.border,
+              borderWidth: 1,
+              borderRadius: 12,
+              padding: 12,
+              gap: 8,
+            }}
+          >
+            <Text
+              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
             >
-              <Text style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}>Eligibility</Text>
-              {formatAgeRange(item.minAge, item.maxAge) ? (
-                <Text style={{ color: c.text.secondary }}>Age: {formatAgeRange(item.minAge, item.maxAge)}</Text>
-              ) : null}
+              Eligibility
+            </Text>
+            {formatAgeRange(item.minAge, item.maxAge) ? (
+              <Text style={{ color: c.text.secondary }}>
+                Age: {formatAgeRange(item.minAge, item.maxAge)}
+              </Text>
+            ) : null}
 
-              {hasAny(item.healthConditions) ? (
-                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-                  {item.healthConditions!.map((h) => (
-                    <Chip key={`hc-${h.id}`} label={h.name} />
-                  ))}
-                </View>
-              ) : hasAny(item.healthConditionIds) ? (
-                <Text style={{ color: c.text.secondary }}>
-                  Health conditions: {item.healthConditionIds!.join(", ")}
-                </Text>
-              ) : null}
-            </View>
-          )}
+            {hasAny(item.healthConditions) ? (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                {item.healthConditions!.map((h) => (
+                  <Chip key={`hc-${h.id}`} label={h.name} />
+                ))}
+              </View>
+            ) : hasAny(item.healthConditionIds) ? (
+              <Text style={{ color: c.text.secondary }}>
+                Health conditions: {item.healthConditionIds!.join(", ")}
+              </Text>
+            ) : null}
+          </View>
+        )}
 
         {/* Policies */}
         {(hasAny(item.viewPolicies) || hasAny(item.viewPolicyIds)) && (
@@ -666,13 +883,21 @@ export default function OpportunityDetails() {
               gap: 8,
             }}
           >
-            <Text style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}>Policies</Text>
+            <Text
+              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
+            >
+              Policies
+            </Text>
             {hasAny(item.viewPolicies) ? (
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
                 {item.viewPolicies!.map((p, idx) => {
                   const key = `vp-${(p as any).id ?? (p as any).viewPolicyId ?? idx}`;
                   const label = String(
-                    (p as any).name ?? (p as any).displayName ?? ((p as any).id ?? (p as any).viewPolicyId ?? "policy")
+                    (p as any).name ??
+                      (p as any).displayName ??
+                      (p as any).id ??
+                      (p as any).viewPolicyId ??
+                      "policy"
                   ); // ← force to string
                   return <Chip key={key} label={label} />;
                 })}
@@ -697,7 +922,11 @@ export default function OpportunityDetails() {
               gap: 8,
             }}
           >
-            <Text style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}>Tags</Text>
+            <Text
+              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
+            >
+              Tags
+            </Text>
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
               {item.tags!.map((t) => (
                 <Chip key={t} label={`#${t}`} />
@@ -718,14 +947,24 @@ export default function OpportunityDetails() {
               gap: 8,
             }}
           >
-            <Text style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}>Links</Text>
+            <Text
+              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
+            >
+              Links
+            </Text>
             {item.privacyUrl ? (
-              <Text style={{ color: c.primary }} onPress={() => Linking.openURL(item.privacyUrl!)}>
+              <Text
+                style={{ color: c.primary }}
+                onPress={() => Linking.openURL(item.privacyUrl!)}
+              >
                 Privacy Policy
               </Text>
             ) : null}
             {item.termsUrl ? (
-              <Text style={{ color: c.primary }} onPress={() => Linking.openURL(item.termsUrl!)}>
+              <Text
+                style={{ color: c.primary }}
+                onPress={() => Linking.openURL(item.termsUrl!)}
+              >
                 Terms & Conditions
               </Text>
             ) : null}
@@ -733,25 +972,171 @@ export default function OpportunityDetails() {
         )}
 
         {userId == null && (
-          <View style={{ backgroundColor: c.surface, borderColor: c.border, borderWidth: 1, borderRadius: 12, padding: 12 }}>
-            <Text style={{ color: c.text.primary, fontWeight: '700' }}>Sign in required</Text>
+          <View
+            style={{
+              backgroundColor: c.surface,
+              borderColor: c.border,
+              borderWidth: 1,
+              borderRadius: 12,
+              padding: 12,
+            }}
+          >
+            <Text style={{ color: c.text.primary, fontWeight: "700" }}>
+              Sign in required
+            </Text>
             <Text style={{ color: c.text.secondary, marginTop: 4 }}>
               Sign in to check your session and apply.
             </Text>
           </View>
         )}
 
-
         {/* CTAs */}
-        <View style={{ flexDirection: "row", columnGap: 12, rowGap: 12, flexWrap: "wrap", marginTop: 4 }}>
+        <View
+          style={{
+            flexDirection: "row",
+            columnGap: 12,
+            rowGap: 12,
+            flexWrap: "wrap",
+            marginTop: 4,
+          }}
+        >
           <Button
             title={applyTitle}
             onPress={handleApply}
             disabled={applyDisabled}
           />
-          <Button title={Platform.OS === "ios" ? "Back" : "Back"} onPress={() => router.back()} variant="ghost" />
+          <Button
+            title={Platform.OS === "ios" ? "Back" : "Back"}
+            onPress={() => router.back()}
+            variant="ghost"
+          />
         </View>
 
+        {/* Sharing status (server snapshot) */}
+        {userId != null && (
+          <View
+            style={{
+              backgroundColor: c.surface,
+              borderColor: c.border,
+              borderWidth: 1,
+              borderRadius: 12,
+              padding: 12,
+              gap: 6,
+            }}
+          >
+            <Text
+              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
+            >
+              Sharing status
+            </Text>
+
+            {(() => {
+              const s = snapshot;
+              if (!s) {
+                return (
+                  <Text style={{ color: c.text.secondary }}>
+                    Not sharing yet for this opportunity.
+                  </Text>
+                );
+              }
+
+              const completed = s.segmentsSent >= s.segmentsExpected;
+              const nextWin = completed
+                ? null
+                : computeNextWindowFromSnapshot(
+                    s.cycleAnchorUtc,
+                    s.segmentsSent,
+                    s.segmentsExpected
+                  );
+
+              if (__DEV__ && nextWin) {
+                console.log(
+                  "[OppDetails] Next share window (server-anchored) =",
+                  nextWin
+                );
+              }
+
+              const nowIso = new Date(nowTick).toISOString();
+              const within =
+                nextWin && nextWin.fromUtc <= nowIso && nowIso < nextWin.toUtc;
+
+              const nextLabel = !nextWin
+                ? "—"
+                : within
+                  ? `closes ${formatTimeLeftLabel(nextWin.toUtc, nowTick)}`
+                  : `opens ${formatTimeLeftLabel(nextWin.fromUtc, nowTick)}`;
+
+              const fmtLocal = (iso?: string | null) =>
+                iso
+                  ? new Date(iso).toLocaleString(undefined, {
+                      year: "numeric",
+                      month: "short",
+                      day: "2-digit",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      hour12: false,
+                    })
+                  : "—";
+
+              return (
+                <View style={{ gap: 4 }}>
+                  <Text style={{ color: c.text.secondary }}>
+                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
+                      Started on:
+                    </Text>{" "}
+                    {fmtLocal(s.joinTimeLocalISO)}
+                  </Text>
+
+                  <Text style={{ color: c.text.secondary }}>
+                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
+                      Progress:
+                    </Text>{" "}
+                    {s.segmentsSent}/{s.segmentsExpected}
+                  </Text>
+
+                  <Text style={{ color: c.text.secondary }}>
+                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
+                      Last shared:
+                    </Text>{" "}
+                    {fmtLocal(s.lastUploadedAt)}
+                  </Text>
+
+                  <Text style={{ color: c.text.secondary }}>
+                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
+                      Last window:
+                    </Text>{" "}
+                    {s.lastWindowFromUtc ? fmtLocal(s.lastWindowFromUtc) : "—"}{" "}
+                    → {s.lastWindowToUtc ? fmtLocal(s.lastWindowToUtc) : "—"}
+                  </Text>
+
+                  <Text style={{ color: c.text.secondary }}>
+                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
+                      Next share:
+                    </Text>{" "}
+                    {completed
+                      ? "Completed"
+                      : nextWin
+                        ? `${fmtLocal(nextWin.fromUtc)} → ${fmtLocal(nextWin.toUtc)}`
+                        : "—"}
+                  </Text>
+
+                  <Text style={{ color: c.text.secondary }}>
+                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
+                      Time left:
+                    </Text>{" "}
+                    {completed ? "—" : nextLabel}
+                  </Text>
+
+                  <View style={{ marginTop: 4 }}>
+                    <Chip
+                      label={`Status: ${String(s.statusName ?? s.statusCode ?? "—")}`}
+                    />
+                  </View>
+                </View>
+              );
+            })()}
+          </View>
+        )}
 
         {/* ───────────────────────────────────────────────────────────── */}
         {/* DEV-ONLY: Sharing Test Panel (visible only in Test Mode)     */}
@@ -768,7 +1153,9 @@ export default function OpportunityDetails() {
               gap: 10,
             }}
           >
-            <Text style={{ color: c.text.primary, fontSize: 16, fontWeight: '800' }}>
+            <Text
+              style={{ color: c.text.primary, fontSize: 16, fontWeight: "800" }}
+            >
               Sharing Test Panel (DEV)
             </Text>
 
@@ -777,7 +1164,9 @@ export default function OpportunityDetails() {
               const rc = getShareRuntimeConfig();
               return (
                 <Text style={{ color: c.text.secondary }}>
-                  TestMode: {String(rc.TEST_MODE)} | “Day” length: {rc.DAY_LENGTH_MS} ms | Grace: {rc.GRACE_WAIT_MS} ms | Retry: {rc.RETRY_INTERVAL_MS} ms
+                  TestMode: {String(rc.TEST_MODE)} | “Day” length:{" "}
+                  {rc.DAY_LENGTH_MS} ms | Grace: {rc.GRACE_WAIT_MS} ms | Retry:{" "}
+                  {rc.RETRY_INTERVAL_MS} ms
                 </Text>
               );
             })()}
@@ -785,33 +1174,66 @@ export default function OpportunityDetails() {
             {/* Live session + engine state */}
             <View style={{ gap: 4 }}>
               <Text style={{ color: c.text.secondary }}>
-                Status: {status} | Session: {sessionId ?? '—'} | Segments: {engine.segmentsSent}/{segmentsExpected ?? '—'}
+                Status: {status} | Session: {sessionId ?? "—"} | Segments:{" "}
+                {engine.segmentsSent}/{segmentsExpected ?? "—"}
               </Text>
               <Text style={{ color: c.text.secondary }}>
-                Anchor (planner ISO): {cycleAnchorUtc ?? '—'}
+                Anchor (planner ISO): {cycleAnchorUtc ?? "—"}
               </Text>
               <Text style={{ color: c.text.secondary }}>
-                Engine anchor: {engine?.cycleAnchorUtc ? new Date(engine.cycleAnchorUtc).toISOString() : '—'}
+                Engine anchor:{" "}
+                {engine?.cycleAnchorUtc
+                  ? new Date(engine.cycleAnchorUtc).toISOString()
+                  : "—"}
               </Text>
               <Text style={{ color: c.text.secondary }}>
-                Last sent day: {engine?.lastSentDayIndex ?? '—'} | Current due: {engine?.currentDueDayIndex ?? '—'}
+                Last sent day: {engine?.lastSentDayIndex ?? "—"} | Current due:{" "}
+                {engine?.currentDueDayIndex ?? "—"}
               </Text>
               <Text style={{ color: c.text.secondary }}>
-                Retries: {engine?.noDataRetryCount ?? 0} | Next retry: {engine?.nextRetryAtUtc ? new Date(engine.nextRetryAtUtc).toISOString() : '—'}
+                Retries: {engine?.noDataRetryCount ?? 0} | Next retry:{" "}
+                {engine?.nextRetryAtUtc
+                  ? new Date(engine.nextRetryAtUtc).toISOString()
+                  : "—"}
+              </Text>
+            </View>
+
+            {/* 🔎 Latest diagnostics from last processed window */}
+            <View style={{ gap: 2, marginTop: 6 }}>
+              <Text style={{ color: c.text.primary, fontWeight: "700" }}>
+                Last Window Diagnostics
+              </Text>
+              <Text style={{ color: c.text.secondary }}>
+                Day: {lastDiag?.dayIndex ?? "—"}
+              </Text>
+              <Text style={{ color: c.text.secondary }}>
+                Unavailable (no permission/provider):{" "}
+                {(lastDiag?.unavailable ?? []).map(labelOfMetric).join(", ") ||
+                  "—"}
+              </Text>
+              <Text style={{ color: c.text.secondary }}>
+                Zero data in window:{" "}
+                {(lastDiag?.zeroData ?? []).map(labelOfMetric).join(", ") ||
+                  "—"}
+              </Text>
+              <Text style={{ color: c.text.secondary }}>
+                Had any data: {String(lastDiag?.hadAnyData ?? "—")}
               </Text>
             </View>
 
             {/* 🔎 NEW: Next simulated window preview */}
             {nextWindowPreview ? (
               <View style={{ marginTop: 6 }}>
-                <Text style={{ color: c.text.primary, fontWeight: '700' }}>
+                <Text style={{ color: c.text.primary, fontWeight: "700" }}>
                   Next Simulated Window (Day {nextWindowPreview.idx})
                 </Text>
                 <Text style={{ color: c.text.secondary }}>
-                  Local: {nextWindowPreview.fromLocal} → {nextWindowPreview.toLocal}
+                  Local: {nextWindowPreview.fromLocal} →{" "}
+                  {nextWindowPreview.toLocal}
                 </Text>
                 <Text style={{ color: c.text.secondary }}>
-                  UTC: {fmtUTC(nextWindowPreview.fromUtc)} → {fmtUTC(nextWindowPreview.toUtc)}
+                  UTC: {fmtUTC(nextWindowPreview.fromUtc)} →{" "}
+                  {fmtUTC(nextWindowPreview.toUtc)}
                 </Text>
               </View>
             ) : (
@@ -821,34 +1243,51 @@ export default function OpportunityDetails() {
             )}
 
             {/* Simulation controls */}
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+            <View
+              style={{
+                flexDirection: "row",
+                flexWrap: "wrap",
+                gap: 8,
+                marginTop: 6,
+              }}
+            >
               <Button
                 title="Sim next day"
                 onPress={simNextDay}
-                disabled={!sessionId || isProcessing || status !== 'ACTIVE' || !segmentsExpected || (engine?.lastSentDayIndex ?? 0) >= (segmentsExpected ?? 0) || completed}
+                disabled={
+                  !sessionId ||
+                  isProcessing ||
+                  status !== "ACTIVE" ||
+                  !segmentsExpected ||
+                  (engine?.lastSentDayIndex ?? 0) >= (segmentsExpected ?? 0) ||
+                  completed
+                }
               />
               <Button
                 title="Sim all remaining"
                 onPress={simAllRemaining}
                 variant="secondary"
-                disabled={!sessionId || status !== 'ACTIVE' || !segmentsExpected}
+                disabled={
+                  !sessionId || status !== "ACTIVE" || !segmentsExpected
+                }
               />
               <Button
                 title="Tick now"
                 onPress={() => tick()}
                 variant="secondary"
-                disabled={!sessionId || status !== 'ACTIVE'}
+                disabled={!sessionId || status !== "ACTIVE"}
               />
               <Button
                 title="Catch up"
                 onPress={() => catchUpIfNeeded()}
                 variant="secondary"
-                disabled={!sessionId || status !== 'ACTIVE'}
+                disabled={!sessionId || status !== "ACTIVE"}
               />
             </View>
 
-            <Text style={{ color: c.text.secondary, fontStyle: 'italic' }}>
-              Tip: Sim uses the original join time and backdates by N×24h blocks so each due window is a past 24h chunk.
+            <Text style={{ color: c.text.secondary, fontStyle: "italic" }}>
+              Tip: Sim uses the original join time and backdates by N×24h blocks
+              so each due window is a past 24h chunk.
             </Text>
           </View>
         )}

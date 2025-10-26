@@ -11,8 +11,12 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "UIBackgroundModes": ["processing"]  
-      }
+        "UIBackgroundModes": [
+          "processing",
+          "processing"
+        ]
+      },
+      "bundleIdentifier": "com.mohitnaik21.Web3Health"
     },
     "android": {
       "adaptiveIcon": {

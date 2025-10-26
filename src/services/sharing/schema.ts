@@ -146,6 +146,32 @@ export const DashboardRes = z.object({
   cancelledCount: z.number().int(),
 });
 
+// ---------- session snapshot ----------
+export const SessionSnapshotRes = z.object({
+  ok: z.literal(true),
+  session: z
+    .object({
+      session_id: z.number().int(),
+      posting_id: z.number().int(),
+      user_id: z.number().int(),
+      status_code: z.string().nullable(),
+      status_name: z.string().nullable(),
+      segments_expected: z.number().int(),
+      segments_sent: z.number().int(),
+      last_sent_day_index: z.number().int().nullable(),
+      cycle_anchor_utc: z.string(),        // ISO Z
+      join_time_local_iso: z.string(),     // ISO with offset
+      join_timezone: z.string(),           // IANA
+      last_uploaded_at: z.string().nullable(),
+      last_window_from_utc: z.string().nullable(),
+      last_window_to_utc: z.string().nullable(),
+    })
+    .nullable(),
+});
+
+
+// ---------- types ----------
+export type TSessionSnapshotRes = z.infer<typeof SessionSnapshotRes>;
 export type TStartSessionReq = z.infer<typeof StartSessionReq>;
 export type TStartSessionRes = z.infer<typeof StartSessionRes>;
 export type TResolverRes = z.infer<typeof ResolverRes>;

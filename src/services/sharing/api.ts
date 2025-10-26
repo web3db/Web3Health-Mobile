@@ -6,11 +6,14 @@ import {
   CancelRes,
   DashboardRes,
   ResolverRes,
+  SessionSnapshotRes,
   StartSessionRes,
   SubmitSegmentReq,
   SubmitSegmentRes,
-  type TResolverRes
+  type TResolverRes,
 } from "./schema";
+
+
 import type { UploadSegmentResult } from "./types";
 
 /** Start (create) a session.
@@ -153,5 +156,19 @@ export async function getSharingDashboard(userId: number) {
     );
   }
   const parsed = DashboardRes.parse(json);
+  return parsed;
+}
+
+
+/** Session snapshot for an (userId, postingId). */
+export async function getSessionSnapshot(userId: number, postingId: number) {
+  const url = buildUrl("share_get_session_snapshot", { userId, postingId });
+  const { ok, status, json, text } = await fetchJson("GET", url);
+  if (!ok || !json) {
+    throw new Error(
+      `share_get_session_snapshot ${status} ${String((json as any)?.message ?? text ?? "")}`
+    );
+  }
+  const parsed = SessionSnapshotRes.parse(json);
   return parsed;
 }
