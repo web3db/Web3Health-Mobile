@@ -303,7 +303,7 @@ export default function AppGroupLayout() {
         <Drawer.Screen name="opportunities/[id]" options={{ drawerItemStyle: { display: 'none' } }} />
         <Drawer.Screen name="auth/login" options={{ drawerItemStyle: { display: 'none' } }} />
         <Drawer.Screen name="auth/register" options={{ drawerItemStyle: { display: 'none' } }} />
-        {/* <Drawer.Screen name="background" options={{ drawerItemStyle: { display: 'none' } }} /> */}
+        <Drawer.Screen name="background" options={{ drawerItemStyle: { display: 'none' } }} />
 
 
         {/* Drawer items */}
