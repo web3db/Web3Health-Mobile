@@ -181,6 +181,29 @@ function fmtLocal(iso: string) {
   });
 }
 
+// === [SECTION_HEADER_COMPONENT] reusable title + subtitle
+function SectionHeader({
+  title,
+  subtitle,
+}: {
+  title: string;
+  subtitle?: string;
+}) {
+  const c = useThemeColors();
+  return (
+    <View style={{ gap: 2 }}>
+      <Text style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}>
+        {title}
+      </Text>
+      {subtitle ? (
+        <Text style={{ color: c.text.secondary, fontSize: 13 }}>
+          {subtitle}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
 export default function OpportunityDetails() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -697,9 +720,14 @@ export default function OpportunityDetails() {
             gap: 8,
           }}
         >
+          <SectionHeader
+            title="At a glance"
+            subtitle="Key information for a quick review."
+          />
+
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {typeof item.reward?.credits === "number" ? (
-              <Chip label={`+${item.reward.credits}`} />
+              <Chip label={`Reward total: +${item.reward.credits}`} />
             ) : null}
             {item.createdAt ? (
               <Chip
@@ -708,37 +736,42 @@ export default function OpportunityDetails() {
             ) : null}
             {item.applyOpenAt && item.applyCloseAt ? (
               <Chip
-                label={`Apply: ${new Date(item.applyOpenAt).toLocaleDateString()} → ${new Date(
+                label={`Apply window: ${new Date(item.applyOpenAt).toLocaleDateString()} → ${new Date(
                   item.applyCloseAt
                 ).toLocaleDateString()}`}
               />
             ) : null}
             {typeof item.daysRemaining === "number" ? (
-              <Chip label={`Days left: ${item.daysRemaining}`} />
+              <Chip label={`Days left to apply: ${item.daysRemaining}`} />
             ) : null}
             {typeof item.dataCoverageDaysRequired === "number" ? (
-              <Chip label={`Requires ${item.dataCoverageDaysRequired} days`} />
+              <Chip
+                label={`Sharing duration: ${item.dataCoverageDaysRequired} days`}
+              />
             ) : null}
             {(item as any).postingStatusCode ? (
-              <Chip label={`Status: ${(item as any).postingStatusCode}`} />
+              <Chip
+                label={`Study status: ${(item as any).postingStatusCode}`}
+              />
             ) : null}
             {item.reward?.typeName ? (
               <Chip label={item.reward.typeName} />
             ) : null}
             {apiStatusUpper === "ACTIVE" ? (
-              <Chip label="Sharing: Active" />
+              <Chip label="Sharing status: Active" />
             ) : null}
             {apiStatusUpper === "COMPLETED" ? (
-              <Chip label="Sharing: Completed" />
+              <Chip label="Sharing status: Completed" />
             ) : null}
             {apiStatusUpper === "CANCELLED" ? (
-              <Chip label="Sharing: Cancelled" />
+              <Chip label="Sharing status: Cancelled" />
             ) : null}
           </View>
         </View>
 
         {/* Overview */}
         {hasText(item.description) && (
+          // === [SECTION_ABOUT]
           <View
             style={{
               backgroundColor: c.surface,
@@ -749,11 +782,10 @@ export default function OpportunityDetails() {
               gap: 8,
             }}
           >
-            <Text
-              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
-            >
-              Overview
-            </Text>
+            <SectionHeader
+              title="About this opportunity"
+              subtitle="Purpose and overview provided by the organizer."
+            />
             <Text style={{ color: c.text.secondary }}>{item.description}</Text>
           </View>
         )}
@@ -804,15 +836,10 @@ export default function OpportunityDetails() {
                 gap: 8,
               }}
             >
-              <Text
-                style={{
-                  color: c.text.primary,
-                  fontSize: 16,
-                  fontWeight: "700",
-                }}
-              >
-                Requested Data
-              </Text>
+              <SectionHeader
+                title="Data requested for sharing"
+                subtitle="Health metrics the organizer asks you to share."
+              />
 
               {deduped.length > 0 ? (
                 <View
@@ -846,14 +873,13 @@ export default function OpportunityDetails() {
               gap: 8,
             }}
           >
-            <Text
-              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
-            >
-              Eligibility
-            </Text>
+            <SectionHeader
+              title="Who can participate"
+              subtitle="Participation criteria such as age range and health conditions."
+            />
             {formatAgeRange(item.minAge, item.maxAge) ? (
               <Text style={{ color: c.text.secondary }}>
-                Age: {formatAgeRange(item.minAge, item.maxAge)}
+                Age range: {formatAgeRange(item.minAge, item.maxAge)}
               </Text>
             ) : null}
 
@@ -883,11 +909,10 @@ export default function OpportunityDetails() {
               gap: 8,
             }}
           >
-            <Text
-              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
-            >
-              Policies
-            </Text>
+            <SectionHeader
+              title="Data use and privacy"
+              subtitle="Organizer-provided policies describing what is collected, why, how it is stored, and who may access it."
+            />
             {hasAny(item.viewPolicies) ? (
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
                 {item.viewPolicies!.map((p, idx) => {
@@ -897,8 +922,8 @@ export default function OpportunityDetails() {
                       (p as any).displayName ??
                       (p as any).id ??
                       (p as any).viewPolicyId ??
-                      "policy"
-                  ); // ← force to string
+                      "Policy"
+                  );
                   return <Chip key={key} label={label} />;
                 })}
               </View>
@@ -922,11 +947,10 @@ export default function OpportunityDetails() {
               gap: 8,
             }}
           >
-            <Text
-              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
-            >
-              Tags
-            </Text>
+            <SectionHeader
+              title="Labels"
+              subtitle="Labels that describe this study."
+            />
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
               {item.tags!.map((t) => (
                 <Chip key={t} label={`#${t}`} />
@@ -947,11 +971,10 @@ export default function OpportunityDetails() {
               gap: 8,
             }}
           >
-            <Text
-              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
-            >
-              Links
-            </Text>
+            <SectionHeader
+              title="Official documents"
+              subtitle="Links provided by the organizer (e.g., Privacy Policy, Terms & Conditions)."
+            />
             {item.privacyUrl ? (
               <Text
                 style={{ color: c.primary }}
@@ -981,12 +1004,10 @@ export default function OpportunityDetails() {
               padding: 12,
             }}
           >
-            <Text style={{ color: c.text.primary, fontWeight: "700" }}>
-              Sign in required
-            </Text>
-            <Text style={{ color: c.text.secondary, marginTop: 4 }}>
-              Sign in to check your session and apply.
-            </Text>
+            <SectionHeader
+              title="Sign in required"
+              subtitle="Sign in to check your session and apply."
+            />
           </View>
         )}
 
@@ -1024,12 +1045,10 @@ export default function OpportunityDetails() {
               gap: 6,
             }}
           >
-            <Text
-              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
-            >
-              Sharing status
-            </Text>
-
+           <SectionHeader
+                 title="Your sharing status"
+                   subtitle="Progress, last share, and your next sharing window. Times shown in your local time."
+            />
             {(() => {
               const s = snapshot;
               if (!s) {

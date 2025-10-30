@@ -10,6 +10,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import {
   cancelShareSession,
   createSession,
+  getRewardsSummary,
   getSessionByPosting,
   getSharingDashboard,
 } from "@/src/services/sharing/api";
@@ -38,10 +39,16 @@ import {
   GRACE_WAIT_MS,
   getShareRuntimeConfig,
 } from "@/src/services/sharing/constants";
+import type { TRewardsSummaryRes } from "@/src/services/sharing/schema";
 import type {
   ShareSessionState,
   ShareStatus,
 } from "@/src/services/sharing/types";
+// ios
+import {
+  hkIsAvailable,
+  hkRequestAllReadPermissions,
+} from "@/src/services/tracking/healthkit";
 
 const TAG = "[SHARE][Store]";
 
@@ -106,6 +113,10 @@ type StoreState = {
     lastWindowToUtc: string | null;
   } | null;
 
+  // === [STORE_REWARDS_SHAPE] rewards summary
+  rewards?: TRewardsSummaryRes | null;
+  fetchRewards: (userId: number) => Promise<void>;
+
   // actions
   fetchSessionSnapshot: (userId: number, postingId: number) => Promise<void>;
   restoreAnchorAtExit?: number;
@@ -144,6 +155,16 @@ type StoreState = {
     zeroData: MetricCode[];
     hadAnyData: boolean;
   };
+
+  //ios healthkit permission request
+
+  // platform health capability (ephemeral; not persisted)
+  healthPlatform?: "android" | "ios";
+  healthAvailable?: boolean; // HealthConnect / HealthKit available on device
+  healthGranted?: boolean; // user granted at least one read permission
+
+  // optional one-shot probe
+  probeHealthPlatform: () => Promise<void>;
 };
 
 const nowISO = () => new Date().toISOString();
@@ -315,6 +336,10 @@ export const useShareStore = create<StoreState>()(
       shareEnabled: true,
       setShareEnabled: (v) => set({ shareEnabled: !!v }),
 
+      healthPlatform: Platform.OS === "ios" ? "ios" : "android",
+      healthAvailable: undefined,
+      healthGranted: undefined,
+
       async startSession(postingId, userId, metricMap, segmentsExpected) {
         try {
           console.log(TAG, "startSession → begin", {
@@ -336,8 +361,30 @@ export const useShareStore = create<StoreState>()(
           }
 
           // Init HC + permissions
-          await ensureInitialized();
-          await requestAllReadPermissions();
+          if (Platform.OS === "android") {
+            await ensureInitialized();
+            await requestAllReadPermissions();
+            set({
+              healthPlatform: "android",
+              healthAvailable: true,
+              healthGranted: true,
+            });
+          } else if (Platform.OS === "ios") {
+            const available = await hkIsAvailable();
+            set({ healthPlatform: "ios", healthAvailable: available });
+            if (!available) {
+              notifyInfo("HealthKit is not available on this device.");
+              // we can still proceed with a session, but no local data will be found
+            } else {
+              const granted = await hkRequestAllReadPermissions();
+              set({ healthGranted: !!granted });
+              if (!granted) {
+                notifyInfo(
+                  "Please grant Health permissions to enable sharing."
+                );
+              }
+            }
+          }
 
           // Build local ISO with device offset (used by Day-0 logic)
           const tz = getLocalTimezoneInfo();
@@ -1074,6 +1121,68 @@ export const useShareStore = create<StoreState>()(
           set({ snapshot: null });
         }
       },
+
+      async probeHealthPlatform() {
+        if (Platform.OS === "android") {
+          try {
+            await ensureInitialized();
+            await requestAllReadPermissions();
+            set({
+              healthPlatform: "android",
+              healthAvailable: true,
+              healthGranted: true,
+            });
+          } catch {
+            set({
+              healthPlatform: "android",
+              healthAvailable: true,
+              healthGranted: false,
+            });
+          }
+          return;
+        }
+
+        if (Platform.OS === "ios") {
+          try {
+            const available = await hkIsAvailable();
+            if (!available) {
+              set({
+                healthPlatform: "ios",
+                healthAvailable: false,
+                healthGranted: false,
+              });
+              return;
+            }
+            const granted = await hkRequestAllReadPermissions();
+            set({
+              healthPlatform: "ios",
+              healthAvailable: true,
+              healthGranted: !!granted,
+            });
+          } catch {
+            set({
+              healthPlatform: "ios",
+              healthAvailable: true,
+              healthGranted: false,
+            });
+          }
+          return;
+        }
+      },
+
+      // === [STORE_REWARDS_INIT]
+      rewards: null,
+
+      async fetchRewards(userId: number) {
+        try {
+          const data = await getRewardsSummary(userId);
+          set({ rewards: data });
+        } catch (e) {
+          console.warn("[Sharing][Rewards] load error", e);
+          set({ rewards: null });
+        }
+      },
+
     }),
 
     {
@@ -1212,7 +1321,6 @@ async function tryProcessWindow(win: WindowRef) {
         engine: nextState,
         ...(shouldDrop ? { pendingWindow: undefined } : {}),
         ...(s.status !== nextState.status ? { status: nextState.status } : {}),
-        // ⬇️ keep the last diagnostics for UI
         ...(diag
           ? {
               lastWindowDiag: {
@@ -1226,7 +1334,7 @@ async function tryProcessWindow(win: WindowRef) {
       };
     });
 
-    // ⬇️ User notifications (lightweight toasts/alerts only when app is active)
+    // User notifications (lightweight toasts/alerts only when app is active)
     const after = useShareStore.getState();
 
     // Terminal statuses
@@ -1264,4 +1372,6 @@ async function tryProcessWindow(win: WindowRef) {
   } catch (e: any) {
     console.warn(`${TAG} tryProcessWindow → error`, e?.message ?? e, e);
   }
+
+  
 }

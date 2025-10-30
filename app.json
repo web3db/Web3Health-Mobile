@@ -11,10 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "UIBackgroundModes": [
-          "processing",
-          "processing"
-        ]
+        "UIBackgroundModes": ["processing", "fetch"]
       },
       "bundleIdentifier": "com.mohitnaik21.Web3Health"
     },
@@ -66,6 +63,14 @@
             "compileSdkVersion": 35,
             "targetSdkVersion": 34
           }
+        }
+      ],
+      [
+        "@kingstinct/react-native-healthkit",
+        {
+          "NSHealthShareUsageDescription": "Allow Web3Health to read steps, distance, heart rate and sleep to generate insights and enable sharing.",
+          "NSHealthUpdateUsageDescription": "Allow Web3Health to write optional well-being entries (e.g., mindful minutes).",
+          "background": true
         }
       ]
     ],

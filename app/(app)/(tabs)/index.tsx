@@ -1,13 +1,13 @@
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import { useRouter } from 'expo-router';
-import React, { useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo } from "react";
 import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 // ===== Tracking (HC) =====
 import Header from "@/src/components/composite/home/Header";
 import TrackerCarousel from "@/src/components/composite/home/TrackerCarousel";
 import { useTrackingStore } from "@/src/store/useTrackingStore";
-
+import { useFocusEffect } from '@react-navigation/native';
 // ===== Marketplace rows =====
 import AllRow from "@/src/components/composite/opportunities/AllRow";
 
@@ -36,6 +36,8 @@ export default function HomeScreen() {
   const router = useRouter();
 
   const {
+
+    //android hc bits
     hcDatasets,
     hcLoading,
     hcGrantedKeys,
@@ -45,6 +47,11 @@ export default function HomeScreen() {
     hcRefresh,
     hcGrantAll,
     hcOpenSettings,
+
+        // iOS (HealthKit) bits
+    hkRefresh,                 
+    hkOpenSettings,           
+    probeHealthPlatform,      
   } = useTrackingStore();
 
   // Initialize + refresh on Android
@@ -60,6 +67,17 @@ export default function HomeScreen() {
       }
     })();
   }, [hcInitialized, hcInitialize, hcRefresh]);
+
+
+useFocusEffect(
+  useCallback(() => {
+    if (Platform.OS !== 'ios') return;
+    (async () => {
+      await probeHealthPlatform();
+      await hkRefresh();
+    })();
+  }, [probeHealthPlatform, hkRefresh])
+);
 
   // Map HCDataset -> TrackerCard[] with "true-zero-only" policy
   const cards = useMemo(() => {
@@ -90,6 +108,9 @@ export default function HomeScreen() {
   }, [hcDatasets]);
 
   const hasPerms = (hcGrantedKeys?.length ?? 0) > 0;
+  const onRefresh = Platform.OS === "ios" ? hkRefresh : hcRefresh;
+  const onOpenSettings = Platform.OS === "ios" ? hkOpenSettings : hcOpenSettings;
+  const onGrantAll = Platform.OS === "ios" ? undefined : hcGrantAll;
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }} edges={['top','bottom']}>
@@ -111,24 +132,17 @@ export default function HomeScreen() {
           />
           <TrackerCarousel
             data={cards}
-            loading={hcLoading}
+            loading={Platform.OS === 'android' ? hcLoading : false}
             hasPerms={hasPerms}
-            onGrantAll={hcGrantAll}
-            onOpenSettings={hcOpenSettings}
-            onRefresh={hcRefresh}
+            onGrantAll={onGrantAll}           
+            onOpenSettings={onOpenSettings}
+            onRefresh={onRefresh}
             windowKey={hcWindow}
             showViewAll={false}
           />
         </View>
 
-        {/* Badge highlight (contribution) */}
-        {/* <BadgeHighlight /> */}
-
-        {/* Recommended (matching algo → top 10) */}
-        {/* <RecommendedRow /> */}
-
-        {/* All (recent → top 10) */}
-        <AllRow />
+       <AllRow />
       </ScrollView>
     </SafeAreaView>
   );

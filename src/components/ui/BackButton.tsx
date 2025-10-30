@@ -1,4 +1,5 @@
 import { useThemeColors } from "@/src/theme/useThemeColors";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { useNavigation } from "@react-navigation/native";
 import React from "react";
 import { Platform, Pressable, StyleSheet, Text, ViewStyle } from "react-native";
@@ -49,7 +50,7 @@ export default function BackButton({
         style,
       ]}
     >
-      <Text style={[styles.chev, { color }]}>{}‹</Text>
+      <Ionicons name="chevron-back" size={22} color={color} style={{ marginRight: 2 }} />
       <Text style={[styles.label, { color }]} numberOfLines={1}>
         {label}
       </Text>

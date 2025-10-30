@@ -6,13 +6,14 @@ import {
   CancelRes,
   DashboardRes,
   ResolverRes,
+  RewardsSummaryRes,
   SessionSnapshotRes,
   StartSessionRes,
   SubmitSegmentReq,
   SubmitSegmentRes,
   type TResolverRes,
+  type TRewardsSummaryRes,
 } from "./schema";
-
 
 import type { UploadSegmentResult } from "./types";
 
@@ -97,7 +98,9 @@ export async function uploadSegment(
   // Treat 409 duplicates as idempotent success
   if (!ok && status === 409) {
     if (__DEV__)
-      console.log("[sharing.api] submit_segment idempotent 409 → treating as ok");
+      console.log(
+        "[sharing.api] submit_segment idempotent 409 → treating as ok"
+      );
     return { ok: true, status: "ACTIVE" };
   }
 
@@ -159,7 +162,6 @@ export async function getSharingDashboard(userId: number) {
   return parsed;
 }
 
-
 /** Session snapshot for an (userId, postingId). */
 export async function getSessionSnapshot(userId: number, postingId: number) {
   const url = buildUrl("share_get_session_snapshot", { userId, postingId });
@@ -171,4 +173,17 @@ export async function getSessionSnapshot(userId: number, postingId: number) {
   }
   const parsed = SessionSnapshotRes.parse(json);
   return parsed;
+}
+
+
+// === [GET_REWARDS_SUMMARY] call user_rewards_summary with ?userId=
+export async function getRewardsSummary(userId: number): Promise<TRewardsSummaryRes> {
+  const url = buildUrl("user_rewards_summary", { userId });
+  const { ok, status, json, text } = await fetchJson("GET", url);
+  if (!ok || !json) {
+    throw new Error(
+      `user_rewards_summary ${status} ${String((json as any)?.message ?? text ?? "")}`
+    );
+  }
+  return RewardsSummaryRes.parse(json);
 }

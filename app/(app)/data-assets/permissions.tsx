@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 export default function PermissionsScreen() {
   const c = useThemeColors();
   const {
+    // ANDROID
     hcInitialize,
     hcGrantAll,
     hcOpenSettings,
@@ -16,8 +17,18 @@ export default function PermissionsScreen() {
     hcInitialized,
     hcAvailable,
     hcLoading,
+
+    // iOS
+    hkOpenSettings,
+    hkRefresh,
+
+    // Cross-platform
+    healthAvailable,
+    healthGranted,
+    probeHealthPlatform,
   } = useTrackingStore();
 
+  // Android: initialize HC once, then refresh
   useEffect(() => {
     if (Platform.OS !== 'android') return;
     (async () => {
@@ -25,19 +36,40 @@ export default function PermissionsScreen() {
         if (!hcInitialized) await hcInitialize();
         await hcRefresh();
       } catch {
-        // surfaced via hcError
+        /* surfaced via hcError */
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hcInitialized]);
 
+  // iOS: silent probe (warm auth check) on mount so the screen reflects reality
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    (async () => {
+      try {
+        await probeHealthPlatform(); // will set healthAvailable/healthGranted and hk observers if granted
+        await hkRefresh();           // populate datasets/keys meta for badges
+      } catch {
+        /* surfaced via hcError */
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const isAndroid = Platform.OS === 'android';
+  const isIOS = Platform.OS === 'ios';
+
+  // Availability & status labels
+  const available = isAndroid ? hcAvailable : healthAvailable;
   const grantedCount = hcGrantedKeys?.length ?? 0;
 
   const statusLabel =
-    Platform.OS !== 'android' ? 'iOS (HC unavailable)'
-    : !hcInitialized ? 'Initializing…'
-    : hcAvailable ? 'Health Connect ready'
-    : 'Health Connect unavailable';
+    isAndroid
+      ? (!hcInitialized ? 'Initializing…'
+         : available ? 'Health Connect ready'
+         : 'Health Connect unavailable')
+      : (available ? (healthGranted ? 'Apple Health ready' : 'Apple Health detected')
+         : 'Apple Health unavailable');
 
   return (
     <SafeAreaView edges={['top','bottom']} style={{ flex: 1, backgroundColor: c.bg }}>
@@ -46,21 +78,23 @@ export default function PermissionsScreen() {
 
         <Card>
           <Row>
-            <Badge tone={hcAvailable ? 'success' : 'warning'}>{statusLabel}</Badge>
+            <Badge tone={available ? 'success' : 'warning'}>{statusLabel}</Badge>
             <Badge>{grantedCount} grants</Badge>
           </Row>
 
           <Text style={{ color: c.text.secondary, marginTop: 10 }}>
             Web3Health treats your health signals as data assets. Grant only what you want to
-            package and share with buyers. You can revoke anytime in Health Connect settings.
+            package and share with buyers. You can revoke access any time in
+            {isAndroid ? ' Health Connect settings.' : ' iOS Settings → Health.'}
           </Text>
 
           <Row style={{ marginTop: 14 }}>
-            {Platform.OS === 'android' ? (
-              hcAvailable ? (
+            {isAndroid ? (
+              available ? (
                 <>
                   <PrimaryButton label="Grant all read permissions" onPress={hcGrantAll} />
                   <GhostButton label={hcLoading ? 'Refreshing…' : 'Refresh'} onPress={hcRefresh} />
+                  <GhostButton label="Open Health Connect" onPress={hcOpenSettings} />
                 </>
               ) : (
                 <>
@@ -69,8 +103,12 @@ export default function PermissionsScreen() {
                 </>
               )
             ) : (
+              // iOS actions
               <>
-                <GhostButton label="Open Health Connect" onPress={hcOpenSettings} />
+                {/* One-tap sheet trigger (silent if already granted) */}
+                <PrimaryButton label="Grant all read permissions" onPress={probeHealthPlatform} />
+                <GhostButton label="Refresh" onPress={hkRefresh} />
+                <GhostButton label="Open Health" onPress={hkOpenSettings} />
               </>
             )}
           </Row>
@@ -83,8 +121,8 @@ export default function PermissionsScreen() {
             What we may request
           </Text>
           <Text style={{ color: c.text.secondary, marginTop: 6 }}>
-            Steps, Floors climbed, Distance, Active calories, Heart rate, Sleep sessions, Weight.
-            Read-only. No writes.
+            Steps, Floors climbed, Distance, Active calories, Heart rate, Sleep, Weight, Respiratory rate.
+            Read-only. We never write to your health data.
           </Text>
         </Card>
       </ScrollView>
@@ -138,11 +176,11 @@ function Badge({ children, tone }: React.PropsWithChildren<{ tone?: 'success' | 
   );
 }
 
-function PrimaryButton({ label, onPress }: { label: string; onPress: () => void }) {
+function PrimaryButton({ label, onPress }: { label: string; onPress: () => void | Promise<void> }) {
   const c = useThemeColors();
   return (
     <Text
-      onPress={onPress}
+      onPress={() => void onPress()}
       style={{
         paddingHorizontal: 14,
         paddingVertical: 10,
@@ -158,11 +196,11 @@ function PrimaryButton({ label, onPress }: { label: string; onPress: () => void 
   );
 }
 
-function GhostButton({ label, onPress }: { label: string; onPress: () => void }) {
+function GhostButton({ label, onPress }: { label: string; onPress: () => void | Promise<void> }) {
   const c = useThemeColors();
   return (
     <Text
-      onPress={onPress}
+      onPress={() => void onPress()}
       style={{
         paddingHorizontal: 14,
         paddingVertical: 10,

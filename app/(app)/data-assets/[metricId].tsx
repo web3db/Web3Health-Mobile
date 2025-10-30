@@ -14,6 +14,7 @@ export default function MetricDetails() {
 
   const c = useThemeColors();
   const {
+    // shared data
     hcDatasets,
     hcWindow,
     hcLoading,
@@ -23,26 +24,42 @@ export default function MetricDetails() {
     hcAvailable,
     hcGrantedKeys,
     hcTimezoneLabel,
+
+    // iOS bits
+    hkRefresh,
+    hkOpenSettings,
+
+    // Android bits
+    hcRefresh,
+
+    // cross-platform
+    healthAvailable,
+    healthGranted,
+    probeHealthPlatform,
   } = useTrackingStore();
+
+  const isAndroid = Platform.OS === 'android';
+  const isIOS = Platform.OS === 'ios';
 
   const onWindowChange = useCallback(
     async (w: '24h' | '7d' | '30d' | '90d') => {
       if (w === hcWindow) return;
-      await hcSetWindow(w);
+      await hcSetWindow(w); // store routes refresh per platform automatically
+      // Optional: extra nudge for iOS to ensure fresh data after window switch
+      if (isIOS && healthGranted) {
+        try { await hkRefresh(); } catch {}
+      }
     },
-    [hcSetWindow, hcWindow]
+    [hcSetWindow, hcWindow, isIOS, healthGranted, hkRefresh]
   );
 
-  // Android-only
-  if (Platform.OS !== 'android') {
-    return (
-      <SafeAreaView edges={['top', 'bottom']} style={{ flex: 1, backgroundColor: c.bg }}>
-        <Text style={{ color: c.text.primary, padding: 16 }}>Health Connect is Android-only.</Text>
-      </SafeAreaView>
-    );
-  }
+  /** ───────────────────────── Availability & gating ───────────────────────── */
+  const available = isAndroid ? hcAvailable : healthAvailable;
+  const initialized = isAndroid ? hcInitialized : true; // iOS doesn't use a separate init screen
+  const hasPerms = (hcGrantedKeys?.length ?? 0) > 0;
 
-  if (!hcInitialized) {
+  // Android-only init screen
+  if (isAndroid && !initialized) {
     return (
       <SafeAreaView edges={['top', 'bottom']} style={{ flex: 1, backgroundColor: c.bg }}>
         <Text style={{ color: c.text.primary, padding: 16 }}>Initializing Health Connect…</Text>
@@ -51,25 +68,57 @@ export default function MetricDetails() {
     );
   }
 
-  if (!hcAvailable) {
+  // Not available
+  if (available === false) {
     return (
       <SafeAreaView edges={['top', 'bottom']} style={{ flex: 1, backgroundColor: c.bg }}>
-        <Text style={{ color: c.text.primary, padding: 16 }}>Health Connect not available on this device.</Text>
+        <View style={{ padding: 16 }}>
+          <Text style={{ color: c.text.primary, fontSize: 18, fontWeight: '800' }}>
+            {isAndroid ? 'Health Connect not available' : 'Apple Health not available'}
+          </Text>
+          <Text style={{ color: c.text.secondary, marginTop: 8 }}>
+            {isAndroid
+              ? 'Install/enable Health Connect and connect a source (Google Fit, Samsung Health…), then try again.'
+              : 'Ensure Apple Health is installed and has sources (e.g., Apple Watch) writing data.'}
+          </Text>
+          <Pressable
+            onPress={isAndroid ? hcRefresh : hkRefresh}
+            style={{
+              alignSelf: 'flex-start', marginTop: 12, paddingHorizontal: 12, paddingVertical: 8,
+              borderRadius: 999, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface
+            }}
+          >
+            <Text style={{ color: c.text.primary, fontWeight: '800' }}>Refresh</Text>
+          </Pressable>
+        </View>
       </SafeAreaView>
     );
   }
 
-  // Find dataset for this metric
+  // Missing permissions
+  if (!hasPerms) {
+    return (
+      <SafeAreaView edges={['top', 'bottom']} style={{ flex: 1, backgroundColor: c.bg }}>
+        <View style={{ padding: 16 }}>
+          <Text style={{ color: c.text.primary, fontSize: 18, fontWeight: '800' }}>
+            {isAndroid ? 'Grant access to Health Connect' : 'Grant access to Apple Health'}
+          </Text>
+          <Text style={{ color: c.text.secondary, marginTop: 8 }}>
+            Choose which metrics you allow us to read. You can revoke anytime in {isAndroid ? 'Health Connect' : 'iOS Settings › Health'}.
+          </Text>
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+            <ChipButton label="Grant all" onPress={probeHealthPlatform} />
+            <ChipButton label={isAndroid ? 'Open HC' : 'Open Health'} onPress={isAndroid ? undefined : hkOpenSettings} />
+            <ChipButton label="Refresh" onPress={isAndroid ? hcRefresh : hkRefresh} />
+          </View>
+          {hcError ? <Text style={{ color: 'tomato', marginTop: 8 }}>Error: {hcError}</Text> : null}
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  /** ───────────────────────── Find dataset ───────────────────────── */
   const d = useMemo(() => hcDatasets.find(x => x.id === (key as MetricKey)), [hcDatasets, key]);
-
-  // Grant helper (kept if you surface permission UI later)
-  const hasGrant = useCallback(
-    (k: MetricKey) => (hcGrantedKeys ?? []).includes(k),
-    [hcGrantedKeys]
-  );
-
-  // Compute granted for generic case (not currently displayed here)
-  const grantedGeneric = d ? hasGrant(d.id) : false;
 
   // Still loading or no datasets yet
   if (!hcDatasets || hcDatasets.length === 0) {
@@ -92,7 +141,7 @@ export default function MetricDetails() {
     );
   }
 
-  // Normalize buckets to numbers
+  /** ───────────────────────── Render dataset ───────────────────────── */
   const numericBuckets = useMemo(
     () => d.buckets.map(b => ({ ...b, value: Number(b.value ?? 0) })),
     [d.buckets]
@@ -122,48 +171,38 @@ export default function MetricDetails() {
     return rows;
   }, [numericBuckets]);
 
-
-  const PAGE = 20; // show 20 at a time
+  const PAGE = 20;
   const [visibleCount, setVisibleCount] = useState(PAGE);
   const hasMore = breakdownRows.length > visibleCount;
   const showMore = () => setVisibleCount(c => Math.min(c + PAGE, breakdownRows.length));
-  // Window span for coverage
+
   const coverageTotal =
     hcWindow === '24h' ? 24 :
       hcWindow === '7d' ? 7 :
         hcWindow === '30d' ? 30 : 90;
 
-  // Coverage count (prefer meta from store if present; fallback to local calc)
   const coverageCount = useMemo(() => {
     if (d.meta?.coverageCount != null) return d.meta.coverageCount;
-    // Local fallback: a bucket "has data" iff value > 0
     return numericBuckets.filter(b => (Number(b.value) || 0) > 0).length;
   }, [d.meta?.coverageCount, numericBuckets]);
 
-  // Headline value rule:
-  // - Accumulative metrics: headline = sum of buckets (d.total)
-  // - Heart rate: headline = most recent sample in window (d.latest) or 0 if none
   const isHeartRate = d.id === 'heartRate';
   const headlineNumber = isHeartRate
     ? (d.latest != null ? Number(d.latest) : 0)
     : Math.round(Number(d.total || 0));
 
-  // Show 0 ONLY when the window truly has no data
   const hasAnyDataInWindow = isHeartRate
     ? (d.latest != null && Number(d.latest) > 0) || numericBuckets.some(b => Number(b.value) > 0)
     : numericBuckets.some(b => Number(b.value) > 0);
 
   const headlineSafe = hasAnyDataInWindow ? headlineNumber : 0;
-
   const primaryText = `${headlineSafe} ${d.unit}`;
 
-  // Trend label (unchanged)
   const trendLabel = d.trend
     ? (d.trend.dir === 'up' ? '↑' : d.trend.dir === 'down' ? '↓' : '→') +
-    (typeof d.trend.pct === 'number' ? ` ${d.trend.pct > 0 ? '+' : ''}${Math.round(d.trend.pct)}%` : '')
+      (typeof d.trend.pct === 'number' ? ` ${d.trend.pct > 0 ? '+' : ''}${Math.round(d.trend.pct)}%` : '')
     : '→ n/a';
 
-  // Freshness: use dataset's freshnessISO if available
   const freshnessLabel = formatFreshness(d.freshnessISO);
 
   return (
@@ -175,7 +214,6 @@ export default function MetricDetails() {
           <View style={{ marginTop: 8 }}>
             <DataWindowSelector value={hcWindow} onChange={onWindowChange} />
           </View>
-          {/* Timezone badge */}
           <Text
             accessibilityLabel="Current timezone"
             style={{ color: c.text.secondary, opacity: 0.7, fontSize: 12, marginTop: 6 }}
@@ -274,8 +312,7 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-// Simple freshness formatter based on ISO time.
-// Shows "—" if missing; "Just now" if <60s; otherwise "X min ago" or local time.
+// Simple freshness formatter
 function formatFreshness(iso?: string) {
   if (!iso) return '—';
   try {
@@ -284,7 +321,6 @@ function formatFreshness(iso?: string) {
     const deltaSec = Math.max(0, Math.floor((now - t) / 1000));
     if (deltaSec < 60) return 'Just now';
     if (deltaSec < 3600) return `${Math.floor(deltaSec / 60)} min ago`;
-    // Fallback: show local time
     const d = new Date(iso);
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   } catch {
@@ -295,7 +331,6 @@ function formatFreshness(iso?: string) {
 function formatBucketStamp(iso: string, isHourly: boolean) {
   const d = new Date(iso);
   if (isHourly) {
-    // e.g., "Oct 2, 14:00"
     return d.toLocaleString([], {
       month: 'short',
       day: '2-digit',
@@ -303,6 +338,25 @@ function formatBucketStamp(iso: string, isHourly: boolean) {
       minute: '2-digit',
     });
   }
-  // e.g., "Oct 02"
   return d.toLocaleDateString([], { month: 'short', day: '2-digit' });
+}
+
+function ChipButton({ label, onPress }: { label: string; onPress?: () => void | Promise<void> }) {
+  const c = useThemeColors();
+  return (
+    <Pressable
+      onPress={() => void onPress?.()}
+      style={{
+        alignSelf: 'flex-start',
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: c.border,
+        backgroundColor: c.surface
+      }}
+    >
+      <Text style={{ color: c.text.primary, fontWeight: '800' }}>{label}</Text>
+    </Pressable>
+  );
 }
