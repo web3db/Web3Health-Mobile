@@ -54,6 +54,11 @@ export type MetricKey =
   | "sleep"
   | "respiratoryRate";
 
+
+  /** ───────────────────────── Window & Series types used by sharing engine ───────────────────────── */
+export type Window = { fromUtc: string; toUtc: string };
+export type SeriesPoint = { ts: string; value: number };
+
 export type TimezoneInfo = {
   iana?: string;
   offsetMinutes: number; // minutes east of UTC
@@ -96,7 +101,6 @@ type QtyId =
   | typeof HK_TYPES.weight
   | typeof HK_TYPES.respiratoryRate;
 
-type CatId = typeof HK_TYPES.sleep;
 
 /** Read-only for Phase 1 */
 const READ_QTY: readonly QuantityTypeIdentifier[] = [
@@ -132,19 +136,6 @@ export async function hkIsAvailable(): Promise<boolean> {
     logErr("hkIsAvailable import/exec failed", e);
     return false;
   }
-}
-
-function arrifyStats(stat: "cumulativeSum" | "discreteAverage" | "mostRecent") {
-  // Native expects an array of statistics options; weight/mostRecent won't use stats-collection anyway.
-  if (stat === "mostRecent") return [];
-  return [stat];
-}
-
-/** Convert various date inputs to epoch milliseconds for the bridge */
-function toMs(d: Date | string | number): number {
-  if (typeof d === "number") return d;
-  if (typeof d === "string") return new Date(d).getTime();
-  return d.getTime();
 }
 
 /** Prompts for all Phase-1 reads. Returns true if authorized. */
@@ -270,6 +261,29 @@ export function lastNDaysLocal(days: number) {
   return { startISO: start.toISOString(), endISO: end.toISOString() };
 }
 
+/** ───────────────────────── Window helpers ───────────────────────── */
+function parseIso(i: string) {
+  return new Date(i);
+}
+
+function pickStatsInterval(win: Window): "hour" | "day" {
+  const start = parseIso(win.fromUtc);
+  const end = parseIso(win.toUtc);
+  const ms = Math.max(0, end.getTime() - start.getTime());
+  const hours = ms / 3_600_000;
+  // Use hourly for windows up to ~36h; else daily for long ranges
+  return hours <= 36 ? "hour" : "day";
+}
+
+// Clamp a date to [start, end)
+function clampToWindow(d: Date, win: Window) {
+  const s = parseIso(win.fromUtc).getTime();
+  const e = parseIso(win.toUtc).getTime();
+  const t = d.getTime();
+  return new Date(Math.min(Math.max(t, s), e));
+}
+
+
 export function last24hLocal() {
   const end = new Date();
   end.setSeconds(0, 0);
@@ -290,6 +304,8 @@ async function withHK<T>(fn: (HK: HKModule) => Promise<T>): Promise<T> {
     _hkModule = await import("@kingstinct/react-native-healthkit");
   return fn(_hkModule);
 }
+
+
 // ───────────────────────── Quantity type units ─────────────────────────
 
 const QTY_UNIT: Record<
@@ -386,6 +402,124 @@ const QTY_TYPE_MAP: Record<
     stats: "discreteAverage",
   },
 };
+
+
+
+/** ───────────────────────── Presence probe for apply-time checks ─────────────────────────
+ * Supports the metrics we gate at apply: steps, floors, distance, activeCalories, heartRate, sleep.
+ */
+export async function hkHasDataInRange(
+  metric: "steps" | "floors" | "distance" | "activeCalories" | "heartRate" | "sleep",
+  fromIso: string,
+  toIso: string
+): Promise<{ available: boolean; hasData: boolean; count?: number; sum?: number }> {
+  if (Platform.OS !== "ios") return { available: false, hasData: false };
+  const warm = await hkWarmAuthorizationCheck();
+  if (!warm.available || !warm.granted) return { available: false, hasData: false };
+
+  const start = parseIso(fromIso);
+  const end = parseIso(toIso);
+
+  try {
+    if (metric === "sleep") {
+      // Count any sleep category samples overlapping the window
+      const rows = await withHK(async (HK) => {
+        const qcs = (HK as any).queryCategorySamples;
+        if (!qcs) return [] as any[];
+        const out = await qcs(HK_TYPES.sleep, { startDate: start, endDate: end });
+        return Array.isArray(out) ? out : [];
+      });
+      const count = rows.length;
+      return { available: true, hasData: count > 0, count };
+    }
+
+    if (metric === "heartRate") {
+      const rows = await getStatisticsCollection({
+        metric: "heartRate",
+        start,
+        end,
+        interval: pickStatsInterval({ fromUtc: fromIso, toUtc: toIso }),
+      });
+      const positive = rows.filter((r) => (Number(r.value) || 0) > 0).length;
+      return { available: true, hasData: positive > 0, count: positive };
+    }
+
+    // Sum-style metrics
+    const sumMetrics = new Set(["steps", "floors", "distance", "activeCalories"]);
+    if (sumMetrics.has(metric)) {
+      const rows = await getStatisticsCollection({
+        metric: metric as keyof typeof QTY_TYPE_MAP,
+        start,
+        end,
+        interval: pickStatsInterval({ fromUtc: fromIso, toUtc: toIso }),
+      });
+      const sum = rows.reduce((s, r) => s + (Number(r.value) || 0), 0);
+      return { available: true, hasData: sum > 0, sum: Math.round(sum) };
+    }
+
+    // Not probed in preflight
+    return { available: true, hasData: false };
+  } catch (e) {
+    logErr("[HK] hkHasDataInRange failed", e);
+    return { available: true, hasData: false };
+  }
+}
+
+
+/** ───────────────────────── Window sum reader (steps/floors/distance/activeCalories) ───────────────────────── */
+export async function hkReadSumInWindow(
+  metric: "steps" | "floors" | "distance" | "activeCalories",
+  win: Window
+): Promise<{ sum: number }> {
+  const warm = await hkWarmAuthorizationCheck();
+  if (!warm.available || !warm.granted) return { sum: 0 };
+
+  const start = parseIso(win.fromUtc);
+  const end = parseIso(win.toUtc);
+  const rows = await getStatisticsCollection({
+    metric: metric as keyof typeof QTY_TYPE_MAP,
+    start,
+    end,
+    interval: pickStatsInterval(win),
+  });
+  const sum = rows.reduce((s, r) => s + (Number(r.value) || 0), 0);
+  return { sum: Math.max(0, Math.round(sum)) };
+}
+
+
+/** ───────────────────────── Window heart-rate reader ─────────────────────────
+ * Returns basic stats and (optional) hourly points within the window.
+ */
+export async function hkReadHeartRateInWindow(
+  win: Window
+): Promise<{ avgBpm?: number; minBpm?: number; maxBpm?: number; points?: SeriesPoint[] }> {
+  const warm = await hkWarmAuthorizationCheck();
+  if (!warm.available || !warm.granted) return {};
+
+  const start = parseIso(win.fromUtc);
+  const end = parseIso(win.toUtc);
+  const rows = await getStatisticsCollection({
+    metric: "heartRate",
+    start,
+    end,
+    interval: "hour", // finer granularity helps stats & points
+  });
+
+  const vals = rows.map((r) => Number(r.value) || 0).filter((v) => v > 0);
+  if (!vals.length) return { points: [] };
+
+  const sum = vals.reduce((a, b) => a + b, 0);
+  const avg = Math.round(sum / vals.length);
+  const min = Math.min(...vals.map((v) => Math.round(v)));
+  const max = Math.max(...vals.map((v) => Math.round(v)));
+  const points: SeriesPoint[] = rows.map((r) => ({
+    ts: r.end ?? r.start, // end of hour (or start if end missing)
+    value: Math.round(Number(r.value) || 0),
+  }));
+
+  return { avgBpm: avg, minBpm: min, maxBpm: max, points };
+}
+
 
 // ───────────────────────── Generic Statistics Collection ─────────────────────────
 // Try stats-collection first (hour/day), else fall back to raw samples we bin ourselves.
@@ -967,6 +1101,40 @@ export async function readSleepSessions(
   }
 }
 
+/** ───────────────────────── Window sleep-minutes reader ───────────────────────── */
+export async function hkReadSleepMinutesInWindow(
+  win: Window
+): Promise<{ minutes: number }> {
+  const warm = await hkWarmAuthorizationCheck();
+  if (!warm.available || !warm.granted) return { minutes: 0 };
+
+  const minutes = await withHK(async (HK) => {
+    const qcs = (HK as any).queryCategorySamples;
+    if (!qcs) return 0;
+
+    const start = parseIso(win.fromUtc);
+    const end = parseIso(win.toUtc);
+    const rows = await qcs(HK_TYPES.sleep, { startDate: start, endDate: end });
+
+    if (!Array.isArray(rows) || !rows.length) return 0;
+
+    let total = 0;
+    for (const s of rows) {
+      const sStart = new Date(s.startDate);
+      const sEnd = new Date(s.endDate ?? s.startDate);
+      const overlapStart = clampToWindow(sStart, win);
+      const overlapEnd = clampToWindow(sEnd, win);
+      if (overlapEnd > overlapStart) {
+        total += Math.round((overlapEnd.getTime() - overlapStart.getTime()) / 60000);
+      }
+    }
+    return total;
+  });
+
+  return { minutes: Math.max(0, minutes) };
+}
+
+
 // --- Quick raw-sample and latest-value probe ---
 export async function hkDebugRaw() {
   try {
@@ -1051,6 +1219,32 @@ export async function hkDebugRaw() {
 let _hkBgRemovers: Array<() => void> = [];
 let _hkBgActive = false;
 
+async function hkEnsureBgPreconditions() {
+  const warm = await hkWarmAuthorizationCheck();
+  if (!warm.available) { log("[HK][BG] Not available on this device"); return false; }
+  if (!warm.granted)   { log("[HK][BG] Permissions not granted (skip BG)"); return false; }
+  return true;
+}
+
+async function hkBgDefaultOnChangeFetch(sampleId: SampleTypeIdentifier) {
+  try {
+    const { startISO, endISO } = last24hLocal();
+    if (sampleId === HK_TYPES.sleep) {
+      const mins = await hkReadSleepMinutesInWindow({ fromUtc: startISO, toUtc: endISO });
+      log("[HK][BG] sleep probe (24h minutes) →", mins.minutes);
+    } else if (sampleId === HK_TYPES.heartRate) {
+      const rows = await readHeartRateHourly24();
+      log("[HK][BG] HR last bucket →", rows.slice(-1));
+    } else {
+      const rows = await read24hBuckets(sampleId as any);
+      log("[HK][BG] qty last bucket →", rows.slice(-1));
+    }
+    // TODO: trigger your store refresh / share pipeline here if desired
+  } catch (e) {
+    logErr("[HK][BG] defaultOnChangeFetch error", e, sampleId);
+  }
+}
+
 export async function hkStartBackgroundObservers(
   onChange?: (id: SampleTypeIdentifier) => void
 ) {
@@ -1060,42 +1254,29 @@ export async function hkStartBackgroundObservers(
   try {
     const HK = await import("@kingstinct/react-native-healthkit");
 
+    // [HK][BG][ANCHOR] preconditions
+    if (!(await hkEnsureBgPreconditions())) return false;
+
     const typeIds: SampleTypeIdentifier[] = [
-      HK_TYPES.steps,
-      HK_TYPES.floors,
-      HK_TYPES.distance,
-      HK_TYPES.activeCalories,
-      HK_TYPES.heartRate,
-      HK_TYPES.weight,
-      HK_TYPES.respiratoryRate,
-      HK_TYPES.sleep,
+      HK_TYPES.steps, HK_TYPES.floors, HK_TYPES.distance, HK_TYPES.activeCalories,
+      HK_TYPES.heartRate, HK_TYPES.weight, HK_TYPES.respiratoryRate, HK_TYPES.sleep,
     ];
 
     function makeDebounced(fn: (id: SampleTypeIdentifier) => void, ms = 800) {
       let timer: any;
-      return (id: SampleTypeIdentifier) => {
-        clearTimeout(timer);
-        timer = setTimeout(() => fn(id), ms);
-      };
+      return (id: SampleTypeIdentifier) => { clearTimeout(timer); timer = setTimeout(() => fn(id), ms); };
     }
 
     const localOnChange = makeDebounced(
-      onChange ?? ((id) => log("[HK][BG] change for", id)),
+      onChange ?? ((id) => { log("[HK][BG] change for", id); hkBgDefaultOnChangeFetch(id); }),
       800
     );
 
-    // 1) Ask iOS to wake us when data changes
+    // Enable background delivery for each type
     for (const t of typeIds) {
       try {
         if ((HK as any).enableBackgroundDelivery) {
-          try {
-            await (HK as any).enableBackgroundDelivery(
-              t,
-              HK.UpdateFrequency.immediate
-            );
-          } catch (e) {
-            logErr("[HK][BG] enableBackgroundDelivery failed", e, t);
-          }
+          await (HK as any).enableBackgroundDelivery(t, HK.UpdateFrequency.immediate);
         } else {
           log("[HK][BG] enableBackgroundDelivery unavailable for", t);
         }
@@ -1104,51 +1285,69 @@ export async function hkStartBackgroundObservers(
       }
     }
 
-    // 2) Subscribe → returns a string id; store a remover that calls unsubscribeQuery(id)
+    // Subscribe and track success
     _hkBgRemovers = [];
+    let anySubscribed = false; // [HK][BG][ANCHOR] active-when-any
     for (const t of typeIds) {
       try {
-        const id: string = HK.subscribeToChanges(t, () => {
-          try {
-            localOnChange(t);
-          } catch {}
-        });
-        _hkBgRemovers.push(() => {
-          try {
-            (HK as any).unsubscribeQuery?.(id);
-          } catch {}
-        });
+        const id: string = HK.subscribeToChanges(t, () => { try { localOnChange(t); } catch {} });
+        _hkBgRemovers.push(() => { try { (HK as any).unsubscribeQuery?.(id); } catch {} });
+        anySubscribed = true;
       } catch (e) {
         logErr("[HK][BG] subscribeToChanges failed", e, t);
       }
     }
 
-    _hkBgActive = true;
-    log("[HK][BG] observers active for", _hkBgRemovers.length, "types");
-    return true;
+    _hkBgActive = anySubscribed;
+    log("[HK][BG] observers active:", _hkBgActive, "types:", _hkBgRemovers.length);
+    return _hkBgActive;
   } catch (e) {
     logErr("[HK][BG] start failed", e);
     return false;
   }
 }
 
+// [HK][BG][ANCHOR] status
+export function hkIsBackgroundObserversActive() {
+  return _hkBgActive;
+}
+
+// [HK][BG][ANCHOR] self-test
+export async function hkBackgroundSelfTest() {
+  const warm = await hkWarmAuthorizationCheck();
+  const { startISO, endISO } = last24hLocal();
+  let steps24 = 0;
+  try {
+    steps24 = (await hkReadSumInWindow("steps", { fromUtc: startISO, toUtc: endISO })).sum;
+  } catch {}
+  const out = { available: warm.available, granted: warm.granted, active: _hkBgActive, steps24 };
+  log("[HK][BG] self-test →", out);
+  return out;
+}
+
+
+// [HK][BG][ANCHOR] stop-observers
 export async function hkStopBackgroundObservers() {
   if (Platform.OS !== "ios") return true;
   try {
     const HK = await import("@kingstinct/react-native-healthkit");
 
-    // remove JS-level subscriptions (calls unsubscribeQuery on each id)
-    for (const rm of _hkBgRemovers) {
-      try {
-        rm();
-      } catch {}
-    }
+    for (const rm of _hkBgRemovers) { try { rm(); } catch {} }
     _hkBgRemovers = [];
 
-    // and stop background delivery
     try {
-      await HK.disableAllBackgroundDelivery();
-    } catch {}
+      if ((HK as any).disableAllBackgroundDelivery) {
+        await (HK as any).disableAllBackgroundDelivery();
+      } else {
+        // Optionally: per-type disable if exposed
+        // for (const t of [HK_TYPES.steps, HK_TYPES.floors, HK_TYPES.distance, HK_TYPES.activeCalories,
+        //                  HK_TYPES.heartRate, HK_TYPES.weight, HK_TYPES.respiratoryRate, HK_TYPES.sleep]) {
+        //   await (HK as any).disableBackgroundDelivery?.(t);
+        // }
+      }
+    } catch (e) {
+      logErr("[HK][BG] disableAllBackgroundDelivery failed", e);
+    }
 
     _hkBgActive = false;
     log("[HK][BG] observers stopped");
@@ -1158,3 +1357,19 @@ export async function hkStopBackgroundObservers() {
     return false;
   }
 }
+
+
+// [HK][BG][ANCHOR] bootstrap
+export async function hkBootstrapBackgroundObservers() {
+  try {
+    const warm = await hkWarmAuthorizationCheck();
+    if (warm.available && warm.granted) {
+      await hkStartBackgroundObservers();
+    } else {
+      log("[HK][BG] bootstrap skipped (not available or not granted)");
+    }
+  } catch (e) {
+    logErr("[HK][BG] bootstrap failed", e);
+  }
+}
+

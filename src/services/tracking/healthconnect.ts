@@ -67,6 +67,12 @@ type MetricKey =
   | 'weight'
   | 'sleep';
 
+
+  /** ───────────────────────── Window & Series types (parity with HK) ───────────────────────── */
+export type Window = { fromUtc: string; toUtc: string };
+export type SeriesPoint = { ts: string; value: number };
+
+
 type MetricDef = {
   label: string;
   recordType: HCRecordType;
@@ -845,6 +851,48 @@ export async function read7dBuckets(
 }
 
 
+/** ───────────────────────── Window helpers ───────────────────────── */
+function parseIso(i: string) { return new Date(i); }
+
+function pickStatsInterval(win: Window): 'hour' | 'day' {
+  const s = parseIso(win.fromUtc).getTime();
+  const e = parseIso(win.toUtc).getTime();
+  const hours = Math.max(0, (e - s) / 3_600_000);
+  return hours <= 36 ? 'hour' : 'day';
+}
+
+function toBetween(win: Window): Between {
+  return {
+    operator: 'between',
+    startTime: parseIso(win.fromUtc).toISOString(),
+    endTime: parseIso(win.toUtc).toISOString(),
+  };
+}
+
+// Build hourly/day edges for arbitrary window (end-exclusive), aligned to local hour/day starts.
+function startOfHour(d: Date) { return new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), 0, 0, 0); }
+function startOfDay(d: Date) { return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0); }
+
+function makeEdgesForWindow(win: Window, interval: 'hour' | 'day'): Array<{ start: Date; end: Date }> {
+  const s0 = parseIso(win.fromUtc);
+  const e0 = parseIso(win.toUtc);
+  let cur = interval === 'hour' ? startOfHour(s0) : startOfDay(s0);
+  const step = interval === 'hour' ? 1 : 24;
+
+  const edges: Array<{ start: Date; end: Date }> = [];
+  while (cur < e0) {
+    const next = new Date(cur);
+    next.setHours(cur.getHours() + step, 0, 0, 0);
+    const start = cur < s0 ? s0 : cur;
+    const end = next > e0 ? e0 : next;
+    if (end > start) edges.push({ start, end });
+    cur = next;
+  }
+  return edges;
+}
+
+
+
 /** Local timezone helpers (handles DST because offset is read at that instant) */
 function tzOffsetHHMM(d: Date) {
   const mins = -d.getTimezoneOffset();
@@ -1112,3 +1160,194 @@ export async function readAllToday(): Promise<TodaySnapshot> {
     respiratoryRate: rr,
   };
 }
+
+
+/** ───────────────────────── Presence probe for apply-time checks ─────────────────────────
+ * Supports: steps, floors, distance, activeCalories, heartRate, sleep
+ */
+export async function hcHasDataInRange(
+  metric: 'steps' | 'floors' | 'distance' | 'activeCalories' | 'heartRate' | 'sleep',
+  fromIso: string,
+  toIso: string
+): Promise<{ available: boolean; hasData: boolean; count?: number; sum?: number }> {
+  if (Platform.OS !== 'android') return { available: false, hasData: false };
+  if (!(await hasReadPermission(metric as any))) return { available: true, hasData: false };
+
+  const win: Window = { fromUtc: fromIso, toUtc: toIso };
+  const range = toBetween(win);
+
+  try {
+    if (metric === 'sleep') {
+      const out = await readRecords('SleepSession', { timeRangeFilter: range, pageSize: 1, ascendingOrder: false });
+      const hasData = (out.records?.length ?? 0) > 0;
+      return { available: true, hasData, count: out.records?.length ?? 0 };
+    }
+
+    if (metric === 'heartRate') {
+      const out = await readRecords('HeartRate', { timeRangeFilter: range, pageSize: 5, ascendingOrder: false });
+      const recs = (out.records ?? []) as any[];
+      let cnt = 0;
+      for (const r of recs) {
+        const samples = Array.isArray(r?.samples) ? r.samples : [];
+        if (samples.some((s: any) => Number.isFinite(Number(s.beatsPerMinute)) && Number(s.beatsPerMinute) > 0)) {
+          cnt++;
+        }
+      }
+      return { available: true, hasData: cnt > 0, count: cnt };
+    }
+
+    // Sum-style metrics: prefer aggregate; fallback to raw
+    const aggMap = {
+      steps: { recordType: 'Steps' as const, key: 'COUNT_TOTAL' as const },
+      floors: { recordType: 'FloorsClimbed' as const, key: 'FLOORS_CLIMBED_TOTAL' as const },
+      distance: { recordType: 'Distance' as const, key: 'DISTANCE_TOTAL' as const },
+      activeCalories: { recordType: 'ActiveCaloriesBurned' as const, key: 'ACTIVE_CALORIES_TOTAL' as const },
+    } as const;
+
+    const meta = aggMap[metric as keyof typeof aggMap];
+    const res = await aggregateRecord({ recordType: meta.recordType, timeRangeFilter: range });
+    const rawSum = (res as any)?.result?.[meta.key];
+    let sum =
+      metric === 'distance'
+        ? unwrapAggregateValue('distance', rawSum)
+        : metric === 'activeCalories'
+          ? unwrapAggregateValue('activeCalories', rawSum)
+          : Number(rawSum || 0);
+
+    if (!Number.isFinite(sum) || sum <= 0) {
+      // fallback to raw
+      if (metric === 'steps') sum = await sumStepsFromRecords(range);
+      else if (metric === 'floors') sum = await sumFloorsFromRecords(range);
+      else if (metric === 'distance') sum = await sumDistanceFromRecords(range);
+      else if (metric === 'activeCalories') sum = await sumActiveCalsFromRecords(range);
+    }
+
+    return { available: true, hasData: (sum || 0) > 0, sum: Math.round(sum || 0) };
+  } catch (e) {
+    logErr('[HC] hcHasDataInRange failed', e);
+    return { available: true, hasData: false };
+  }
+}
+
+
+/** ───────────────────────── Window sum reader (steps/floors/distance/activeCalories) ───────────────────────── */
+export async function hcReadSumInWindow(
+  metric: 'steps' | 'floors' | 'distance' | 'activeCalories',
+  win: Window
+): Promise<{ sum: number }> {
+  if (Platform.OS !== 'android') return { sum: 0 };
+  if (!(await hasReadPermission(metric as any))) return { sum: 0 };
+
+  const range = toBetween(win);
+  try {
+    const m = METRICS[metric];
+    const res = await aggregateRecord({ recordType: m.recordType, timeRangeFilter: range });
+    const key = m.aggregateKey!;
+    let sum = unwrapAggregateValue(metric as any, (res as any)?.result?.[key]);
+
+    if (!Number.isFinite(sum) || sum <= 0) {
+      if (metric === 'steps') sum = await sumStepsFromRecords(range);
+      else if (metric === 'floors') sum = await sumFloorsFromRecords(range);
+      else if (metric === 'distance') sum = await sumDistanceFromRecords(range);
+      else if (metric === 'activeCalories') sum = await sumActiveCalsFromRecords(range);
+    }
+    return { sum: Math.max(0, Math.round(sum || 0)) };
+  } catch (e) {
+    logErr(`[HC] hcReadSumInWindow(${metric}) failed`, e);
+    // fallback
+    if (metric === 'steps') return { sum: await sumStepsFromRecords(range) };
+    if (metric === 'floors') return { sum: await sumFloorsFromRecords(range) };
+    if (metric === 'distance') return { sum: await sumDistanceFromRecords(range) };
+    if (metric === 'activeCalories') return { sum: await sumActiveCalsFromRecords(range) };
+    return { sum: 0 };
+  }
+}
+
+/** ───────────────────────── Window heart-rate reader ─────────────────────────
+ * Returns avg/min/max and time-binned points (hourly ≤36h, else daily).
+ */
+export async function hcReadHeartRateInWindow(
+  win: Window
+): Promise<{ avgBpm?: number; minBpm?: number; maxBpm?: number; points?: SeriesPoint[] }> {
+  if (Platform.OS !== 'android') return {};
+  if (!(await hasReadPermission('heartRate'))) return {};
+
+  const range = toBetween(win);
+  const interval = pickStatsInterval(win);
+  const edges = makeEdgesForWindow(win, interval);
+
+  try {
+    const out = await readRecords('HeartRate', {
+      timeRangeFilter: range,
+      pageSize: 2000,
+      ascendingOrder: true,
+    });
+    const recs = (out.records ?? []) as any[];
+
+    const sums = new Array(edges.length).fill(0);
+    const counts = new Array(edges.length).fill(0);
+    const allVals: number[] = [];
+
+    for (const r of recs) {
+      const samples = Array.isArray(r?.samples) ? r.samples : [];
+      for (const s of samples) {
+        const t = new Date(s.time).getTime();
+        const bpm = Number(s.beatsPerMinute);
+        if (!Number.isFinite(bpm) || bpm <= 0) continue;
+        allVals.push(Math.round(bpm));
+        for (let i = 0; i < edges.length; i++) {
+          const S = edges[i].start.getTime(), E = edges[i].end.getTime();
+          if (t >= S && t < E) { sums[i] += bpm; counts[i] += 1; break; }
+        }
+      }
+    }
+
+    if (allVals.length === 0) return { points: [] };
+
+    const avg = Math.round(allVals.reduce((a, b) => a + b, 0) / allVals.length);
+    const min = Math.min(...allVals);
+    const max = Math.max(...allVals);
+
+    const points: SeriesPoint[] = edges.map((e, i) => ({
+      ts: e.end.toISOString(),
+      value: counts[i] > 0 ? Math.round(sums[i] / counts[i]) : 0,
+    }));
+
+    return { avgBpm: avg, minBpm: min, maxBpm: max, points };
+  } catch (e) {
+    logErr('[HC] hcReadHeartRateInWindow failed', e);
+    return {};
+  }
+}
+
+/** ───────────────────────── Window sleep-minutes reader ───────────────────────── */
+export async function hcReadSleepMinutesInWindow(win: Window): Promise<{ minutes: number }> {
+  if (Platform.OS !== 'android') return { minutes: 0 };
+  if (!(await hasReadPermission('sleep'))) return { minutes: 0 };
+
+  try {
+    const range = toBetween(win);
+    const out = await readRecords('SleepSession', {
+      timeRangeFilter: range,
+      pageSize: 2000,
+      ascendingOrder: true,
+    });
+    const recs = (out.records ?? []) as Array<{ startTime: string; endTime: string }>;
+    const wS = parseIso(win.fromUtc).getTime();
+    const wE = parseIso(win.toUtc).getTime();
+
+    let totalMs = 0;
+    for (const r of recs) {
+      const s = new Date(r.startTime).getTime();
+      const e = new Date(r.endTime).getTime();
+      const overlapStart = Math.max(s, wS);
+      const overlapEnd = Math.min(e, wE);
+      if (overlapEnd > overlapStart) totalMs += (overlapEnd - overlapStart);
+    }
+    return { minutes: Math.max(0, Math.round(totalMs / 60000)) };
+  } catch (e) {
+    logErr('[HC] hcReadSleepMinutesInWindow failed', e);
+    return { minutes: 0 };
+  }
+}
+

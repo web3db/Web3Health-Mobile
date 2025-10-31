@@ -11,7 +11,20 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "UIBackgroundModes": ["processing", "fetch"]
+        "UIBackgroundModes": [
+          "processing",
+          "fetch",
+          "processing",
+          "fetch"
+        ],
+        "NSHealthShareUsageDescription": "Allow Web3Health to read steps, distance, heart rate and sleep to generate insights and enable sharing.",
+        "NSHealthUpdateUsageDescription": "Allow Web3Health to write optional well-being entries (e.g., mindful minutes).",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "entitlements": {
+        "com.apple.developer.healthkit": true,
+        "com.apple.developer.healthkit.access": true,
+        "com.apple.developer.healthkit.background-delivery": true
       },
       "bundleIdentifier": "com.mohitnaik21.Web3Health"
     },
@@ -76,6 +89,12 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "7c693ae4-7c4a-44b0-8ecd-22169f1dcaf1"
+      }
     }
   }
 }

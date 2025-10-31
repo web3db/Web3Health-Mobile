@@ -2,6 +2,12 @@
 // Orchestrates Apply → session → planner+producer engine (real HC, mock HTTP uploader)
 // with persisted state (AsyncStorage via zustand/middleware)
 
+import {
+  sendSegmentSuccess,
+  sendSessionCancelled,
+  sendSessionCompleted,
+  sendSessionStarted
+} from "@/src/services/notifications";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Alert, AppState, Platform, ToastAndroid } from "react-native";
 import { create } from "zustand";
@@ -436,6 +442,9 @@ export const useShareStore = create<StoreState>()(
               }
 
               // Continue with normal Day-0 behavior (no grace)
+              try {
+                await sendSessionStarted(postingId);
+              } catch {}
               await get().sendFirstSegment();
               return;
             }
@@ -498,6 +507,9 @@ export const useShareStore = create<StoreState>()(
           });
 
           // Optionally kick Day-0 immediately
+          try {
+            await sendSessionStarted(postingId);
+          } catch {}
           await get().sendFirstSegment();
         } catch (e: any) {
           console.log(TAG, "startSession error", e?.message ?? e, e);
@@ -1037,6 +1049,9 @@ export const useShareStore = create<StoreState>()(
               pendingWindow: undefined,
             }));
             notifyInfo("Sharing cancelled.");
+            try {
+              await sendSessionCancelled(st.postingId!, "Cancelled.");
+            } catch {}
             return;
           }
 
@@ -1182,7 +1197,6 @@ export const useShareStore = create<StoreState>()(
           set({ rewards: null });
         }
       },
-
     }),
 
     {
@@ -1263,6 +1277,9 @@ export const isShareReady = () =>
 /** Helper: hand a window to the engine and persist the updated engine state. */
 async function tryProcessWindow(win: WindowRef) {
   const st = useShareStore.getState();
+  const preEngine = { ...st.engine };
+  const preSegmentsSent = preEngine.segmentsSent ?? 0;
+  const preLastIdx = preEngine.lastSentDayIndex ?? null;
 
   if (__DEV__) {
     console.log(`${TAG} tryProcessWindow → start`, {
@@ -1336,15 +1353,50 @@ async function tryProcessWindow(win: WindowRef) {
 
     // User notifications (lightweight toasts/alerts only when app is active)
     const after = useShareStore.getState();
+    const afterEngine = after.engine;
+    const postSegmentsSent = afterEngine?.segmentsSent ?? 0;
 
-    // Terminal statuses
-    if (after.status === "CANCELLED") {
-      notifyInfo("No data after 3 checks. Sharing was cancelled.");
-      return;
-    } else if (after.status === "COMPLETE") {
-      notifyInfo("All segments sent. Sharing complete!");
-      return;
+    const pid = after.postingId;
+    if (pid != null) {
+      // Fire per-day success only if the count increased and the processed day became (or is <=) the last sent
+      if (
+        postSegmentsSent > preSegmentsSent &&
+        (afterEngine?.lastSentDayIndex ?? 0) >= win.dayIndex
+      ) {
+        try {
+          await sendSegmentSuccess(pid, win.dayIndex);
+        } catch {}
+      }
+
+      // Terminal states → one-shot notifications
+      if (after.status === "CANCELLED") {
+        const diag = after.lastWindowDiag;
+        const reason =
+          (diag?.unavailable?.length ?? 0) > 0
+            ? "Missing permission for some metrics."
+            : diag?.hadAnyData
+              ? "Sync stopped by system."
+              : "No data found after multiple checks.";
+        try {
+          await sendSessionCancelled(pid, reason);
+        } catch {}
+        return;
+      } else if (after.status === "COMPLETE") {
+        try {
+          await sendSessionCompleted(pid);
+        } catch {}
+        return;
+      }
     }
+
+    // // Terminal statuses
+    // if (after.status === "CANCELLED") {
+    //   notifyInfo("No data after 3 checks. Sharing was cancelled.");
+    //   return;
+    // } else if (after.status === "COMPLETE") {
+    //   notifyInfo("All segments sent. Sharing complete!");
+    //   return;
+    // }
 
     // Non-terminal diagnostic messages
     if (after.lastWindowDiag) {
@@ -1372,6 +1424,4 @@ async function tryProcessWindow(win: WindowRef) {
   } catch (e: any) {
     console.warn(`${TAG} tryProcessWindow → error`, e?.message ?? e, e);
   }
-
-  
 }

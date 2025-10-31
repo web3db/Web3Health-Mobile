@@ -20,7 +20,38 @@ export type PlannerContext = {
   simulationLock?: boolean;          // when true, tick/planner should be passive (SIM step owns progression)
   lastSentDayIndex?: number | null;  // authoritative progression index if present
 };
+export type Day0ProbeFn = (range: { fromUtc: string; toUtc: string }) => Promise<boolean>;
 
+// ANCHOR: day0-window-async
+/**
+ * Convenience: compute Day-0 decision using a supplied probe callback (platform-specific).
+ * - The callback should return true if *any* meaningful data exists in [localMidnight -> join].
+ * - Falls back to the same Day-0 rules as planDay0Window().
+ */
+export async function planDay0WindowAsync(
+  ctx: PlannerContext,
+  probe: Day0ProbeFn
+): Promise<Window | null> {
+  const already = new Set(ctx.alreadySentDayIndices);
+
+  // Build Day-0 candidate boundaries
+  const fromUtc = localMidnightISOOf(ctx.joinTimeLocalISO);
+  const toUtc = new Date(ctx.cycleAnchorUtc).toISOString();
+
+  const hasData = await probe({ fromUtc, toUtc });
+
+  if (hasData) {
+    if (already.has(0)) return null;
+    console.log(TAG, 'Day0 (async) → hasData=true', { fromUtc, toUtc });
+    return { fromUtc, toUtc, dayIndex: 0 };
+  }
+
+  // no Day-0 segment; first due is a full day
+  if (already.has(1)) return null;
+  const w1 = computeWindowForDayIndex(ctx.cycleAnchorUtc, 1);
+  console.log(TAG, 'Day0 (async) → hasData=false; first=DayIndex 1', w1);
+  return { ...w1, dayIndex: 1 };
+}
 // ─────────────────────────────────────────────────────────────────────────────
 // utils
 // ─────────────────────────────────────────────────────────────────────────────
@@ -47,6 +78,14 @@ function localMidnightISOOf(joinLocalISO: string): string {
 function tickUtcAtDayIndex(anchorUtcISO: string, dayIdx: number): string {
   const anchorMs = new Date(anchorUtcISO).getTime();
   return new Date(anchorMs + dayIdx * DAY_MS).toISOString();
+}
+
+/** Current day index (floor) relative to anchor, where 0 means the join day (tick at anchor). */
+export function currentDayIndexFrom(anchorUtcISO: string, nowUtcISO: string): number {
+  const now = new Date(nowUtcISO).getTime();
+  const anchor = new Date(anchorUtcISO).getTime();
+  if (!Number.isFinite(now) || !Number.isFinite(anchor)) return 0;
+  return Math.max(0, Math.floor((now - anchor) / DAY_MS));
 }
 
 /** Pure math: compute window in ms for a given anchor and day index. */
@@ -120,6 +159,30 @@ export function isWindowPastGrace(toUtcISO: string, nowUtcISO: string): boolean 
   return new Date(nowUtcISO).getTime() >= dueAt;
 }
 
+
+/** Compute the due-at timestamp (end+grace) for a window. */
+export function dueAtMs(toUtcISO: string): number {
+  return new Date(toUtcISO).getTime() + GRACE_WAIT_MS;
+}
+
+/** Earliest next wake-up (ISO) when *any* unsent window becomes due (end+grace) */
+export function computeEarliestNextDueAtISO(ctx: PlannerContext, nowUtcISO: string): string | null {
+  const now = new Date(nowUtcISO).getTime();
+  const anchor = new Date(ctx.cycleAnchorUtc).getTime();
+  if (Number.isNaN(now) || Number.isNaN(anchor)) return null;
+
+  const sent = new Set(ctx.alreadySentDayIndices);
+  let earliest: number | null = null;
+
+  for (let dayIdx = 1; dayIdx <= ctx.segmentsExpected; dayIdx++) {
+    if (sent.has(dayIdx)) continue;
+    const { toUtc } = computeWindowForDayIndex(ctx.cycleAnchorUtc, dayIdx);
+    const d = dueAtMs(toUtc);
+    if (d > now) earliest = (earliest == null) ? d : Math.min(earliest, d);
+  }
+
+  return earliest != null ? new Date(earliest).toISOString() : null;
+}
 /**
  * Return a window only if its end+grace has passed (NORMAL mode).
  * Otherwise return { nextDueAtISO } so the caller can schedule a wake-up.

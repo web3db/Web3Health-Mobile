@@ -195,19 +195,26 @@
 
 // app/(app)/_layout.tsx
 // app/(app)/_layout.tsx
+import { useThemeColors } from '@/src/theme/useThemeColors';
+import { useAuth } from '@clerk/clerk-expo';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFonts } from 'expo-font';
 import * as NavigationBar from 'expo-navigation-bar';
 import { Drawer } from 'expo-router/drawer';
-import React from 'react';
-import { Platform } from 'react-native';
-
-import { useThemeColors } from '@/src/theme/useThemeColors';
-import { useAuth } from '@clerk/clerk-expo';
+import React, { useEffect } from 'react';
+import { AppState, Platform } from 'react-native';
 
 import { getShareRuntimeConfig } from '@/src/services/sharing/constants';
 import { selectUserId, useAuthStore } from '@/src/store/useAuthStore';
 import { useTrackingStore } from '@/src/store/useTrackingStore';
+
+import {
+  ensureHealthKitAuthorized,
+  hkBootstrapBackgroundObservers,
+  hkIsBackgroundObserversActive,
+} from '@/src/services/tracking/healthkit';
+
+
 
 function BackgroundBootWhenSignedIn() {
   const { isSignedIn } = useAuth();
@@ -273,8 +280,75 @@ function BackgroundBootWhenSignedIn() {
     })();
   }, [ready, hcInitialized, hcInitialize]);
 
+
+  // [HK][BG][BOOT] mount-time bootstrap (iOS)
+useEffect(() => {
+  if (!ready) return;
+  if (Platform.OS !== 'ios') return;
+
+  (async () => {
+    try {
+      const init = await ensureHealthKitAuthorized();
+
+      // Narrow union BEFORE accessing `.granted`
+      if (init.available !== true) {
+        if (__DEV__) console.log('[HK][BG] skipped boot (HK not available)');
+        return;
+      }
+      if (!init.granted) {
+        if (__DEV__) console.log('[HK][BG] skipped boot (permissions not granted)');
+        return;
+      }
+      if (hkIsBackgroundObserversActive()) {
+        if (__DEV__) console.log('[HK][BG] already active');
+        return;
+      }
+
+      await hkBootstrapBackgroundObservers();
+      if (__DEV__) console.log('[HK][BG] bootstrapped observers (mount)');
+    } catch (e: any) {
+      console.log('[HK][BG] bootstrap mount error', e?.message ?? e);
+    }
+  })();
+}, [ready]);
+
+
+// [HK][BG][BOOT] resume-on-foreground (iOS)
+useEffect(() => {
+  if (!ready) return;
+  if (Platform.OS !== 'ios') return;
+
+  const last = { state: AppState.currentState };
+
+  const sub = AppState.addEventListener('change', async (state) => {
+    const prev = last.state;
+    last.state = state;
+
+    if ((prev === 'background' || prev === 'inactive') && state === 'active') {
+      try {
+        const init = await ensureHealthKitAuthorized();
+
+        if (init.available !== true) return;   // narrow
+        if (!init.granted) return;             // safe to read after the line above
+        if (hkIsBackgroundObserversActive()) return;
+
+        await hkBootstrapBackgroundObservers();
+        if (__DEV__) console.log('[HK][BG] bootstrapped observers (foreground)');
+      } catch (e: any) {
+        console.log('[HK][BG] bootstrap foreground error', e?.message ?? e);
+      }
+    }
+  });
+
+  return () => { try { sub?.remove?.(); } catch {} };
+}, [ready]);
+
+
   return null;
 }
+
+
+
 
 export default function AppGroupLayout() {
   const c = useThemeColors();
@@ -303,7 +377,7 @@ export default function AppGroupLayout() {
         <Drawer.Screen name="opportunities/[id]" options={{ drawerItemStyle: { display: 'none' } }} />
         <Drawer.Screen name="auth/login" options={{ drawerItemStyle: { display: 'none' } }} />
         <Drawer.Screen name="auth/register" options={{ drawerItemStyle: { display: 'none' } }} />
-        <Drawer.Screen name="background" options={{ drawerItemStyle: { display: 'none' } }} />
+        <Drawer.Screen name="background" options={{ drawerItemStyle: { display: 'none' } }} /> 
 
 
         {/* Drawer items */}
