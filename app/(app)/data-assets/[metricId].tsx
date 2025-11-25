@@ -6,7 +6,7 @@ import { openAppSettings } from "@/src/services/navigation/linking";
 import { useTrackingStore, type MetricKey } from "@/src/store/useTrackingStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import { useLocalSearchParams } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 

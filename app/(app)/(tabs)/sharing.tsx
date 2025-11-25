@@ -4,7 +4,7 @@ import SharingOverviewCard from "@/src/components/composite/sharing/SharingOverv
 import { useCurrentUserId } from "@/src/hooks/useCurrentUserId";
 import { useShareStore } from "@/src/store/useShareStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
-import React, { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { RefreshControl, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 

@@ -6,7 +6,6 @@ import type { DrawerNavigationProp } from '@react-navigation/drawer';
 import type { ParamListBase } from '@react-navigation/native';
 import { DrawerActions, useNavigation } from '@react-navigation/native';
 import { Tabs } from 'expo-router';
-import React from 'react';
 import { Platform, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
