@@ -210,3 +210,61 @@ export interface ShareEngineSnapshot {
   sessionId?: number;
   userId?: number;
 }
+
+
+
+// ====================
+// Active sharing sessions (Edge Function DTO)
+// ====================
+
+/**
+ * High-level UI status for an active sharing session.
+ * Derived from missed windows and other planner logic,
+ * not from the MST_ShareSessionStatus table.
+ */
+export type ActiveShareStatus = "onTrack" | "behind";
+
+/**
+ * DTO returned by the user_active-share-sessions Edge Function.
+ * This is the shape the frontend consumes to render the ActiveSharesList card.
+ */
+export interface ActiveShareSessionDto {
+  // Internal identifiers (not shown directly in the UI)
+  postingId: number;
+  sessionId: number;
+
+  // Posting / buyer / reward display fields
+  postingTitle: string;
+  postingSummary: string | null;
+  postingDescription: string | null;
+  buyerName: string;
+  rewardLabel: string;
+  rewardTypeCode: string;
+  rewardTypeDisplay: string;
+  rewardValue: number;
+  segmentsExpected: number;
+
+  // Session metadata
+  joinTimeLocal: string;      // ISO string from TRN_ShareSession.JoinTimeLocal
+  joinTimezone: string;       // e.g., "America/New_York"
+  statusCode: "ACTIVE";       // from MST_ShareSessionStatus.Code
+  statusDisplay: string;      // from MST_ShareSessionStatus.DisplayName
+  permissionGranted: boolean;
+
+  // Progress
+  segmentsSent: number;
+  progressPct: number;        // 0–100, rounded
+
+  // Dates and activity
+  expectedCompletionDate: string;   // ISO string
+  lastSegmentCreatedOn: string | null; // ISO or null if none
+  lastDayIndex: number | null;
+
+  // Planner-derived fields
+  missedWindowsCount: number;
+  nextWindowFromUtc: string | null; // ISO string or null
+  nextWindowToUtc: string | null;   // ISO string or null
+
+  // High-level UI status for badges and labels
+  uiStatus: ActiveShareStatus;
+}

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Web3Health",
     "slug": "Web3Health",
-    "version": "1.0.0",
+    "version": "1.0.6",
     "orientation": "portrait",
     "icon": "./assets/images/Web3Health.png",
     "scheme": "web3health",
@@ -11,19 +11,14 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "UIBackgroundModes": [
-          "processing",
-          "fetch",
-          "processing",
-          "fetch"
-        ],
+        "UIBackgroundModes": ["processing", "fetch"],
         "NSHealthShareUsageDescription": "Allow Web3Health to read steps, distance, heart rate and sleep to generate insights and enable sharing.",
         "NSHealthUpdateUsageDescription": "Allow Web3Health to write optional well-being entries (e.g., mindful minutes).",
         "ITSAppUsesNonExemptEncryption": false
       },
       "entitlements": {
         "com.apple.developer.healthkit": true,
-        "com.apple.developer.healthkit.access": true,
+        "com.apple.developer.healthkit.access": [],
         "com.apple.developer.healthkit.background-delivery": true
       },
       "bundleIdentifier": "com.mohitnaik21.Web3Health"
@@ -88,13 +83,15 @@
       ]
     ],
     "experiments": {
-      "typedRoutes": true
+      "typedRoutes": true,
+      "reactCompiler": true
     },
     "extra": {
       "router": {},
       "eas": {
         "projectId": "7c693ae4-7c4a-44b0-8ecd-22169f1dcaf1"
       }
-    }
+    },
+    "owner": "mohitnaik21"
   }
 }

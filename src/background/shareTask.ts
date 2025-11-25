@@ -6,7 +6,7 @@ import * as TaskManager from "expo-task-manager";
 import { Platform } from "react-native";
 
 import { getSessionByPosting } from "@/src/services/sharing/api";
-import { checkMetricPermissionsForMap } from "@/src/services/sharing/summarizer";
+// import { checkMetricPermissionsForMap } from "@/src/services/sharing/summarizer";
 import { isShareReady, useShareStore } from "@/src/store/useShareStore";
 
 import {
@@ -217,25 +217,22 @@ TaskManager.defineTask(SHARE_BG_TASK, async () => {
       return BackgroundTask.BackgroundTaskResult.Success;
     }
 
-    // Quick metric/permission probe to avoid “idle” runs
+    // Quick health + metric gate to avoid “idle” runs
     const metricKeys = Object.keys(st.metricMap ?? {});
-    let permProbe: { ok: boolean; missing: string[] } | null = null;
-    if (metricKeys.length) {
-      try {
-        const probe = await checkMetricPermissionsForMap(st.metricMap as any);
-        permProbe = { ok: probe.ok, missing: probe.missing as any };
-      } catch {
-        permProbe = null;
-      }
-    }
+
+    const healthPlatform =
+      (st as any).healthPlatform ?? (Platform.OS === "ios" ? "ios" : "android");
+    const healthAvailable = (st as any).healthAvailable ?? true;
+    const healthGranted = (st as any).healthGranted ?? true;
 
     // Write a decision snapshot
     await writeBgSnapshot("gate", {
       active,
       ready,
       metricKeysCount: metricKeys.length,
-      permOk: permProbe?.ok ?? null,
-      permMissing: permProbe?.missing ?? null,
+      healthPlatform,
+      healthAvailable,
+      healthGranted,
     });
 
     if (!active || !ready) {
@@ -249,17 +246,31 @@ TaskManager.defineTask(SHARE_BG_TASK, async () => {
       return BackgroundTask.BackgroundTaskResult.Success;
     }
 
-    if (permProbe && !permProbe.ok) {
+    // Short-circuit if health platform isn’t usable or we have nothing mapped to share.
+    if (
+      (healthPlatform === "ios" || healthPlatform === "android") &&
+      (!healthAvailable || !healthGranted || metricKeys.length === 0)
+    ) {
       if (__DEV__)
         console.log(
-          "[BG] skip: missing HC read permissions for",
-          permProbe.missing
+          "[BG] skip: missing health availability/permissions or metric map",
+          {
+            healthPlatform,
+            healthAvailable,
+            healthGranted,
+            metricKeysCount: metricKeys.length,
+          }
         );
+
       await AsyncStorage.setItem(
         KEY_SEGMENTS,
         String(st.engine?.segmentsSent ?? 0)
       );
-      await writeBgSnapshot("perm-missing", { missing: permProbe.missing });
+      await writeBgSnapshot("health-missing", {
+        healthPlatform,
+        healthAvailable,
+        healthGranted,
+      });
       await maybeNudgeIfStale(Date.parse(nowISO));
       return BackgroundTask.BackgroundTaskResult.Success;
     }
@@ -339,10 +350,10 @@ export async function registerShareBackgroundTask() {
   try {
     const status = await BackgroundTask.getStatusAsync();
     if (__DEV__) {
-       const map = BackgroundTask.BackgroundTaskStatus as any;
-        const statusName =
+      const map = BackgroundTask.BackgroundTaskStatus as any;
+      const statusName =
         Object.keys(map).find((k) => map[k] === status) ?? String(status);
-        console.log("[BG] getStatusAsync →", status, `(${statusName})`);
+      console.log("[BG] getStatusAsync →", status, `(${statusName})`);
     }
     if (status !== BackgroundTask.BackgroundTaskStatus.Available) {
       console.warn(

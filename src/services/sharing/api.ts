@@ -15,7 +15,7 @@ import {
   type TRewardsSummaryRes,
 } from "./schema";
 
-import type { UploadSegmentResult } from "./types";
+import type { ActiveShareSessionDto, UploadSegmentResult } from "./types";
 
 /** Start (create) a session.
  *  NOTE: store passes joinTimeLocalISO → we must map to server's `joinTimeLocal`.
@@ -121,6 +121,21 @@ export async function uploadSegment(
 }
 
 /** Cancel a session. */
+
+/**
+ * Cancel a session on the backend via user_cancel_share_session.
+ *
+ * Used in two places:
+ * - useShareStore.cancelCurrentSession      → user-initiated cancel.
+ * - useShareStore.tryProcessWindow (auto)   → engine-driven auto-cancel sync.
+ *
+ * Returns:
+ * - { ok: true,  status: "CANCELLED" }  when backend confirms cancellation.
+ * - { ok: false, status: "ACTIVE", error: "COMPLETED" } when server reports the
+ *   session is already completed (HTTP 409).
+ * - { ok: false, status: "ACTIVE", error: string } for other failures.
+ */
+
 export async function cancelShareSession(sessionId: number): Promise<{
   ok: boolean;
   status: "CANCELLED" | "ACTIVE";
@@ -186,4 +201,25 @@ export async function getRewardsSummary(userId: number): Promise<TRewardsSummary
     );
   }
   return RewardsSummaryRes.parse(json);
+}
+
+
+// === [GET_ACTIVE_SHARE_SESSIONS] call user_active-share-sessions with ?userId=
+export async function getActiveShareSessions(
+  userId: number
+): Promise<ActiveShareSessionDto[]> {
+  const url = buildUrl("user_active-share-sessions", { userId });
+  const { ok, status, json, text } = await fetchJson("GET", url);
+
+  if (!ok || !json) {
+    throw new Error(
+      `user_active-share-sessions ${status} ${String(
+        (json as any)?.message ?? text ?? ""
+      )}`
+    );
+  }
+
+  // Edge Function returns an array of ActiveShareSessionDto objects.
+  // We trust the backend shape here and cast to the DTO type.
+  return json as ActiveShareSessionDto[];
 }

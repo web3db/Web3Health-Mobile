@@ -1,13 +1,21 @@
 // app/data-assets/index.tsx
 import DataWindowSelector from "@/src/components/composite/assets/DataWindowSelector";
 import MetricCard from "@/src/components/composite/assets/MetricCard";
+import SettingsCoach from "@/src/components/overlay/SettingsCoach";
 import BackButton from "@/src/components/ui/BackButton";
+import { openAppSettings } from "@/src/services/navigation/linking";
 import { useTrackingStore } from "@/src/store/useTrackingStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Platform, RefreshControl, ScrollView, Text, View } from "react-native";
+import {
+  Platform,
+  RefreshControl,
+  ScrollView,
+  Text,
+  View
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function DataAssetsIndex() {
@@ -32,16 +40,25 @@ export default function DataAssetsIndex() {
     hcAvailable,
 
     // iOS (HealthKit)
-    probeHealthPlatform, // kicks off HK auth check/prompt + observers
-    hkRefresh,
-    hkOpenSettings,
+    probeHealthPlatform,
+    refreshHealthKitData,
+    handleHealthPermissionPress,
+    hkDatasets,
+    hkLoading,
+    hkError,
+    initHealthKitIfNeeded,
+    handleHealthSettingsReturn,
+    hkStatus,
+    hkAvailable,
+    hkActiveMetrics,
 
-    // cross-platform flags managed by store
+    // cross-platform flags
     healthAvailable,
     healthGranted,
   } = useTrackingStore();
 
   const [pulling, setPulling] = useState(false);
+  const [showCoach, setShowCoach] = useState(false);
 
   /** ───────────────────────── Mount/init per platform ───────────────────────── */
   useEffect(() => {
@@ -58,16 +75,29 @@ export default function DataAssetsIndex() {
     }
 
     if (Platform.OS === "ios") {
-      // Probe once; this silently checks availability and may prompt if needed later from CTA.
       (async () => {
         try {
-          await probeHealthPlatform();
+          await initHealthKitIfNeeded();
         } catch {
           /* flags will reflect failure */
         }
       })();
     }
-  }, [hcInitialize, hcInitialized, probeHealthPlatform]);
+  }, [hcInitialize, hcInitialized, initHealthKitIfNeeded]);
+
+  /** ───────────────────────── Foreground return (iOS Settings) ───────────────────────── */
+  // Old way that caused issues with multiple listeners
+  // useEffect(() => {
+  //   const sub = AppState.addEventListener("change", async (state) => {
+  //     if (state !== "active") return;
+  //     if (Platform.OS !== "ios") return;
+  //     try {
+  //       setShowCoach(false);
+  //       await handleHealthSettingsReturn();
+  //     } catch {}
+  //   });
+  //   return () => sub.remove();
+  // }, [handleHealthSettingsReturn]);
 
   /** ───────────────────────── Focus refresh ───────────────────────── */
   useFocusEffect(
@@ -90,7 +120,7 @@ export default function DataAssetsIndex() {
         if (!healthGranted) return;
         (async () => {
           try {
-            await hkRefresh();
+            await refreshHealthKitData();
           } catch {
             /* via hcError */
           }
@@ -102,7 +132,7 @@ export default function DataAssetsIndex() {
       hcRefresh,
       healthAvailable,
       healthGranted,
-      hkRefresh,
+      refreshHealthKitData,
     ])
   );
 
@@ -112,17 +142,21 @@ export default function DataAssetsIndex() {
 
   const hasPerms = isAndroid
     ? (hcGrantedKeys?.length ?? 0) > 0
-    : !!healthGranted;
-  const refreshing = pulling || (isAndroid ? !!hcLoading : false);
+    : (hkActiveMetrics?.length ?? 0) > 0;
 
-  const available = isAndroid ? hcAvailable : healthAvailable;
+  const datasets = isAndroid ? hcDatasets : hkDatasets;
+  const loading = isAndroid ? !!hcLoading : !!hkLoading;
+  const errorText = isAndroid ? hcError : hkError;
+  // const refreshing = pulling || (isAndroid ? !!hcLoading : !!hkLoading);
+  const refreshing = pulling;
+  const available = isAndroid ? hcAvailable : hkAvailable;
   const initialized = isAndroid ? hcInitialized : true; // iOS doesn't use a separate "initialized" gate
 
   // Any dataset with any data in current window?
   const hasData = useMemo(
     () =>
-      Array.isArray(hcDatasets) &&
-      hcDatasets.some((d) => {
+      Array.isArray(datasets) &&
+      datasets.some((d) => {
         const anyBucket =
           d.buckets?.some((b) => Number(b.value || 0) > 0) ?? false;
         const isHR = d.id === "heartRate";
@@ -132,7 +166,7 @@ export default function DataAssetsIndex() {
         const sumTotal = Number(d.total || 0);
         return anyBucket || hasLatest || sumTotal > 0;
       }),
-    [hcDatasets]
+    [datasets]
   );
 
   const onPullRefresh = useCallback(async () => {
@@ -142,25 +176,51 @@ export default function DataAssetsIndex() {
         if (!hcInitialized) await hcInitialize();
         if (hasPerms) await hcRefresh();
       } else if (Platform.OS === "ios") {
-        // If we haven't granted yet, re-probe (may remain silent), else just refresh
-        if (!healthGranted) {
-          await probeHealthPlatform();
-        } else {
-          await hkRefresh();
-        }
+        await refreshHealthKitData();
       }
     } finally {
       setPulling(false);
     }
-  }, [
-    hcInitialize,
-    hcRefresh,
-    hcInitialized,
-    hasPerms,
-    hkRefresh,
-    probeHealthPlatform,
-    healthGranted,
-  ]);
+  }, [hcInitialize, hcRefresh, hcInitialized, hasPerms, refreshHealthKitData]);
+  //old that made code slow
+  // const onIOSRequestAccess = useCallback(async () => {
+  //   try {
+  //     await handleHealthPermissionPress();
+  //     const { hkStatus: latestStatus } = useTrackingStore.getState();
+  //     if (latestStatus === "unnecessary") {
+  //       setShowCoach(true);
+  //     } else {
+  //       try {
+  //         await refreshHealthKitData();
+  //       } catch {}
+  //     }
+  //   } catch {}
+  // }, [handleHealthPermissionPress, refreshHealthKitData]);
+
+  const onIOSRequestAccess = useCallback(async () => {
+    try {
+      await handleHealthPermissionPress();
+      const { hkStatus: latestStatus } = useTrackingStore.getState();
+
+      if (latestStatus === "unnecessary") {
+        // System says there is nothing more to request, but we still don't have usable data.
+        // Route the user to Settings via the coach.
+        setShowCoach(true);
+      }
+      // Otherwise, trust the store's HealthKit pipeline to have refreshed datasets.
+    } catch {
+      // Errors are surfaced via hkError / header status; no-op here.
+    }
+  }, [handleHealthPermissionPress]);
+
+  const onOpenSettingsIOS = useCallback(async () => {
+    try {
+      const ok = await openAppSettings();
+      if (!ok) setShowCoach(false);
+    } catch {
+      setShowCoach(false);
+    }
+  }, []);
 
   const onWindowChange = useCallback(
     async (w: "24h" | "7d" | "30d" | "90d") => {
@@ -194,175 +254,268 @@ export default function DataAssetsIndex() {
       ? "Health Connect not available"
       : "Apple Health not available";
     return (
-      <SafeAreaView
-        edges={["top", "bottom"]}
-        style={{ flex: 1, backgroundColor: c.bg }}
-      >
-        <BackButton />
-        <ScrollView
-          contentContainerStyle={{ padding: 16 }}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onPullRefresh} />
-          }
+      <>
+        <SettingsCoach
+          visible={Platform.OS === "ios" && showCoach}
+          onRequestClose={() => setShowCoach(false)}
+          onOpen={onOpenSettingsIOS}
+          autoOpen={false}
+          appDisplayName="Web3Health"
+        />
+        <SafeAreaView
+          edges={["top", "bottom"]}
+          style={{ flex: 1, backgroundColor: c.bg }}
         >
-          <Header title="Data Assets" subtitle={subtitle} />
-          <EmptyState
-            mode="unavailable"
-            errorText={hcError}
-            onGrantAll={isAndroid ? hcGrantAll : probeHealthPlatform}
-            onOpenSettings={isAndroid ? hcOpenSettings : hkOpenSettings}
-            onRefresh={isAndroid ? hcRefresh : hkRefresh}
-          />
-        </ScrollView>
-      </SafeAreaView>
+          <BackButton />
+          <ScrollView
+            contentContainerStyle={{ padding: 16 }}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onPullRefresh}
+              />
+            }
+          >
+            <Header title="Data Assets" subtitle={subtitle} />
+            <EmptyState
+              mode="unavailable"
+              errorText={errorText}
+              onGrantAll={isAndroid ? hcGrantAll : onIOSRequestAccess}
+              onOpenSettings={isAndroid ? hcOpenSettings : onOpenSettingsIOS}
+              onRefresh={isAndroid ? hcRefresh : refreshHealthKitData}
+            />
+          </ScrollView>
+        </SafeAreaView>
+      </>
     );
   }
 
   // Missing perms CTA (both platforms share hcGrantedKeys list)
   if (!hasPerms) {
     return (
+      <>
+        <SettingsCoach
+          visible={Platform.OS === "ios" && showCoach}
+          onRequestClose={() => setShowCoach(false)}
+          onOpen={onOpenSettingsIOS}
+          autoOpen={false}
+          appDisplayName="Web3Health"
+        />
+        <SafeAreaView
+          edges={["top", "bottom"]}
+          style={{ flex: 1, backgroundColor: c.bg }}
+        >
+          <BackButton />
+          <ScrollView
+            contentContainerStyle={{ padding: 16 }}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onPullRefresh}
+              />
+            }
+          >
+            <Header
+              title="Data Assets"
+              subtitle={
+                isAndroid
+                  ? "Choose what to share from Health Connect"
+                  : "Allow Web3Health to read Apple Health data"
+              }
+            />
+            <EmptyState
+              mode="no-permissions"
+              errorText={errorText}
+              onGrantAll={isAndroid ? hcGrantAll : onIOSRequestAccess}
+              onOpenSettings={isAndroid ? hcOpenSettings : onOpenSettingsIOS}
+              onRefresh={isAndroid ? hcRefresh : refreshHealthKitData}
+            />
+          </ScrollView>
+        </SafeAreaView>
+      </>
+    );
+  }
+
+  /** ───────────────────────── Normal view ───────────────────────── */
+  return (
+    <>
+      <SettingsCoach
+        visible={Platform.OS === "ios" && showCoach}
+        onRequestClose={() => setShowCoach(false)}
+        onOpen={onOpenSettingsIOS}
+        autoOpen={false}
+        appDisplayName="Web3Health"
+      />
       <SafeAreaView
         edges={["top", "bottom"]}
         style={{ flex: 1, backgroundColor: c.bg }}
       >
         <BackButton />
         <ScrollView
-          contentContainerStyle={{ padding: 16 }}
+          contentContainerStyle={{ paddingBottom: 24 }}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onPullRefresh} />
           }
         >
           <Header
             title="Data Assets"
-            subtitle={
-              isAndroid
-                ? "Choose what to share from Health Connect"
-                : "Allow Web3Health to read Apple Health data"
-            }
+            subtitle="Your health signals packaged as sellable datasets."
           />
-          <EmptyState
-            mode="no-permissions"
-            errorText={hcError}
-            onGrantAll={isAndroid ? hcGrantAll : probeHealthPlatform}
-            onOpenSettings={isAndroid ? hcOpenSettings : hkOpenSettings}
-            onRefresh={isAndroid ? hcRefresh : hkRefresh}
-          />
+
+          <View style={{ paddingHorizontal: 16, marginTop: 8 }}>
+            <DataWindowSelector value={hcWindow} onChange={onWindowChange} />
+          </View>
+
+          {hasData ? (
+            <View
+              style={{
+                paddingHorizontal: 12,
+                marginTop: 12,
+                flexDirection: "row",
+                flexWrap: "wrap",
+                gap: 12,
+              }}
+            >
+              {datasets.map((d) => {
+                const isHeartRate = d.id === "heartRate";
+                const isDistance = d.id === "distance";
+                const isSleep = d.id === "sleep";
+
+                // Coverage (prefer metric-specific meta when provided)
+                const defaultCoverageTotal =
+                  hcWindow === "24h"
+                    ? 24
+                    : hcWindow === "7d"
+                      ? 7
+                      : hcWindow === "30d"
+                        ? 30
+                        : 90;
+
+                const defaultCoverageCount = computeCoverage(
+                  d.buckets,
+                  hcWindow
+                );
+
+                let coverageTotal = defaultCoverageTotal;
+                let coverageCount = defaultCoverageCount;
+
+                if (isHeartRate && hcWindow === "24h") {
+                  if (typeof d.meta?.hoursTotal === "number") {
+                    coverageTotal = d.meta.hoursTotal;
+                  }
+                  if (typeof d.meta?.hoursWithData === "number") {
+                    coverageCount = d.meta.hoursWithData;
+                  }
+                } else if (d.meta?.coverageCount != null) {
+                  coverageCount = d.meta.coverageCount;
+                }
+
+                const rawTotal = Number(d.total || 0) || 0;
+                let unitLabel = d.unit;
+                let headlineNumber = 0;
+
+                // Heart rate:
+                // - Prefer dataset.latest (window-level BPM).
+                // - If latest is 0/null but buckets have values, fall back to average of bucket values.
+                if (isHeartRate) {
+                  const latestValue =
+                    d.latest != null ? Number(d.latest) || 0 : 0;
+                  let hrValue = latestValue > 0 ? latestValue : 0;
+
+                  if (
+                    hrValue <= 0 &&
+                    Array.isArray(d.buckets) &&
+                    d.buckets.length > 0
+                  ) {
+                    const values = d.buckets
+                      .map((b) => Number(b.value || 0))
+                      .filter((v) => v > 0);
+                    if (values.length > 0) {
+                      const sum = values.reduce((sum, v) => sum + v, 0);
+                      const avg = sum / values.length;
+                      if (avg > 0) {
+                        hrValue = avg;
+                      }
+                    }
+                  }
+
+                  headlineNumber = hrValue > 0 ? Math.round(hrValue) : 0;
+                } else if (isDistance) {
+                  // Distance → total meters, shown as whole meters.
+                  headlineNumber = Math.round(rawTotal);
+                } else {
+                  // Steps, floors, activeCalories, sleep etc. as whole numbers.
+                  headlineNumber = Math.round(rawTotal);
+                }
+
+                const hasAnyDataInWindow = isHeartRate
+                  ? headlineNumber > 0 ||
+                    d.buckets.some((b) => Number(b.value || 0) > 0)
+                  : d.buckets.some((b) => Number(b.value || 0) > 0) ||
+                    Number(d.total || 0) > 0;
+
+                const primarySafe = hasAnyDataInWindow ? headlineNumber : 0;
+                const primaryValueText = `${primarySafe} ${unitLabel}`;
+
+                // Sublabel
+                let sublabel: string;
+
+                if (isHeartRate) {
+                  if (primarySafe > 0) {
+                    sublabel =
+                      hcWindow === "24h"
+                        ? "last 24 hours"
+                        : `avg over last ${hcWindow}`;
+                  } else {
+                    sublabel = "no samples in window";
+                  }
+                } else if (hcWindow === "24h") {
+                  sublabel = isSleep
+                    ? "last 24 hours"
+                    : "today (sum of buckets)";
+                } else {
+                  sublabel = `last ${hcWindow} (sum)`;
+                }
+
+                const freshnessText = formatFreshness(d.freshnessISO);
+
+                return (
+                  <MetricCard
+                    key={d.id}
+                    id={d.id}
+                    title={d.label}
+                    primaryValueText={primaryValueText}
+                    sublabel={sublabel}
+                    coverageCount={coverageCount}
+                    coverageTotal={coverageTotal}
+                    trend={d.trend ?? { dir: "flat", pct: null }}
+                    freshnessText={freshnessText}
+                    badges={[hcWindow, hcWindow === "24h" ? "Hourly" : "Daily"]}
+                    permissionState="granted"
+                    style={{ width: "47.5%" }}
+                    onPress={() =>
+                      router.push(`/data-assets/${encodeURIComponent(d.id)}`)
+                    }
+                  />
+                );
+              })}
+            </View>
+          ) : loading ? (
+            <View style={{ paddingHorizontal: 16, marginTop: 16 }}>
+              <Text style={{ color: c.text.secondary }}>Loading…</Text>
+            </View>
+          ) : (
+            <EmptyState
+              mode="no-data"
+              errorText={errorText}
+              onGrantAll={isAndroid ? hcGrantAll : onIOSRequestAccess}
+              onOpenSettings={isAndroid ? hcOpenSettings : onOpenSettingsIOS}
+              onRefresh={isAndroid ? hcRefresh : refreshHealthKitData}
+            />
+          )}
         </ScrollView>
       </SafeAreaView>
-    );
-  }
-
-  /** ───────────────────────── Normal view ───────────────────────── */
-  return (
-    <SafeAreaView
-      edges={["top", "bottom"]}
-      style={{ flex: 1, backgroundColor: c.bg }}
-    >
-      <BackButton />
-      <ScrollView
-        contentContainerStyle={{ paddingBottom: 24 }}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onPullRefresh} />
-        }
-      >
-        <Header
-          title="Data Assets"
-          subtitle="Your health signals packaged as sellable datasets."
-        />
-
-        <View style={{ paddingHorizontal: 16, marginTop: 8 }}>
-          <DataWindowSelector value={hcWindow} onChange={onWindowChange} />
-        </View>
-
-        {hasData ? (
-          <View
-            style={{
-              paddingHorizontal: 12,
-              marginTop: 12,
-              flexDirection: "row",
-              flexWrap: "wrap",
-              gap: 12,
-            }}
-          >
-            {hcDatasets.map((d) => {
-              // Coverage (prefer meta from store)
-              const coverageTotal =
-                hcWindow === "24h"
-                  ? 24
-                  : hcWindow === "7d"
-                    ? 7
-                    : hcWindow === "30d"
-                      ? 30
-                      : 90;
-              const coverageCount =
-                d.meta?.coverageCount != null
-                  ? d.meta.coverageCount
-                  : computeCoverage(d.buckets, hcWindow);
-
-              // Headline rules:
-              const isHeartRate = d.id === "heartRate";
-              const headlineNumber = isHeartRate
-                ? d.latest != null
-                  ? Number(d.latest)
-                  : 0
-                : Math.round(Number(d.total || 0));
-
-              const hasAnyDataInWindow = isHeartRate
-                ? (d.latest != null && Number(d.latest) > 0) ||
-                  d.buckets.some((b) => Number(b.value || 0) > 0)
-                : d.buckets.some((b) => Number(b.value || 0) > 0);
-
-              const primarySafe = hasAnyDataInWindow ? headlineNumber : 0;
-              const primaryValueText = `${primarySafe} ${d.unit}`;
-
-              // Sublabel
-              const sublabel = isHeartRate
-                ? d.latest != null && Number(d.latest) > 0
-                  ? "last sample"
-                  : "no samples in window"
-                : hcWindow === "24h"
-                  ? "today (sum of buckets)"
-                  : `last ${hcWindow} (sum)`;
-
-              // Freshness
-              const freshnessText = formatFreshness(d.freshnessISO);
-
-              return (
-                <MetricCard
-                  key={d.id}
-                  id={d.id}
-                  title={d.label}
-                  primaryValueText={primaryValueText}
-                  sublabel={sublabel}
-                  coverageCount={coverageCount}
-                  coverageTotal={coverageTotal}
-                  trend={d.trend ?? { dir: "flat", pct: null }}
-                  freshnessText={freshnessText}
-                  badges={[hcWindow, hcWindow === "24h" ? "Hourly" : "Daily"]}
-                  permissionState="granted"
-                  style={{ width: "47.5%" }}
-                  onPress={() =>
-                    router.push(`/data-assets/${encodeURIComponent(d.id)}`)
-                  }
-                />
-              );
-            })}
-          </View>
-        ) : hcLoading ? (
-          <View style={{ paddingHorizontal: 16, marginTop: 16 }}>
-            <Text style={{ color: c.text.secondary }}>Loading…</Text>
-          </View>
-        ) : (
-          <EmptyState
-            mode="no-data"
-            errorText={hcError}
-            onGrantAll={isAndroid ? hcGrantAll : probeHealthPlatform}
-            onOpenSettings={isAndroid ? hcOpenSettings : hkOpenSettings}
-            onRefresh={isAndroid ? hcRefresh : hkRefresh}
-          />
-        )}
-      </ScrollView>
-    </SafeAreaView>
+    </>
   );
 }
 
@@ -424,7 +577,7 @@ function EmptyState({
     mode === "no-permissions"
       ? isAndroid
         ? "Choose which metrics you allow us to read. You can revoke anytime in Health Connect settings."
-        : "Choose which metrics you allow us to read. You can revoke anytime in iOS Settings › Health."
+        : "Choose which metrics you allow us to read. You can revoke anytime in iOS Settings › Privacy & Security > Health > Apps."
       : mode === "unavailable"
         ? isAndroid
           ? "Install/enable Health Connect and connect a source like Google Fit, then try again."

@@ -13,6 +13,7 @@ export type TrackerCard = {
   name: string;
   unit: "steps" | "min" | "h" | "bpm" | "kcal" | "m" | "kg" | "lb" | string;
   valueToday: number;
+  emptyWindow?: boolean;
   trend?: "up" | "down" | "flat";
   trendPct?: number | null;
   freshness?: string;
@@ -32,7 +33,7 @@ export default function TrackerCarousel({
 }: {
   data: TrackerCard[];
   loading?: boolean;
-  hasPerms?: boolean;
+  hasPerms?: boolean; // platform-level read grants
   onGrantAll?: () => void | Promise<void>;
   onOpenSettings?: () => void;
   onRefresh?: () => void | Promise<void>;
@@ -41,9 +42,13 @@ export default function TrackerCarousel({
 }) {
   const c = useThemeColors();
   const router = useRouter();
-
-  // Wider cards for multi-day windows
+  const isAndroid = Platform.OS === "android";
   const baseMinWidth = windowKey === "24h" ? 160 : 200;
+
+  // Filter out metrics that are not granted on either platform
+  const visibleData = (data || []).filter(
+    (x) => x.state !== "permission_needed"
+  );
 
   // ---- Loading skeletons ----
   if (loading) {
@@ -64,8 +69,8 @@ export default function TrackerCarousel({
     );
   }
 
-  // ---- No permissions (Android + HC) ----
-  if (Platform.OS === "android" && hasPerms === false) {
+  // ---- No permissions (platform-level) ----
+  if (hasPerms === false) {
     return (
       <View
         style={{
@@ -78,11 +83,14 @@ export default function TrackerCarousel({
         }}
       >
         <Text style={{ color: c.text.primary, fontWeight: "800" }}>
-          Share your Health Connect data
+          {isAndroid
+            ? "Share your Health Connect data"
+            : "Allow Apple Health access"}
         </Text>
         <Text style={{ color: c.text.secondary, marginTop: 6 }}>
-          Choose which metrics to include. You can change this anytime in Health
-          Connect.
+          {isAndroid
+            ? "Choose which metrics to include. You can change this anytime in Health Connect."
+            : "Choose which metrics to allow. You can change this anytime in iOS Settings → Privacy & Security →  Health →  Apps."}
         </Text>
         <View
           style={{
@@ -120,7 +128,7 @@ export default function TrackerCarousel({
               }}
             >
               <Text style={{ color: c.text.primary, fontWeight: "800" }}>
-                Open HC
+                {isAndroid ? "Open HC" : "Open Health"}
               </Text>
             </Pressable>
           ) : null}
@@ -146,8 +154,8 @@ export default function TrackerCarousel({
     );
   }
 
-  // ---- No data yet (perms granted or iOS) ----
-  if (!data || data.length === 0) {
+  // ---- No data yet (with perms) ----
+  if (hasPerms === true && (!visibleData || visibleData.length === 0)) {
     return (
       <View
         style={{
@@ -163,7 +171,9 @@ export default function TrackerCarousel({
           No data yet
         </Text>
         <Text style={{ color: c.text.secondary, marginTop: 6 }}>
-          Connect a source that writes to Health Connect and then refresh.
+          {isAndroid
+            ? "Connect a source that writes to Health Connect, then refresh."
+            : "Open the Health app to confirm data is available, then refresh."}
         </Text>
         <View
           style={{
@@ -186,7 +196,7 @@ export default function TrackerCarousel({
               }}
             >
               <Text style={{ color: c.text.primary, fontWeight: "800" }}>
-                Open HC
+                {isAndroid ? "Open HC" : "Open Health"}
               </Text>
             </Pressable>
           ) : null}
@@ -222,13 +232,16 @@ export default function TrackerCarousel({
       showsHorizontalScrollIndicator={false}
       contentContainerStyle={{ paddingHorizontal: 12, gap: 12 }}
     >
-      {data.map((a) => {
-        const isTrueZero = windowKey && Number(a.valueToday || 0) === 0;
-
+      {visibleData.map((a) => {
         const goToDetail = () => {
-          // id should match your store MetricKey: 'steps'|'floors'|'distance'|'activeCalories'|'heartRate'|'sleep'
           router.push(`/data-assets/${encodeURIComponent(a.id)}`);
         };
+
+        const numericValue = Number(a.valueToday || 0) || 0;
+        const primaryDisplayValue = formatValue(numericValue, a.unit);
+        const primaryDisplayUnit = a.unit;
+
+        const showNoData = a.emptyWindow === true && numericValue <= 0;
 
         return (
           <Pressable
@@ -286,7 +299,6 @@ export default function TrackerCarousel({
                       {windowKey}
                     </Text>
                   )}
-                  {/* ⮕ Chevron to hint navigation */}
                   <Ionicons
                     name="chevron-forward-outline"
                     size={14}
@@ -305,10 +317,10 @@ export default function TrackerCarousel({
                       fontWeight: "800",
                     }}
                   >
-                    {formatValue(a.valueToday, a.unit)}
+                    {primaryDisplayValue}
                   </Text>
                   <Text style={{ color: c.text.secondary, marginLeft: 6 }}>
-                    {a.unit}
+                    {primaryDisplayUnit}
                   </Text>
                 </View>
 
@@ -320,7 +332,8 @@ export default function TrackerCarousel({
                   </Text>
                 )}
 
-                {isTrueZero && (
+                {/* {isTrueZero && <Text style={{ color: c.text.muted, fontSize: 11, marginTop: 2 }}>No data in this window</Text>} */}
+                {showNoData && (
                   <Text
                     style={{ color: c.text.muted, fontSize: 11, marginTop: 2 }}
                   >
@@ -373,16 +386,16 @@ export default function TrackerCarousel({
                 </View>
               )}
 
-              {/* Status badge (optional) */}
-              {a.state && a.state !== "ok" && (
-                <Text style={{ color: c.warning, fontSize: 11, marginTop: 6 }}>
-                  {a.state === "permission_needed"
-                    ? "Permission needed"
-                    : a.state === "stale"
-                      ? "Stale"
-                      : "Partial"}
-                </Text>
-              )}
+              {/* Status badge (optional for stale/partial only) */}
+              {a.state &&
+                a.state !== "ok" &&
+                a.state !== "permission_needed" && (
+                  <Text
+                    style={{ color: c.warning, fontSize: 11, marginTop: 6 }}
+                  >
+                    {a.state === "stale" ? "Stale" : "Partial"}
+                  </Text>
+                )}
             </Card>
           </Pressable>
         );

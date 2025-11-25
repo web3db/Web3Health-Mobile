@@ -6,7 +6,11 @@
 // Engine behavior:
 // • One-time GRACE wait at the start of a new due day to absorb provider write latency.
 // • If payload.hasData === false → schedule retry (up to MAX_RETRIES).
-// • After 3 consecutive no-data retries on the same day → status = CANCELLED.
+// • After MAX_RETRIES consecutive no-data retries on the same day → status = CANCELLED
+//   in the engine state. The Share store (useShareStore.tryProcessWindow) treats this
+//   as an automatic cancel and will:
+//   - keep the local engine/store status as "CANCELLED", and
+//   - call user_cancel_share_session via cancelShareSession to sync the backend.
 // • On successful upload → clear retries, advance lastSentDayIndex, increment segmentsSent.
 
 import { uploadSegment } from "./api";
@@ -320,6 +324,13 @@ export async function processDueWindow(
   if (!payload.hasData) {
     const newCount = state.noDataRetryCount + 1;
 
+    // When we exceed MAX_RETRIES for a given day, we mark the engine status as
+    // "CANCELLED". This is an engine-level decision only: the Share store
+    // (useShareStore.tryProcessWindow) observes this terminal state and is
+    // responsible for:
+    //   - updating the persisted store status to "CANCELLED", and
+    //   - calling cancelShareSession (user_cancel_share_session) so the backend
+    //     session status is also marked as cancelled.
     if (newCount >= MAX_RETRIES) {
       console.log(TAG, "CANCELLED", {
         reason: "NO_DATA_RETRIES_EXHAUSTED",

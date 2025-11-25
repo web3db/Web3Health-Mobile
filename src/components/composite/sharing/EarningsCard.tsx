@@ -1,11 +1,11 @@
 //src/components/composite/sharing/EarningsCard.tsx
-// === [EARNINGS_CARD_IMPORTS]
 import Card from "@/src/components/ui/Card";
 import Chip from "@/src/components/ui/Chip";
 import { useShareStore } from "@/src/store/useShareStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
+import { useRouter } from "expo-router";
 import React, { useMemo } from "react";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 
 // === [EARNINGS_CARD_UTILS]
 function fmtInt(n: number | null | undefined) {
@@ -39,6 +39,7 @@ function fmtDateShort(iso?: string | null) {
 export default function EarningsCard() {
   const c = useThemeColors();
   const rewards = useShareStore((s) => s.rewards);
+  const router = useRouter();
 
   if (!rewards) return null;
 
@@ -70,7 +71,9 @@ export default function EarningsCard() {
         <Text style={{ color: c.text.secondary, fontSize: 12 }}>
           Total credits
         </Text>
-        <Text style={{ color: c.text.primary, fontSize: 28, fontWeight: "800" }}>
+        <Text
+          style={{ color: c.text.primary, fontSize: 28, fontWeight: "800" }}
+        >
           {fmtInt(grandTotal)} credits
         </Text>
       </View>
@@ -78,9 +81,7 @@ export default function EarningsCard() {
       {/* === [EARNINGS_CARD_BREAKDOWN] */}
       {breakdown.length > 0 ? (
         <View style={{ marginTop: 12, gap: 8 }}>
-          <Text style={{ color: c.text.secondary, fontSize: 12 }}>
-            By type
-          </Text>
+          <Text style={{ color: c.text.secondary, fontSize: 12 }}>By type</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {breakdown.map((b) => (
               <Chip
@@ -131,8 +132,14 @@ export default function EarningsCard() {
           </Text>
           <View style={{ gap: 8 }}>
             {recent.map((p) => (
-              <View
+              <Pressable
                 key={p.postingId}
+                onPress={() =>
+                  router.push({
+                    pathname: "/(app)/opportunities/[id]",
+                    params: { id: String(p.postingId) },
+                  })
+                }
                 style={{
                   paddingVertical: 8,
                   borderBottomWidth: 1,
@@ -146,10 +153,11 @@ export default function EarningsCard() {
                   {p.title || `Posting #${p.postingId}`}
                 </Text>
                 <Text style={{ color: c.text.secondary, marginTop: 2 }}>
-                  {p.rewardTypeName || p.rewardTypeCode} • {fmtInt(p.rewardValue)} credits
+                  {p.rewardTypeName || p.rewardTypeCode} •{" "}
+                  {fmtInt(p.rewardValue)} credits
                   {p.completedAt ? ` • ${fmtDateShort(p.completedAt)}` : ""}
                 </Text>
-              </View>
+              </Pressable>
             ))}
           </View>
         </View>

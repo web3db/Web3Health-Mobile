@@ -66,7 +66,7 @@ export const EDGE_FUNCTIONS = {
   users_create: `${EDGE_BASE}/users_create`,
   users_profile: `${EDGE_BASE}/users_profile`,   
   users_update: `${EDGE_BASE}/users_update`,     
-
+  user_login_profile_by_clerk_id: `${EDGE_BASE}/user_login_profile_by_clerk_id`,
   // Sharing / Rewards
   user_rewards_summary: `${EDGE_BASE}/user_rewards_summary`,
 

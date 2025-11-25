@@ -8,15 +8,17 @@ import {
   hasReadPermission,
 } from "@/src/services/tracking/healthconnect";
 import {
+  hkIsMetricEffectivelyReadable,
   hkReadHeartRateInWindow,
   hkReadSleepMinutesInWindow,
   hkReadSumInWindow,
-  ensureHealthKitAuthorized as iosEnsureAuthorized,
   type Window as HKWindow,
+  type MetricKey as IOSMetricKey,
 } from "@/src/services/tracking/healthkit";
 import { Platform } from "react-native";
 import { aggregateRecord, readRecords } from "react-native-health-connect";
 const TAG = "[SHARE][Sum]";
+
 
 export type MetricCode =
   | "STEPS"
@@ -25,6 +27,17 @@ export type MetricCode =
   | "KCAL"
   | "HR"
   | "SLEEP";
+
+// Map our summarizer MetricCode → iOS HealthKit MetricKey
+const IOS_METRIC_MAP: Record<MetricCode, IOSMetricKey> = {
+  STEPS: "steps",
+  FLOORS: "floors",
+  DISTANCE: "distance",
+  KCAL: "activeCalories",
+  HR: "heartRate",
+  SLEEP: "sleep",
+};
+
 
 export type MetricSummary = {
   metricCode: MetricCode;
@@ -71,6 +84,33 @@ const kcalOf = (r: any) => {
   );
 };
 
+// async function permissionOk(metric: MetricCode): Promise<boolean> {
+//   if (Platform.OS === "android") {
+//     const map: Record<MetricCode, string> = {
+//       STEPS: "steps",
+//       FLOORS: "floors",
+//       DISTANCE: "distance",
+//       KCAL: "activeCalories",
+//       HR: "heartRate",
+//       SLEEP: "sleep",
+//     };
+
+//     return hasReadPermission(map[metric] as any);
+//   }
+//   if (Platform.OS === "ios") {
+//     // iOS: silent availability/authorization probe (no prompt here)
+//     const res = await iosEnsureAuthorized();
+//     if (!res.available || !res.granted) return false;
+
+//     // All metrics we summarize are supported in Phase-1
+//     // (fine-grained checks can be added later if needed)
+//     return true;
+//   }
+
+//   return false;
+// }
+
+
 async function permissionOk(metric: MetricCode): Promise<boolean> {
   if (Platform.OS === "android") {
     const map: Record<MetricCode, string> = {
@@ -81,22 +121,24 @@ async function permissionOk(metric: MetricCode): Promise<boolean> {
       HR: "heartRate",
       SLEEP: "sleep",
     };
-
     return hasReadPermission(map[metric] as any);
   }
-  if (Platform.OS === "ios") {
-    // iOS: silent availability/authorization probe (no prompt here)
-    const res = await iosEnsureAuthorized();
-    if (!res.available || !res.granted) return false;
 
-    // All metrics we summarize are supported in Phase-1
-    // (fine-grained checks can be added later if needed)
-    return true;
+  if (Platform.OS === "ios") {
+    const key = IOS_METRIC_MAP[metric];
+    if (!key) {
+      return false;
+    }
+
+    // Data-based probe from healthkit.ts:
+    // - true  → HealthKit available and metric appears readable (non-zero data in probe window)
+    // - false → either unavailable, denied, or effectively zero-data
+    return hkIsMetricEffectivelyReadable(key);
   }
 
+  // Other platforms (or unexpected path)
   return false;
 }
-
 // ---------- main ----------
 
 /**
@@ -110,9 +152,9 @@ export async function summarizeWindow(
   toUtcISO: string,
   opts?: { probeOnly?: boolean }
 ): Promise<MetricSummary | null> {
-  if (Platform.OS === 'android') {
-  await ensureInitialized();
-}
+  if (Platform.OS === "android") {
+    await ensureInitialized();
+  }
 
   if (!(await permissionOk(metric))) {
     console.log(TAG, metric, "permission=false");

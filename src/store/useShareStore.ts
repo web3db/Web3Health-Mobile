@@ -6,7 +6,7 @@ import {
   sendSegmentSuccess,
   sendSessionCancelled,
   sendSessionCompleted,
-  sendSessionStarted
+  sendSessionStarted,
 } from "@/src/services/notifications";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Alert, AppState, Platform, ToastAndroid } from "react-native";
@@ -16,6 +16,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import {
   cancelShareSession,
   createSession,
+  getActiveShareSessions,
   getRewardsSummary,
   getSessionByPosting,
   getSharingDashboard,
@@ -37,6 +38,7 @@ import type { MetricCode } from "@/src/services/sharing/summarizer";
 import {
   ensureInitialized,
   getLocalTimezoneInfo,
+  listGrantedMetricKeys as hcListGrantedMetricKeys,
   requestAllReadPermissions,
 } from "@/src/services/tracking/healthconnect";
 
@@ -47,14 +49,18 @@ import {
 } from "@/src/services/sharing/constants";
 import type { TRewardsSummaryRes } from "@/src/services/sharing/schema";
 import type {
+  ActiveShareSessionDto,
   ShareSessionState,
   ShareStatus,
 } from "@/src/services/sharing/types";
 // ios
-import {
-  hkIsAvailable,
-  hkRequestAllReadPermissions,
-} from "@/src/services/tracking/healthkit";
+// import {
+//   hkGetAuthorizationSnapshot,
+//   hkIsAvailable,
+//   hkRequestReadAuthorization,
+// } from "@/src/services/tracking/healthkit";
+
+import { useTrackingStore } from "@/src/store/useTrackingStore";
 
 const TAG = "[SHARE][Store]";
 
@@ -123,6 +129,10 @@ type StoreState = {
   rewards?: TRewardsSummaryRes | null;
   fetchRewards: (userId: number) => Promise<void>;
 
+  // Active sharing sessions from Edge Function
+  activeSessions?: ActiveShareSessionDto[] | null;
+  fetchActiveSessions: (userId: number) => Promise<void>;
+
   // actions
   fetchSessionSnapshot: (userId: number, postingId: number) => Promise<void>;
   restoreAnchorAtExit?: number;
@@ -168,9 +178,11 @@ type StoreState = {
   healthPlatform?: "android" | "ios";
   healthAvailable?: boolean; // HealthConnect / HealthKit available on device
   healthGranted?: boolean; // user granted at least one read permission
+  healthAskedBefore?: boolean; // whether user has been prompted before (iOS)
 
   // optional one-shot probe
   probeHealthPlatform: () => Promise<void>;
+  requestHealthPermissions?: () => Promise<void>;
 };
 
 const nowISO = () => new Date().toISOString();
@@ -220,6 +232,16 @@ function localMidnightUTCFromJoinLocalISO(joinLocalISO: string): string {
   const offIdx = Math.max(plus, minus);
   const offset = offIdx > 10 ? joinLocalISO.slice(offIdx) : "Z";
   return new Date(`${datePart}T00:00:00${offset}`).toISOString();
+}
+
+// === [ANCHOR: DAY0-FALLBACK-HELPER]
+function buildDay0Window(joinLocalISO: string, anchorIsoUtc: string) {
+  const midnightLocalUtcISO = localMidnightUTCFromJoinLocalISO(joinLocalISO);
+  return {
+    dayIndex: 0,
+    fromUtc: midnightLocalUtcISO,
+    toUtc: anchorIsoUtc,
+  };
 }
 
 function notifyInfo(message: string) {
@@ -370,25 +392,48 @@ export const useShareStore = create<StoreState>()(
           if (Platform.OS === "android") {
             await ensureInitialized();
             await requestAllReadPermissions();
+            const hcKeys = (await hcListGrantedMetricKeys()) ?? [];
             set({
               healthPlatform: "android",
               healthAvailable: true,
-              healthGranted: true,
+              healthGranted: hcKeys.length > 0,
             });
           } else if (Platform.OS === "ios") {
-            const available = await hkIsAvailable();
-            set({ healthPlatform: "ios", healthAvailable: available });
-            if (!available) {
+            // Mirror current HealthKit snapshot from tracking store.
+            // We do NOT talk to HealthKit directly here anymore.
+            const ts = useTrackingStore.getState();
+
+            const hkAvailable = (ts as any).hkAvailable ?? false;
+            const hkStatus = (ts as any).hkStatus ?? "unknown";
+            const hkHasAnyData = (ts as any).hkHasAnyData ?? false;
+            const hkActiveMetrics = Array.isArray((ts as any).hkActiveMetrics)
+              ? (ts as any).hkActiveMetrics
+              : [];
+
+            const inferredGranted =
+              hkHasAnyData || (hkActiveMetrics?.length ?? 0) > 0;
+
+            set({
+              healthPlatform: "ios",
+              healthAvailable: hkAvailable,
+              healthGranted: inferredGranted,
+              healthAskedBefore: hkStatus !== "unknown",
+            });
+
+            if (!hkAvailable) {
               notifyInfo("HealthKit is not available on this device.");
-              // we can still proceed with a session, but no local data will be found
-            } else {
-              const granted = await hkRequestAllReadPermissions();
-              set({ healthGranted: !!granted });
-              if (!granted) {
-                notifyInfo(
-                  "Please grant Health permissions to enable sharing."
-                );
-              }
+              // Do not start sharing if HK is not supported.
+              return;
+            }
+
+            // If system says we should request, and we see no usable data yet,
+            // ask the user to fix permissions via the main permissions UI
+            // (Header / Tracking tab) instead of prompting here.
+            if (hkStatus === "shouldRequest" && !hkHasAnyData) {
+              notifyInfo(
+                "Please enable Health data access from the Health Permissions banner before starting sharing."
+              );
+              return;
             }
           }
 
@@ -606,15 +651,35 @@ export const useShareStore = create<StoreState>()(
           );
         }
 
-        const day0 = planDay0Window(
+        // === [ANCHOR: DAY0-ALWAYS-QUEUE]
+        let day0 = planDay0Window(
           ctx,
           hasDay0Data || (testFlags.TEST_MODE && testFlags.TEST_FORCE_DAY0)
         );
-        if (!day0) return;
 
-        // Day-0 should be sent immediately (no grace)
-        set(() => ({ pendingWindow: day0 }));
-        await tryProcessWindow(day0);
+        // If planner declines Day-0 (likely no data yet), fall back to an explicit Day-0 window
+        if (!day0) {
+          day0 = buildDay0Window(st.joinTimeLocalISO!, st.cycleAnchorUtc!);
+          if (__DEV__) {
+            console.log(
+              "[SHARE][Store] Day0 planner declined; using fallback window",
+              day0
+            );
+          }
+        }
+
+        // Mark engine so tick()/producer can apply grace/retries for Day-0 if needed
+        set((s) => ({
+          pendingWindow: day0!,
+          engine: {
+            ...s.engine,
+            currentDueDayIndex: 0,
+            // don’t set nextRetryAtUtc here — let producer decide initial backoff based on data presence
+            graceAppliedForDay: 0,
+          },
+        }));
+
+        await tryProcessWindow(day0!);
       },
 
       async sendNextIfDue() {
@@ -670,7 +735,13 @@ export const useShareStore = create<StoreState>()(
         }
 
         // If grace already passed (e.g., after backdating), process immediately.
-        set({ pendingWindow: win });
+        set((s) => ({
+          pendingWindow: win,
+          engine: {
+            ...s.engine,
+            currentDueDayIndex: win.dayIndex,
+          },
+        }));
         await tryProcessWindow(win);
       },
 
@@ -777,6 +848,13 @@ export const useShareStore = create<StoreState>()(
                   return { dayIndex: eng.currentDueDayIndex, fromUtc, toUtc };
                 })();
 
+          set((s) => ({
+            pendingWindow: win,
+            engine: {
+              ...s.engine,
+              currentDueDayIndex: win.dayIndex,
+            },
+          }));
           await tryProcessWindow(win);
           return;
         }
@@ -844,14 +922,15 @@ export const useShareStore = create<StoreState>()(
             ...s.engine,
             mode: "SIM",
             simulationLock: false,
-            restoreAnchorAtExit: s.engine.cycleAnchorUtc, // remember real anchor ms
             currentDueDayIndex: null,
             noDataRetryCount: 0,
             nextRetryAtUtc: null,
             graceAppliedForDay: null,
           },
+          restoreAnchorAtExit: s.engine.cycleAnchorUtc,
           pendingWindow: undefined,
         }));
+
         if (__DEV__) console.log(`${TAG} enterSimulation → mode=SIM`);
       },
 
@@ -966,16 +1045,16 @@ export const useShareStore = create<StoreState>()(
             mode: "NORMAL",
             simulationLock: false,
             // Restore the real anchor if we had saved it; otherwise keep current
-            cycleAnchorUtc:
-              s.engine.restoreAnchorAtExit ?? s.engine.cycleAnchorUtc,
-            restoreAnchorAtExit: undefined,
+            cycleAnchorUtc: s.restoreAnchorAtExit ?? s.engine.cycleAnchorUtc,
             currentDueDayIndex: null,
             noDataRetryCount: 0,
             nextRetryAtUtc: null,
             graceAppliedForDay: null,
           },
+          restoreAnchorAtExit: undefined,
           pendingWindow: undefined,
         }));
+
         if (__DEV__) console.log(`${TAG} exitSimulation → mode=NORMAL`);
       },
 
@@ -1140,12 +1219,12 @@ export const useShareStore = create<StoreState>()(
       async probeHealthPlatform() {
         if (Platform.OS === "android") {
           try {
-            await ensureInitialized();
-            await requestAllReadPermissions();
+            await ensureInitialized(); // silent init
+            const hcKeys = (await hcListGrantedMetricKeys()) ?? [];
             set({
               healthPlatform: "android",
               healthAvailable: true,
-              healthGranted: true,
+              healthGranted: hcKeys.length > 0,
             });
           } catch {
             set({
@@ -1159,29 +1238,81 @@ export const useShareStore = create<StoreState>()(
 
         if (Platform.OS === "ios") {
           try {
-            const available = await hkIsAvailable();
-            if (!available) {
-              set({
-                healthPlatform: "ios",
-                healthAvailable: false,
-                healthGranted: false,
-              });
-              return;
-            }
-            const granted = await hkRequestAllReadPermissions();
+            const ts = useTrackingStore.getState();
+
+            const hkAvailable = (ts as any).hkAvailable ?? false;
+            const hkStatus = (ts as any).hkStatus ?? "unknown";
+            const hkHasAnyData = (ts as any).hkHasAnyData ?? false;
+            const hkActiveMetrics = Array.isArray((ts as any).hkActiveMetrics)
+              ? (ts as any).hkActiveMetrics
+              : [];
+
+            const inferredGranted =
+              hkHasAnyData || (hkActiveMetrics?.length ?? 0) > 0;
+
             set({
               healthPlatform: "ios",
-              healthAvailable: true,
-              healthGranted: !!granted,
+              healthAvailable: hkAvailable,
+              healthGranted: inferredGranted,
+              healthAskedBefore: hkStatus !== "unknown",
             });
           } catch {
             set({
               healthPlatform: "ios",
-              healthAvailable: true,
+              healthAvailable: false,
               healthGranted: false,
+              healthAskedBefore: false,
             });
           }
           return;
+        }
+      },
+
+      requestHealthPermissions: async () => {
+        if (Platform.OS !== "ios") return;
+
+        // Share store no longer requests HealthKit authorization directly.
+        // Permissions are handled via the main Health permissions UI
+        // (Header / Tracking tab). We just mirror whatever that flow sets.
+        try {
+          const ts = useTrackingStore.getState();
+
+          const hkAvailable = (ts as any).hkAvailable ?? false;
+          const hkStatus = (ts as any).hkStatus ?? "unknown";
+          const hkHasAnyData = (ts as any).hkHasAnyData ?? false;
+          const hkActiveMetrics = Array.isArray((ts as any).hkActiveMetrics)
+            ? (ts as any).hkActiveMetrics
+            : [];
+
+          const inferredGranted =
+            hkHasAnyData || (hkActiveMetrics?.length ?? 0) > 0;
+
+          useShareStore.setState({
+            healthPlatform: "ios",
+            healthAvailable: hkAvailable,
+            healthGranted: inferredGranted,
+            healthAskedBefore: hkStatus !== "unknown",
+          });
+
+          if (!hkAvailable) {
+            notifyInfo("HealthKit is not available on this device.");
+            return;
+          }
+
+          // If we reach here and still have no data / no clear grant,
+          // point the user to the centralized permissions flow.
+          if (!inferredGranted || hkStatus === "shouldRequest") {
+            notifyInfo(
+              "Please use the Health Permissions banner on the Home screen to grant Health access before sharing."
+            );
+          }
+        } catch {
+          useShareStore.setState({
+            healthPlatform: "ios",
+            healthAvailable: false,
+            healthGranted: false,
+            healthAskedBefore: false,
+          });
         }
       },
 
@@ -1195,6 +1326,18 @@ export const useShareStore = create<StoreState>()(
         } catch (e) {
           console.warn("[Sharing][Rewards] load error", e);
           set({ rewards: null });
+        }
+      },
+      // Active sessions list for Sharing tab
+      activeSessions: null,
+
+      async fetchActiveSessions(userId: number) {
+        try {
+          const sessions = await getActiveShareSessions(userId);
+          set({ activeSessions: sessions });
+        } catch (e) {
+          console.warn("[Sharing][ActiveSessions] load error", e);
+          set({ activeSessions: null });
         }
       },
     }),
@@ -1368,7 +1511,7 @@ async function tryProcessWindow(win: WindowRef) {
         } catch {}
       }
 
-      // Terminal states → one-shot notifications
+      // Terminal states → one-shot notifications + backend sync
       if (after.status === "CANCELLED") {
         const diag = after.lastWindowDiag;
         const reason =
@@ -1377,9 +1520,73 @@ async function tryProcessWindow(win: WindowRef) {
             : diag?.hadAnyData
               ? "Sync stopped by system."
               : "No data found after multiple checks.";
+
+        // NEW: attempt to sync auto-cancel to backend so server status matches engine
         try {
-          await sendSessionCancelled(pid, reason);
-        } catch {}
+          let sid = after.sessionId;
+
+          // Fallback resolver if sessionId is missing for some reason
+          if (!sid && after.userId && pid != null) {
+            try {
+              const resolved = await getSessionByPosting(pid, after.userId);
+              if (resolved) {
+                sid = resolved.sessionId;
+                if (__DEV__) {
+                  console.log(
+                    `${TAG} tryProcessWindow → auto cancel resolved sid=${sid}`
+                  );
+                }
+              } else if (__DEV__) {
+                console.warn(
+                  `${TAG} tryProcessWindow → auto cancel resolver returned null`
+                );
+              }
+            } catch (e: any) {
+              if (__DEV__) {
+                console.warn(
+                  `${TAG} tryProcessWindow → auto cancel resolver error`,
+                  e?.message ?? e
+                );
+              }
+            }
+          }
+
+          if (sid) {
+            try {
+              const res = await cancelShareSession(sid);
+              if (!res.ok) {
+                if (__DEV__) {
+                  console.warn(
+                    `${TAG} tryProcessWindow → auto cancel backend error`,
+                    res.error
+                  );
+                }
+              } else if (__DEV__) {
+                console.log(
+                  `${TAG} tryProcessWindow → auto cancel synced to backend`,
+                  { sessionId: sid, backendStatus: res.status }
+                );
+              }
+            } catch (e: any) {
+              if (__DEV__) {
+                console.warn(
+                  `${TAG} tryProcessWindow → auto cancel backend exception`,
+                  e?.message ?? e
+                );
+              }
+            }
+          } else if (__DEV__) {
+            console.warn(
+              `${TAG} tryProcessWindow → auto cancel missing sessionId; backend not called`
+            );
+          }
+        } finally {
+          // Preserve existing behavior: always send the user-visible cancellation notification
+          try {
+            await sendSessionCancelled(pid, reason);
+          } catch {}
+        }
+
         return;
       } else if (after.status === "COMPLETE") {
         try {

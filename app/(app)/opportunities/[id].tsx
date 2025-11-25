@@ -27,6 +27,7 @@ import React, {
 } from "react";
 import { Alert, Linking, Platform, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
 // --- tiny helpers (local to this file to keep it self-contained) ---
 const hasAny = (arr?: Array<any>) => Array.isArray(arr) && arr.length > 0;
 const hasText = (s?: string | null) => !!(s && s.trim().length > 0);
@@ -155,15 +156,6 @@ function buildMetricMapStrict(
 // ─────────────────────────────────────────────────────────────────────────────
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
-function windowForDayIndex(anchorISO: string, dayIdx: number) {
-  const anchorMs = Date.parse(anchorISO);
-  const toMs = anchorMs + dayIdx * ONE_DAY_MS;
-  const fromMs = toMs - ONE_DAY_MS;
-  return {
-    fromUtc: new Date(fromMs).toISOString(),
-    toUtc: new Date(toMs).toISOString(),
-  };
-}
 
 function fmtUTC(iso: string) {
   return new Date(iso).toISOString().replace(".000Z", "Z");
@@ -204,6 +196,126 @@ function SectionHeader({
   );
 }
 
+// const codeToKey = (c: MetricCode): IOSMetricKey => {
+//   switch (c) {
+//     case "STEPS":
+//       return "steps";
+//     case "FLOORS":
+//       return "floors";
+//     case "DISTANCE":
+//       return "distance";
+//     case "KCAL":
+//       return "activeCalories";
+//     case "HR":
+//       return "heartRate";
+//     case "SLEEP":
+//       return "sleep";
+//   }
+// };
+
+// const keyToCode = (k: IOSMetricKey): MetricCode | undefined => {
+//   switch (k) {
+//     case "steps":
+//       return "STEPS";
+//     case "floors":
+//       return "FLOORS";
+//     case "distance":
+//       return "DISTANCE";
+//     case "activeCalories":
+//       return "KCAL";
+//     case "heartRate":
+//       return "HR";
+//     case "sleep":
+//       return "SLEEP";
+//     default:
+//       return undefined;
+//   }
+// };
+
+// function typeIdToKey(t: string): IOSMetricKey | undefined {
+//   switch (t) {
+//     case HK_TYPES.steps: return "steps";
+//     case HK_TYPES.floors: return "floors";
+//     case HK_TYPES.distance: return "distance";
+//     case HK_TYPES.activeCalories: return "activeCalories";
+//     case HK_TYPES.heartRate: return "heartRate";
+//     // case HK_TYPES.weight: return "weight";
+//     // case HK_TYPES.respiratoryRate: return "respiratoryRate";
+//     case HK_TYPES.sleep: return "sleep";
+//     default: return undefined;
+//   }
+// }
+
+// // helper for clarity
+// type HKPerTypeStatus = {
+//   authorizedKeys: IOSMetricKey[];      // e.g., "steps", "heartRate"
+//   deniedKeys: IOSMetricKey[];
+//   shouldRequestTypes: IOSMetricKey[];  // still-needed KEYS (per-type status)
+// };
+
+// async function iosResolveHealthPermissionsBeforeStart(
+//   metricMap: Partial<Record<MetricCode, number>>
+// ): Promise<MetricCode[]> {
+//   if (Platform.OS !== "ios") return [];
+
+//   // requestedCodes: our UPPERCASE codes → our lowercase metric keys
+//   const requestedCodes = Object.keys(metricMap) as MetricCode[];
+//   const requestedKeys: IOSMetricKey[] = requestedCodes.map(codeToKey);
+
+//   // 1) Ask HealthKit which read TYPES are still undetermined (these are HK type identifiers, NOT our keys)
+//   const undeterminedTypes = await getUndeterminedReadTypes(requestedKeys);
+
+//   // 2) Prompt only for those undetermined TYPES (safe; library accepts type IDs)
+//   if (undeterminedTypes.length > 0) {
+//     await requestAuthorizationForTypes(undeterminedTypes);
+//   }
+
+//   // 3) Re-check per-type status; this returns:
+//   //    - authorizedKeys: IOSMetricKey[]
+//   //    - shouldRequestTypes: string[] (type IDs)
+//   //    - deniedKeys: IOSMetricKey[]
+//   const { authorizedKeys, shouldRequestTypes, deniedKeys } =
+//     await hkGetPerTypeStatus(requestedKeys);
+
+//   // Convert remaining “should request” type IDs → metric keys
+//   const shouldRequestKeys = shouldRequestTypes
+//     .map(typeIdToKey)
+//     .filter((x): x is IOSMetricKey => !!x);
+
+//   // Treat “should request” + denied as unavailable keys
+//   const unavailableKeySet = new Set<IOSMetricKey>([
+//     ...shouldRequestKeys,
+//     ...deniedKeys,
+//   ]);
+
+//   // Any originally requested key that isn't authorized is also unavailable
+//   const authSet = new Set<IOSMetricKey>(authorizedKeys);
+//   for (const k of requestedKeys) {
+//     if (!authSet.has(k)) unavailableKeySet.add(k);
+//   }
+
+//   // Convert unavailable metric KEYS → your MetricCodes (UPPERCASE)
+//   const unavailableCodes: MetricCode[] = Array.from(unavailableKeySet)
+//     .map(keyToCode)
+//     .filter((x): x is MetricCode => !!x);
+
+//   // If anything is explicitly denied, offer Settings deeplink
+//   if (deniedKeys.length > 0) {
+//     await new Promise<void>((resolve) => {
+//       Alert.alert(
+//         "Health permissions denied",
+//         "To share all requested metrics, enable access in iOS Settings → Health.",
+//         [
+//           { text: "Not now", style: "cancel", onPress: () => resolve() },
+//           { text: "Open Settings", onPress: async () => { await openHealthSettings(); resolve(); } },
+//         ]
+//       );
+//     });
+//   }
+
+//   return unavailableCodes;
+// }
+
 export default function OpportunityDetails() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -218,9 +330,6 @@ export default function OpportunityDetails() {
   const cycleAnchorUtc = useShareStore((s) => s.cycleAnchorUtc);
   const originalCycleAnchorUtc = useShareStore((s) => s.originalCycleAnchorUtc);
   const engine = useShareStore((s) => s.engine);
-  const setBackdatedAnchorTestOnly = useShareStore(
-    (s) => s.setBackdatedAnchorTestOnly
-  );
   const tick = useShareStore((s) => s.tick);
   const catchUpIfNeeded = useShareStore((s) => s.catchUpIfNeeded);
   const sessionId = useShareStore((s) => s.sessionId);
@@ -445,6 +554,122 @@ export default function OpportunityDetails() {
     }
   }, [cycleAnchorUtc]);
 
+  // const handleApply = useCallback(async () => {
+  //   if (!item) return;
+  //   if (userId == null) {
+  //     Alert.alert(
+  //       "Sign in required",
+  //       "Please sign in to apply and start sharing."
+  //     );
+  //     return;
+  //   }
+
+  //   const metricMap = buildMetricMapStrict(item) as Partial<
+  //     Record<MetricCode, number>
+  //   >;
+  //   const codes = Object.keys(metricMap) as MetricCode[];
+  //   if (codes.length === 0) {
+  //     console.log("[OppDetails] No resolvable metrics for posting", { item });
+  //     Alert.alert(
+  //       "Unsupported",
+  //       "This posting’s metrics cannot be resolved yet. Please try again later."
+  //     );
+  //     return;
+  //   }
+
+  //   const days = Number(item.dataCoverageDaysRequired ?? 5);
+  //   const simNote = __DEV__
+  //     ? "\n\n(DEV mode: “days” advance quickly for testing)"
+  //     : "";
+
+  //   Alert.alert(
+  //     "Share your data?",
+  //     `We’ll collect and share the requested metrics for ${days} day${days === 1 ? "" : "s"}.${simNote}`,
+  //     [
+  //       { text: "Cancel", style: "cancel" },
+  //       {
+  //         text: "OK",
+  //         onPress: async () => {
+  //           try {
+  //             const postingId = Number(
+  //               (item as any).postingId ?? (item as any).id
+  //             );
+
+  //             // Build map once
+  //             const metricMap = buildMetricMapStrict(item) as Partial<
+  //               Record<MetricCode, number>
+  //             >;
+
+  //             // iOS: attempt targeted permission resolution before starting
+  //             let remainingMissing: MetricCode[] = [];
+  //             if (Platform.OS === "ios") {
+  //               remainingMissing =
+  //                 await iosResolveHealthPermissionsBeforeStart(metricMap);
+  //             }
+
+  //             // Cross-platform final check (keeps Android logic identical)
+  //             const probe = await checkMetricPermissionsForMap(
+  //               metricMap as Record<MetricCode, number>
+  //             );
+  //             const reallyMissing = Array.from(
+  //               new Set([...(probe.missing ?? []), ...remainingMissing])
+  //             );
+
+  //             if (reallyMissing.length > 0) {
+  //               const missingLabels = reallyMissing
+  //                 .map(labelOfMetric)
+  //                 .join(", ");
+  //               const msg =
+  //                 `We don’t have permission for:\n• ${missingLabels}\n\n` +
+  //                 `You can still start sharing; those metrics will be reported as unavailable until you grant access.`;
+  //               const cont = await new Promise<boolean>((resolve) => {
+  //                 Alert.alert("Missing permissions", msg, [
+  //                   {
+  //                     text: "Cancel",
+  //                     style: "cancel",
+  //                     onPress: () => resolve(false),
+  //                   },
+  //                   { text: "Start anyway", onPress: () => resolve(true) },
+  //                 ]);
+  //               });
+  //               if (!cont) return;
+  //             }
+
+  //             await startSession(
+  //               postingId,
+  //               userId!,
+  //               metricMap,
+  //               Number(item.dataCoverageDaysRequired ?? 5)
+  //             );
+  //             setSessionLookup((prev) => ({
+  //               sessionId: prev?.sessionId ?? 0,
+  //               statusName: "ACTIVE",
+  //               source: "ACTIVE",
+  //             }));
+  //             refreshSessionLookup();
+  //             const pid = Number((item as any).postingId ?? (item as any).id);
+  //             if (userId != null && pid) {
+  //               void useShareStore.getState().fetchSessionSnapshot(userId, pid);
+  //             }
+  //             Alert.alert(
+  //               "Sharing started",
+  //               __DEV__
+  //                 ? "First segment will send now.\nDay progression is accelerated for testing."
+  //                 : "We’ll send your first segment now and continue every 24 hours."
+  //             );
+  //           } catch (e) {
+  //             console.log("[OppDetails] startSession error", e);
+  //             Alert.alert(
+  //               "Error",
+  //               "Failed to start sharing. Please try again."
+  //             );
+  //           }
+  //         },
+  //       },
+  //     ]
+  //   );
+  // }, [item, startSession, userId, refreshSessionLookup]);
+
   const handleApply = useCallback(async () => {
     if (!item) return;
     if (userId == null) {
@@ -485,18 +710,26 @@ export default function OpportunityDetails() {
               const postingId = Number(
                 (item as any).postingId ?? (item as any).id
               );
+
+              // Build map once for the session
+              const metricMap = buildMetricMapStrict(item) as Partial<
+                Record<MetricCode, number>
+              >;
+
+              // Cross-platform readability probe (permissions / provider / data)
               const probe = await checkMetricPermissionsForMap(
                 metricMap as Record<MetricCode, number>
               );
-              if (!probe.ok) {
-                const missingLabels = probe.missing
-                  .map(labelOfMetric)
-                  .join(", ");
+              const missing = probe.missing ?? [];
+
+              if (missing.length > 0) {
+                const missingLabels = missing.map(labelOfMetric).join(", ");
                 const msg =
-                  `We don’t have permission for:\n• ${missingLabels}\n\n` +
-                  `You can still start sharing; those metrics will be reported as unavailable until you grant access.`;
+                  `Right now we cannot read data for:\n• ${missingLabels}\n\n` +
+                  `This can happen if Health permissions are disabled or there is no data yet for those metrics.\n\n` +
+                  `You can still start sharing; those metrics will be reported as unavailable until data becomes readable.`;
                 const cont = await new Promise<boolean>((resolve) => {
-                  Alert.alert("Missing permissions", msg, [
+                  Alert.alert("Some metrics unavailable", msg, [
                     {
                       text: "Cancel",
                       style: "cancel",
@@ -508,7 +741,12 @@ export default function OpportunityDetails() {
                 if (!cont) return;
               }
 
-              await startSession(postingId, userId, metricMap, days);
+              await startSession(
+                postingId,
+                userId!,
+                metricMap,
+                Number(item.dataCoverageDaysRequired ?? 5)
+              );
               setSessionLookup((prev) => ({
                 sessionId: prev?.sessionId ?? 0,
                 statusName: "ACTIVE",
@@ -623,38 +861,6 @@ export default function OpportunityDetails() {
     };
   })();
 
-  // const backdateToDayIndexAndTick = useCallback((targetDayIdx: number) => {
-  //   if (!testFlags.TEST_MODE) return;
-  //   const baseIso = originalAnchorRef.current ?? cycleAnchorUtc;
-  //   if (!baseIso) {
-  //     if (__DEV__) console.log('[OppDetails][TEST] No anchor yet.');
-  //     return;
-  //   }
-  //   const newIso = new Date(Date.parse(baseIso) - targetDayIdx * ONE_DAY_MS).toISOString();
-  //   if (__DEV__) console.log('[OppDetails][TEST] backdate', { targetDayIdx, baseIso, newIso });
-  //   setBackdatedAnchorTestOnly(newIso);
-  //   // process immediately; store will handle grace/retries if needed
-  //   tick();
-  // }, [cycleAnchorUtc, setBackdatedAnchorTestOnly, tick]);
-
-  // const simNextDay = useCallback(() => {
-  //   if (!segmentsExpected) return;
-  //   if ((engine?.lastSentDayIndex ?? 0) >= segmentsExpected) return;
-  //   backdateToDayIndexAndTick(nextTargetIdx);
-  // }, [segmentsExpected, engine?.lastSentDayIndex, nextTargetIdx, backdateToDayIndexAndTick]);
-
-  // const simAllRemaining = useCallback(() => {
-  //   if (!segmentsExpected) return;
-  //   // Backdate to N so all windows 1..N are in the past, then let catch-up sweep them.
-  //   const baseIso = originalAnchorRef.current ?? cycleAnchorUtc;
-  //   if (!baseIso) return;
-  //   const n = Number(segmentsExpected);
-  //   const newIso = new Date(Date.parse(baseIso) - n * ONE_DAY_MS).toISOString();
-  //   if (__DEV__) console.log('[OppDetails][TEST] backdate ALL', { n, baseIso, newIso });
-  //   setBackdatedAnchorTestOnly(newIso);
-  //   // Sweep all past windows in order
-  //   catchUpIfNeeded();
-  // }, [segmentsExpected, cycleAnchorUtc, setBackdatedAnchorTestOnly, catchUpIfNeeded]);
 
   const simNextDay = useCallback(async () => {
     if (!testFlags.TEST_MODE) return;
@@ -1045,9 +1251,9 @@ export default function OpportunityDetails() {
               gap: 6,
             }}
           >
-           <SectionHeader
-                 title="Your sharing status"
-                   subtitle="Progress, last share, and your next sharing window. Times shown in your local time."
+            <SectionHeader
+              title="Your sharing status"
+              subtitle="Progress, last share, and your next sharing window. Times shown in your local time."
             />
             {(() => {
               const s = snapshot;
@@ -1064,7 +1270,7 @@ export default function OpportunityDetails() {
                 ? null
                 : computeNextWindowFromSnapshot(
                     s.cycleAnchorUtc,
-                    s.segmentsSent,
+                    s.lastSentDayIndex,
                     s.segmentsExpected
                   );
 
@@ -1240,7 +1446,7 @@ export default function OpportunityDetails() {
               </Text>
             </View>
 
-            {/* 🔎 NEW: Next simulated window preview */}
+            {/* NEW: Next simulated window preview */}
             {nextWindowPreview ? (
               <View style={{ marginTop: 6 }}>
                 <Text style={{ color: c.text.primary, fontWeight: "700" }}>
