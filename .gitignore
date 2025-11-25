@@ -40,7 +40,6 @@ app-example
 
 #android
 android/
-#iOS
 ios/
-#node modules
+
 node_modules/

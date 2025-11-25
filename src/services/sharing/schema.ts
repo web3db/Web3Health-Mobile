@@ -170,6 +170,59 @@ export const SessionSnapshotRes = z.object({
 });
 
 
+// === [REWARDS_ZOD] Rewards summary payload (from user_rewards_summary)
+export const RewardsPromotion = z.object({
+  promoKind: z.string().optional(),              // "INLINE"
+  rewardTypeCode: z.string(),                    // e.g., "FOUNDERS", "TOKENS"
+  rewardTypeName: z.string(),
+  amount: z.number(),
+  reason: z.string().nullable().optional(),
+  grantedVirtualAt: z.string().nullable().optional(),
+});
+
+export const RewardsPostingItem = z.object({
+  postingId: z.number(),
+  title: z.string().nullable(),
+  rewardTypeId: z.number().nullable(),
+  rewardTypeCode: z.string(),
+  rewardTypeName: z.string(),
+  rewardValue: z.number(),
+  completedAt: z.string().nullable(),
+});
+
+export const RewardsBreakdownItem = z.object({
+  code: z.string(),
+  displayName: z.string(),
+  postingsCompleted: z.number(),
+  totalValue: z.number(),
+});
+
+export const RewardsTotals = z.object({
+   overallValueByType: z.record(z.string(), z.number()),
+  overallCountByType: z.record(z.string(), z.number()),
+  grandTotals: z.object({
+    postings: z.number(),   // number of completed postings
+    value: z.number(),      // includes promotional value
+  }),
+});
+
+export const RewardsSummaryRes = z.object({
+  userId: z.number(),
+  userDisplayName: z.string().nullable().optional(),
+  totals: RewardsTotals,
+  breakdown: z.array(RewardsBreakdownItem),
+  promotions: z.array(RewardsPromotion).optional().default([]),
+  postings: z.array(RewardsPostingItem),
+  badges: z.array(z.object({
+    code: z.string(),
+    label: z.string(),
+    count: z.number(),
+  })),
+  generatedAt: z.string(),
+  sourceNotes: z.any().optional(),
+});
+
+
 // ---------- types ----------
 export type TSessionSnapshotRes = z.infer<typeof SessionSnapshotRes>;
 export type TStartSessionReq = z.infer<typeof StartSessionReq>;
@@ -180,3 +233,4 @@ export type TSubmitSegmentRes = z.infer<typeof SubmitSegmentRes>;
 export type TCancelReq = z.infer<typeof CancelReq>;
 export type TCancelRes = z.infer<typeof CancelRes>;
 export type TDashboardRes = z.infer<typeof DashboardRes>;
+export type TRewardsSummaryRes = z.infer<typeof RewardsSummaryRes>;

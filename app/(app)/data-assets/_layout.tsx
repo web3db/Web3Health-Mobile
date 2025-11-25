@@ -14,7 +14,7 @@ export default function DataAssetsLayout() {
         contentStyle: { backgroundColor: c.bg },
       }}
     >
-      <Stack.Screen name="index" options={{ headerShown: false }} />
+      <Stack.Screen name="index" options={{ title: 'Data Assets', headerShown: false }} />
       <Stack.Screen name="[metricId]" options={{ title: 'Asset Graph' }} />
       <Stack.Screen name="permissions" options={{ title: 'Permissions' }} />
     </Stack>

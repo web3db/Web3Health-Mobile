@@ -6,15 +6,16 @@ import {
   CancelRes,
   DashboardRes,
   ResolverRes,
+  RewardsSummaryRes,
   SessionSnapshotRes,
   StartSessionRes,
   SubmitSegmentReq,
   SubmitSegmentRes,
   type TResolverRes,
+  type TRewardsSummaryRes,
 } from "./schema";
 
-
-import type { UploadSegmentResult } from "./types";
+import type { ActiveShareSessionDto, UploadSegmentResult } from "./types";
 
 /** Start (create) a session.
  *  NOTE: store passes joinTimeLocalISO → we must map to server's `joinTimeLocal`.
@@ -97,7 +98,9 @@ export async function uploadSegment(
   // Treat 409 duplicates as idempotent success
   if (!ok && status === 409) {
     if (__DEV__)
-      console.log("[sharing.api] submit_segment idempotent 409 → treating as ok");
+      console.log(
+        "[sharing.api] submit_segment idempotent 409 → treating as ok"
+      );
     return { ok: true, status: "ACTIVE" };
   }
 
@@ -118,6 +121,21 @@ export async function uploadSegment(
 }
 
 /** Cancel a session. */
+
+/**
+ * Cancel a session on the backend via user_cancel_share_session.
+ *
+ * Used in two places:
+ * - useShareStore.cancelCurrentSession      → user-initiated cancel.
+ * - useShareStore.tryProcessWindow (auto)   → engine-driven auto-cancel sync.
+ *
+ * Returns:
+ * - { ok: true,  status: "CANCELLED" }  when backend confirms cancellation.
+ * - { ok: false, status: "ACTIVE", error: "COMPLETED" } when server reports the
+ *   session is already completed (HTTP 409).
+ * - { ok: false, status: "ACTIVE", error: string } for other failures.
+ */
+
 export async function cancelShareSession(sessionId: number): Promise<{
   ok: boolean;
   status: "CANCELLED" | "ACTIVE";
@@ -159,7 +177,6 @@ export async function getSharingDashboard(userId: number) {
   return parsed;
 }
 
-
 /** Session snapshot for an (userId, postingId). */
 export async function getSessionSnapshot(userId: number, postingId: number) {
   const url = buildUrl("share_get_session_snapshot", { userId, postingId });
@@ -171,4 +188,38 @@ export async function getSessionSnapshot(userId: number, postingId: number) {
   }
   const parsed = SessionSnapshotRes.parse(json);
   return parsed;
+}
+
+
+// === [GET_REWARDS_SUMMARY] call user_rewards_summary with ?userId=
+export async function getRewardsSummary(userId: number): Promise<TRewardsSummaryRes> {
+  const url = buildUrl("user_rewards_summary", { userId });
+  const { ok, status, json, text } = await fetchJson("GET", url);
+  if (!ok || !json) {
+    throw new Error(
+      `user_rewards_summary ${status} ${String((json as any)?.message ?? text ?? "")}`
+    );
+  }
+  return RewardsSummaryRes.parse(json);
+}
+
+
+// === [GET_ACTIVE_SHARE_SESSIONS] call user_active-share-sessions with ?userId=
+export async function getActiveShareSessions(
+  userId: number
+): Promise<ActiveShareSessionDto[]> {
+  const url = buildUrl("user_active-share-sessions", { userId });
+  const { ok, status, json, text } = await fetchJson("GET", url);
+
+  if (!ok || !json) {
+    throw new Error(
+      `user_active-share-sessions ${status} ${String(
+        (json as any)?.message ?? text ?? ""
+      )}`
+    );
+  }
+
+  // Edge Function returns an array of ActiveShareSessionDto objects.
+  // We trust the backend shape here and cast to the DTO type.
+  return json as ActiveShareSessionDto[];
 }

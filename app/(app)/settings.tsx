@@ -1,26 +1,38 @@
+import { hkStopBackgroundObservers } from '@/src/services/tracking/healthkit';
 import { useAuthStore } from '@/src/store/useAuthStore';
 import { useThemeController } from '@/src/theme/ThemeController';
 import { useThemeColors } from '@/src/theme/useThemeColors';
 import { useAuth, useUser } from '@clerk/clerk-expo';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import BackButton from '../../src/components/ui/BackButton';
-
 export default function SettingsScreen() {
   const c = useThemeColors();
   const { appearanceOverride, setAppearanceOverride } = useThemeController();
   const { signOut } = useAuth();
   const { user, isLoaded } = useUser();
 
+  // const onLogout = async () => {
+  //   try {
+  //     await signOut();                // end Clerk session
+  //   } finally {
+  //     useAuthStore.getState().clear(); // clear local app auth state
+  //   }
+  // };
+
   const onLogout = async () => {
-    try {
-      await signOut();                // end Clerk session
-    } finally {
-      useAuthStore.getState().clear(); // clear local app auth state
+  try {
+    // iOS: stop HealthKit observers first so background wakes stop immediately
+    if (Platform.OS === 'ios') {
+      try { await hkStopBackgroundObservers(); } catch {}
     }
-  };
+    await signOut();                 // end Clerk session
+  } finally {
+    useAuthStore.getState().clear(); // clear local app auth state
+  }
+};
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>

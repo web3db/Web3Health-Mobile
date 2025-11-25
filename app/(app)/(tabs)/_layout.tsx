@@ -6,7 +6,6 @@ import type { DrawerNavigationProp } from '@react-navigation/drawer';
 import type { ParamListBase } from '@react-navigation/native';
 import { DrawerActions, useNavigation } from '@react-navigation/native';
 import { Tabs } from 'expo-router';
-import React from 'react';
 import { Platform, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -28,6 +27,7 @@ export default function TabLayout() {
   const c = useThemeColors();
   const navigation = useNavigation<DrawerNavigationProp<ParamListBase>>();
   const insets = useSafeAreaInsets();
+  const isIOS = Platform.OS === 'ios';
   return (
      <Tabs
       screenOptions={{
@@ -35,7 +35,9 @@ export default function TabLayout() {
         tabBarActiveTintColor: c.text.primary,
         tabBarInactiveTintColor: c.text.secondary,
         tabBarButton: HapticTab,
-        tabBarBackground: TabBarBackground,
+        tabBarBackground: isIOS
+          ? () => <View style={{ flex: 1, backgroundColor: c.surface }} />
+          : TabBarBackground,
         tabBarStyle: Platform.select({
           ios: {
             position: 'absolute',

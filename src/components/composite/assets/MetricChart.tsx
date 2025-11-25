@@ -1,6 +1,6 @@
-import { useThemeColors } from '@/src/theme/useThemeColors';
-import React, { memo, useMemo, useState } from 'react';
-import { ScrollView, Text, View } from 'react-native';
+import { useThemeColors } from "@/src/theme/useThemeColors";
+import React, { memo, useEffect, useMemo, useState } from "react";
+import { Pressable, ScrollView, Text, View } from "react-native";
 
 export type Bucket = {
   start: string;
@@ -12,72 +12,192 @@ export type Bucket = {
 
 export type MetricChartProps = {
   buckets: Bucket[];
-  granularity: 'hourly' | 'daily';
-  unit?: string;             // 'steps'|'kcal'|'m'|'bpm'|'h'|'kg'
+  granularity: "hourly" | "daily";
+  unit?: string; // 'steps'|'kcal'|'m'|'bpm'|'h'|'kg'
   emptyLabel?: string;
 };
 
-// Lightweight bar chart with responsive sizing, scroll when needed, and a legend.
+type InternalItem = {
+  start: string;
+  end?: string;
+  value: number;
+  hasSample: boolean;
+};
+
+// Helper: axis label formatter (X-axis)
+function formatAxisLabel(
+  iso: string | undefined,
+  granularity: "hourly" | "daily"
+): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+
+  if (granularity === "hourly") {
+    // Manual 12-hour format with AM/PM (e.g. "6 AM", "12 PM")
+    const hour = d.getHours();
+    const hour12 = hour % 12 || 12;
+    const suffix = hour < 12 ? "AM" : "PM";
+    return `${hour12} ${suffix}`;
+  }
+
+  const month = d.toLocaleString(undefined, { month: "short" });
+  const day = d.getDate().toString().padStart(2, "0");
+  return `${month} ${day}`;
+}
+
+// Helper: tooltip label for selected bar
+function formatSelectedLabel(
+  iso: string,
+  value: number,
+  granularity: "hourly" | "daily",
+  unit?: string
+): string {
+  const d = new Date(iso);
+  const datePart =
+    granularity === "hourly"
+      ? d.toLocaleString(undefined, {
+          month: "short",
+          day: "2-digit",
+          hour: "numeric",
+          minute: "2-digit",
+        })
+      : d.toLocaleDateString(undefined, {
+          month: "short",
+          day: "2-digit",
+          year: "numeric",
+        });
+
+  const rounded = Math.round(value);
+  const valuePart = Number.isFinite(rounded) ? rounded.toString() : "0";
+  const unitPart = unit ? ` ${unit}` : "";
+
+  return `${datePart} · ${valuePart}${unitPart}`;
+}
+
+// Helper: make Y-axis ticks “nice” numbers
+function makeNiceTicks(maxVal: number): number[] {
+  if (!Number.isFinite(maxVal) || maxVal <= 0) return [0];
+  const rawMax = maxVal;
+
+  // Choose 3 ticks: 0, mid, max (evenly spaced)
+  const mid = rawMax / 2;
+
+  const roundNice = (v: number): number => {
+    if (v <= 0) return 0;
+    if (v < 10) return Math.round(v);
+    if (v < 100) return Math.round(v / 5) * 5;
+    if (v < 1000) return Math.round(v / 10) * 10;
+    return Math.round(v / 50) * 50;
+  };
+
+  const ticks = [0, mid, rawMax].map(roundNice);
+  const deduped = Array.from(new Set(ticks));
+  // Ensure ascending order
+  deduped.sort((a, b) => a - b);
+  return deduped;
+}
+
 function MetricChartBase({
   buckets,
   granularity,
   unit,
-  emptyLabel = 'No data in this window',
+  emptyLabel = "No data in this window",
 }: MetricChartProps) {
   const c = useThemeColors();
   const mutedText = (c.text as any).muted ?? c.text.secondary;
 
-  const { items, max, anySample, startLabel, midLabel, endLabel } = useMemo(() => {
-    const rows = (buckets ?? []).map(b => {
+  const { items, max, anySample, yTicks } = useMemo(() => {
+    const rows: InternalItem[] = (buckets ?? []).map((b) => {
       const v = Math.max(0, Number(b?.value ?? 0));
-      const hasSample = typeof b.hasSample === 'boolean' ? b.hasSample : v > 0;
+      const hasSample = typeof b.hasSample === "boolean" ? b.hasSample : v > 0;
       return { value: v, hasSample, start: b.start, end: b.end };
     });
-    const maxVal = Math.max(1, ...rows.map(r => r.value)); // avoid /0
-    const anySample = rows.some(r => r.hasSample);
 
-    const fmt = (iso?: string) =>
-      iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+    const maxVal = Math.max(1, ...rows.map((r) => r.value)); // avoid /0
+    const anySample = rows.some((r) => r.hasSample);
+    const yTicks = anySample ? makeNiceTicks(maxVal) : [0];
 
-    const startLabel = rows.length ? fmt(rows[0].start) : '';
-    const endLabel = rows.length ? fmt(rows[rows.length - 1].start) : '';
-    const midLabel = rows.length ? fmt(rows[Math.floor(rows.length / 2)].start) : '';
-
-    return { items: rows, max: maxVal, anySample, startLabel, midLabel, endLabel };
-  }, [buckets]);
+    return {
+      items: rows,
+      max: maxVal,
+      anySample,
+      yTicks,
+    };
+  }, [buckets, granularity]);
 
   const isEmpty = (buckets?.length ?? 0) === 0 || !anySample;
 
-  // --- Responsive sizing ---
+  // --- Responsive sizing + selection ---
   const [containerW, setContainerW] = useState<number>(0);
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+
+  // Reset selection when data or granularity changes
+  useEffect(() => {
+    setSelectedIndex(null);
+  }, [buckets, granularity]);
+
   const n = items.length;
-  // preferred sizes
-  const preferredBar = 8;
+
+  // Bar / gap sizing: dynamic but with comfortable minimums (no needle bars)
+  const preferredBar = 10;
   const preferredGap = 6;
-  const minBar = 3;
-  const minGap = 3;
+  const minBar = 6;
+  const minGap = 4;
 
   // compute total width we'd need with preferred sizes
-  const requiredW = n > 0 ? n * preferredBar + Math.max(0, n - 1) * preferredGap : 0;
+  const requiredW =
+    n > 0 ? n * preferredBar + Math.max(0, n - 1) * preferredGap : 0;
 
   // if container is wider than required, fit bars into container by scaling gap evenly
   const fitMode = containerW > 0 && requiredW <= containerW;
   const barW = fitMode
-    ? Math.max(minBar, Math.floor(containerW / (n * (preferredBar / (preferredBar + preferredGap)) + (n - 1))))
+    ? Math.max(
+        minBar,
+        Math.floor(
+          containerW /
+            (n * (preferredBar / (preferredBar + preferredGap)) + (n - 1))
+        )
+      )
     : preferredBar;
 
   const gapW = fitMode
     ? Math.max(minGap, Math.floor((containerW - n * barW) / Math.max(1, n - 1)))
     : preferredGap;
 
-  // if still too wide, we’ll render inside a horizontal ScrollView with contentWidth = requiredW
-  const contentW = fitMode ? containerW : (n * barW + Math.max(0, n - 1) * gapW);
+  // each "slot" is bar + surrounding gap → use that as the tap/scroll unit
+  const slotW = barW + gapW;
+
+  // if still too wide, we’ll render inside a horizontal ScrollView with contentWidth = n * slotW
+  const contentW = fitMode ? containerW : n * slotW;
+
+  // X-axis label density: simple anchor-based rule
+  //  - 7-day or fewer: label every bucket
+  //  - larger windows: first, last, and a few evenly spaced anchors (~5–6 labels)
+  let labelIndices: number[] = [];
+  if (n > 0) {
+    if (n <= 7) {
+      labelIndices = Array.from({ length: n }, (_, i) => i);
+    } else {
+      const desiredCount = Math.min(6, n); // ~5–6 labels max
+      const step = (n - 1) / (desiredCount - 1);
+      const rawIndices: number[] = [];
+      for (let k = 0; k < desiredCount; k++) {
+        rawIndices.push(Math.round(k * step));
+      }
+      labelIndices = Array.from(new Set(rawIndices)).sort((a, b) => a - b);
+    }
+  }
+
+  const selected =
+    selectedIndex != null && selectedIndex >= 0 && selectedIndex < items.length
+      ? items[selectedIndex]
+      : null;
 
   return (
     <View
       accessibilityLabel="Metric chart"
       testID="metric-chart"
-      onLayout={e => setContainerW(e.nativeEvent.layout.width)}
+      onLayout={(e) => setContainerW(e.nativeEvent.layout.width)}
       style={{
         borderRadius: 16,
         borderWidth: 1,
@@ -89,122 +209,272 @@ function MetricChartBase({
       {isEmpty ? (
         <Text style={{ color: c.text.secondary }}>{emptyLabel}</Text>
       ) : (
-        <View style={{}}>
-          {/* Bars: scroll horizontally when needed */}
-          <ScrollView
-            horizontal={!fitMode}
-            showsHorizontalScrollIndicator={!fitMode}
-            bounces={false}
-            contentContainerStyle={{
-              width: contentW,
-              height: 128,
-              justifyContent: 'flex-end',
-            }}
-          >
+        <View>
+          {/* Header: selected value / usage hint */}
+          <View style={{ marginBottom: 8 }}>
+            {selected && selected.hasSample ? (
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <View style={{ flex: 1, paddingRight: 8 }}>
+                  <Text
+                    style={{
+                      color: mutedText,
+                      fontSize: 11,
+                    }}
+                    numberOfLines={1}
+                  >
+                    Selected {granularity === "hourly" ? "interval" : "day"}
+                  </Text>
+                  <Text
+                    style={{
+                      color: c.text.primary,
+                      fontSize: 14,
+                      fontWeight: "600",
+                    }}
+                    numberOfLines={2}
+                  >
+                    {formatSelectedLabel(
+                      selected.start,
+                      selected.value,
+                      granularity,
+                      unit
+                    )}
+                  </Text>
+                </View>
+
+                <Pressable onPress={() => setSelectedIndex(null)} hitSlop={8}>
+                  <Text
+                    style={{
+                      color: c.primary,
+                      fontSize: 11,
+                      fontWeight: "500",
+                    }}
+                  >
+                    Clear
+                  </Text>
+                </Pressable>
+              </View>
+            ) : (
+              <Text
+                style={{
+                  color: mutedText,
+                  fontSize: 11,
+                }}
+              >
+                Scroll sideways and tap a bar to see the exact value.
+              </Text>
+            )}
+          </View>
+
+          {/* Chart row: Y-axis + bars */}
+          <View style={{ flexDirection: "row" }}>
+            {/* Y-axis (unchanged logic, just slightly tighter spacing) */}
             <View
               style={{
-                flexDirection: 'row',
-                alignItems: 'flex-end',
-                gap: gapW,
-                height: 120,
-                paddingHorizontal: 2,
-                width: contentW,
+                width: 32,
+                marginRight: 4,
+                paddingLeft: 0,
               }}
             >
-              {items.map((r, i) => {
-                // Height rules:
-                const scaled = Math.round((r.value / max) * 110); // leave ~10px top padding
-                const isNoSample = !r.hasSample;
-                const isTrueZero = r.hasSample && r.value === 0;
-
-                if (isNoSample) {
-                  // Hollow outline → "no sample"
-                  return (
-                    <View
-                      key={i}
-                      accessibilityLabel={`Bucket ${i + 1}: no sample`}
-                      style={{
-                        width: barW,
-                        height: 16,
-                        borderRadius: 4,
-                        borderWidth: 1,
-                        borderColor: c.border,
-                        backgroundColor: 'transparent',
-                      }}
-                    />
-                  );
-                }
-
-                if (isTrueZero) {
-                  // Small solid stub at baseline → "recorded zero"
-                  return (
-                    <View
-                      key={i}
-                      accessibilityLabel={`Bucket ${i + 1}: value 0`}
-                      style={{
-                        width: barW,
-                        height: 2,
-                        borderRadius: 4,
-                        backgroundColor: c.primary,
-                      }}
-                    />
-                  );
-                }
-
-                // Positive value
-                return (
-                  <View
-                    key={i}
-                    accessibilityLabel={`Bucket ${i + 1} value ${r.value}`}
+              <View
+                style={{
+                  height: 120,
+                  justifyContent: "space-between",
+                  alignItems: "flex-end",
+                }}
+              >
+                {[...yTicks].reverse().map((t, idx) => (
+                  <Text
+                    key={idx}
                     style={{
-                      width: barW,
-                      height: scaled,
-                      borderRadius: 4,
-                      backgroundColor: c.primary,
+                      color: mutedText,
+                      fontSize: 10,
                     }}
-                  />
-                );
-              })}
+                  >
+                    {t}
+                  </Text>
+                ))}
+              </View>
             </View>
 
-            {/* Baseline */}
-            <View
-              style={{
-                position: 'absolute',
-                left: 0,
-                right: 0,
-                bottom: 8,
-                height: 1,
-                backgroundColor: c.border,
+            {/* Bars + X-axis: scroll horizontally when needed */}
+            <ScrollView
+              horizontal={!fitMode}
+              showsHorizontalScrollIndicator={true}
+              persistentScrollbar={true}
+              bounces={false}
+              contentContainerStyle={{
+                width: contentW,
+                paddingBottom: 12,
               }}
-            />
-          </ScrollView>
+            >
+              <View
+                style={{
+                  width: contentW,
+                  paddingHorizontal: 0,
+                }}
+              >
+                {/* Bars row */}
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "flex-end",
+                    height: 120,
+                  }}
+                >
+                  {items.map((r, i) => {
+                    // Height rules (unchanged):
+                    const scaled = Math.round((r.value / max) * 110); // leave ~10px top padding
+                    const isNoSample = !r.hasSample;
+                    const isTrueZero = r.hasSample && r.value === 0;
+                    const isSelected = selectedIndex === i;
+                    const dimmed =
+                      selectedIndex != null &&
+                      selectedIndex !== i &&
+                      !isNoSample;
 
-          {/* X-axis ticks: first / mid / last */}
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 }}>
-            <Text style={{ color: mutedText, fontSize: 11 }}>{startLabel}</Text>
-            <Text style={{ color: mutedText, fontSize: 11 }}>{midLabel}</Text>
-            <Text style={{ color: mutedText, fontSize: 11 }}>{endLabel}</Text>
+                    const commonStyle = {
+                      width: barW,
+                      borderRadius: 4,
+                      backgroundColor: c.primary,
+                    } as const;
+
+                    // "No sample" → keep empty slot to preserve alignment
+                    if (isNoSample) {
+                      return (
+                        <View
+                          key={i}
+                          style={{
+                            width: slotW,
+                          }}
+                        />
+                      );
+                    }
+
+                    // Helper: shared Pressable wrapper for fat-finger target
+                    const pressableStyle = {
+                      width: slotW,
+                      alignItems: "center",
+                      justifyContent: "flex-end",
+                      opacity: dimmed ? 0.3 : 1,
+                    } as const;
+
+                    if (isTrueZero) {
+                      // Small solid stub at baseline → "recorded zero"
+                      return (
+                        <Pressable
+                          key={i}
+                          onPress={() =>
+                            setSelectedIndex((prev) => (prev === i ? null : i))
+                          }
+                          accessibilityLabel={`Bucket ${i + 1}: value 0`}
+                          style={pressableStyle}
+                        >
+                          <View
+                            style={{
+                              ...commonStyle,
+                              height: 2,
+                            }}
+                          />
+                        </Pressable>
+                      );
+                    }
+
+                    // Positive value
+                    return (
+                      <Pressable
+                        key={i}
+                        onPress={() =>
+                          setSelectedIndex((prev) => (prev === i ? null : i))
+                        }
+                        accessibilityLabel={`Bucket ${i + 1} value ${r.value}`}
+                        style={pressableStyle}
+                      >
+                        <View
+                          style={{
+                            ...commonStyle,
+                            height: scaled,
+                            borderWidth: isSelected ? 1 : 0,
+                            borderColor: isSelected
+                              ? c.text.primary
+                              : "transparent",
+                          }}
+                        />
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                {/* Baseline */}
+                <View
+                  style={{
+                    height: 1,
+                    backgroundColor: c.border,
+                    marginTop: 4,
+                  }}
+                />
+
+                {/* X-axis labels */}
+                <View style={{ flexDirection: "row", marginTop: 6 }}>
+                  {items.map((r, i) => {
+                    const showLabel = labelIndices.includes(i);
+
+                    return (
+                      <View
+                        key={`label-${i}`}
+                        style={{
+                          width: slotW,
+                          alignItems: "center",
+                          overflow: "visible",
+                        }}
+                      >
+                        {showLabel ? (
+                          // Slightly wider label wrapper so text is never "ant size"
+                          <View
+                            style={{
+                              width: 56, // enough for "Nov 30"
+                              alignItems: "center",
+                            }}
+                          >
+                            <Text
+                              style={{
+                                color: mutedText,
+                                fontSize: 10,
+                                textAlign: "center",
+                                width: "100%",
+                              }}
+                              numberOfLines={1}
+                            >
+                              {formatAxisLabel(r.start, granularity)}
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+            </ScrollView>
           </View>
+
+          {/* Spacer under chart */}
+          <View style={{ marginTop: 4 }} />
         </View>
       )}
 
-      {/* Footnote + legend */}
-      <View style={{ marginTop: 8, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-        {!!unit && (
-          <Text style={{ color: mutedText }}>
-            {granularity === 'hourly' ? 'Hourly' : 'Daily'} · {unit}
+      {/* Footer: Unit label only (as in your latest code) */}
+      {!!unit && (
+        <View style={{ marginTop: 8 }}>
+          <Text style={{ color: mutedText, fontSize: 12 }}>
+            {granularity === "hourly" ? "Hourly" : "Daily"} · {unit}
           </Text>
-        )}
-        {/* Legend */}
-        {!isEmpty && (
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginLeft: 'auto' }}>
-            <LegendSwatch color={c.primary} label="value > 0" solid />
-            <LegendSwatch color={c.primary} label="zero" stub />
-            <LegendSwatch color={c.border} label="no sample" outline />
-          </View>
-        )}
-      </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -223,15 +493,15 @@ function LegendSwatch({
   outline?: boolean;
 }) {
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
       <View
         style={{
           width: 10,
           height: stub ? 3 : 10,
           borderRadius: 3,
-          backgroundColor: outline ? 'transparent' : color,
+          backgroundColor: outline ? "transparent" : color,
           borderWidth: outline ? 1 : 0,
-          borderColor: outline ? color : 'transparent',
+          borderColor: outline ? color : "transparent",
         }}
       />
       <Text style={{ fontSize: 11 }}>{label}</Text>

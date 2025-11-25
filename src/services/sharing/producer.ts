@@ -6,7 +6,11 @@
 // Engine behavior:
 // • One-time GRACE wait at the start of a new due day to absorb provider write latency.
 // • If payload.hasData === false → schedule retry (up to MAX_RETRIES).
-// • After 3 consecutive no-data retries on the same day → status = CANCELLED.
+// • After MAX_RETRIES consecutive no-data retries on the same day → status = CANCELLED
+//   in the engine state. The Share store (useShareStore.tryProcessWindow) treats this
+//   as an automatic cancel and will:
+//   - keep the local engine/store status as "CANCELLED", and
+//   - call user_cancel_share_session via cancelShareSession to sync the backend.
 // • On successful upload → clear retries, advance lastSentDayIndex, increment segmentsSent.
 
 import { uploadSegment } from "./api";
@@ -58,6 +62,24 @@ export type SegmentPayload = {
     computedJson?: any;
   }>;
 };
+
+/** ───────────────────────── Utilities ───────────────────────── */
+// ★ Jitter helper: spreads calls a bit to avoid thundering herd
+function withJitter(baseMs: number, spreadRatio = 0.1): number {
+  if (!baseMs || baseMs <= 0) return 0;
+  const spread = Math.max(0, Math.floor(baseMs * spreadRatio));
+  const delta = Math.floor(Math.random() * (2 * spread + 1)) - spread; // [-spread, +spread]
+  return Math.max(0, baseMs + delta);
+}
+
+// ★ Window validator: prevent accidental bad windows
+function windowLooksValid(fromIso: string, toIso: string): boolean {
+  const s = Date.parse(fromIso);
+  const e = Date.parse(toIso);
+  return Number.isFinite(s) && Number.isFinite(e) && s < e;
+}
+
+/** ───────────────────────── Segment Payload Builder ───────────────────────── */
 /**
  * Build a segment payload by summarizing each requested metric inside [fromUtc, toUtc).
  * - Always includes ALL requested metricIds in the payload.
@@ -195,17 +217,29 @@ export async function processDueWindow(
   // One-time config banner per app lifetime
   if (!(global as any).__SHARE_CONFIG_LOGGED__) {
     (global as any).__SHARE_CONFIG_LOGGED__ = true;
-    console.log('[SHARE][Config]', getShareRuntimeConfig());
+    console.log("[SHARE][Config]", getShareRuntimeConfig());
   }
 
-  if (state.status !== 'ACTIVE') {
-    console.log(TAG, 'skip: status != ACTIVE', { status: state.status, dayIdx: window.dayIndex });
+  //  Validate window early
+  if (!windowLooksValid(window.fromUtc, window.toUtc)) {
+    console.warn(TAG, "skip: invalid window", window);
+    return { state };
+  }
+
+  if (state.status !== "ACTIVE") {
+    console.log(TAG, "skip: status != ACTIVE", {
+      status: state.status,
+      dayIdx: window.dayIndex,
+    });
     return { state };
   }
 
   // Idempotency — never re-send an already-sent index
-  if (state.lastSentDayIndex != null && window.dayIndex <= state.lastSentDayIndex) {
-    console.log(TAG, 'skip: already sent', {
+  if (
+    state.lastSentDayIndex != null &&
+    window.dayIndex <= state.lastSentDayIndex
+  ) {
+    console.log(TAG, "skip: already sent", {
       requestedDayIdx: window.dayIndex,
       lastSentDayIndex: state.lastSentDayIndex,
     });
@@ -217,33 +251,65 @@ export async function processDueWindow(
       ...state,
       currentDueDayIndex: window.dayIndex,
       noDataRetryCount: 0,
-      nextRetryAtUtc: null,      // clear any pending retry from prior day
-      graceAppliedForDay: null,  // allow grace to apply once for this new day
+      nextRetryAtUtc: null, // clear any pending retry from prior day
+      graceAppliedForDay: null, // allow grace to apply once for this new day
     };
   }
 
   // Retry gate — if nextRetryAtUtc is in the future, wait.
   if (state.nextRetryAtUtc && nowUtc < state.nextRetryAtUtc) {
-    console.log(TAG, 'retry-wait', {
+    console.log(TAG, "retry-wait", {
       dayIdx: state.currentDueDayIndex ?? window.dayIndex,
       nowISO: new Date(nowUtc).toISOString(),
       nextRetryAtISO: iso(state.nextRetryAtUtc),
-      secondsRemaining: Math.max(0, Math.ceil((state.nextRetryAtUtc - nowUtc) / 1000)),
+      secondsRemaining: Math.max(
+        0,
+        Math.ceil((state.nextRetryAtUtc - nowUtc) / 1000)
+      ),
       noDataRetryCount: state.noDataRetryCount,
     });
     return { state };
   }
+  // ★ Day-0: fast probe-first path (avoid heavy compute when clearly no data yet)
+  if (window.dayIndex === 0) {
+    const { payload: probePayload, diag: probeDiag } =
+      await buildSegmentPayload(window, { ...ctx, probeOnly: true });
+    if (!probePayload.hasData) {
+      const nextRetryAtUtc =
+        nowUtc + withJitter(GRACE_WAIT_MS || RETRY_INTERVAL_MS); // prefer grace, fallback to retry interval
+      console.log(TAG, "day0-probe no-data → short-wait", {
+        dayIdx: window.dayIndex,
+        nextRetryAtISO: new Date(nextRetryAtUtc).toISOString(),
+        diag: probeDiag,
+      });
+      return {
+        state: {
+          ...state,
+          currentDueDayIndex: window.dayIndex,
+          noDataRetryCount: (state.noDataRetryCount ?? 0) + 1, // count toward retries, but still gentle on day-0
+          nextRetryAtUtc,
+        },
+        diag: probeDiag,
+      };
+    }
+    // If probe found data, continue to full build below.
+  }
 
   // One-time grace per new due day to absorb provider write latency (not for Day-0)
-  if (window.dayIndex !== 0 && GRACE_WAIT_MS > 0 && state.graceAppliedForDay !== window.dayIndex) {
-    console.log(TAG, 'grace-wait', { dayIdx: window.dayIndex, ms: GRACE_WAIT_MS });
+  if (
+    window.dayIndex !== 0 &&
+    GRACE_WAIT_MS > 0 &&
+    state.graceAppliedForDay !== window.dayIndex
+  ) {
+    const waitMs = withJitter(GRACE_WAIT_MS);
+    console.log(TAG, "grace-wait", { dayIdx: window.dayIndex, ms: waitMs });
     return {
       state: {
         ...state,
         currentDueDayIndex: window.dayIndex,
-        nextRetryAtUtc: nowUtc + GRACE_WAIT_MS,
+        nextRetryAtUtc: nowUtc + waitMs,
         graceAppliedForDay: window.dayIndex,
-      }
+      },
     };
   }
 
@@ -258,9 +324,16 @@ export async function processDueWindow(
   if (!payload.hasData) {
     const newCount = state.noDataRetryCount + 1;
 
+    // When we exceed MAX_RETRIES for a given day, we mark the engine status as
+    // "CANCELLED". This is an engine-level decision only: the Share store
+    // (useShareStore.tryProcessWindow) observes this terminal state and is
+    // responsible for:
+    //   - updating the persisted store status to "CANCELLED", and
+    //   - calling cancelShareSession (user_cancel_share_session) so the backend
+    //     session status is also marked as cancelled.
     if (newCount >= MAX_RETRIES) {
-      console.log(TAG, 'CANCELLED', {
-        reason: 'NO_DATA_RETRIES_EXHAUSTED',
+      console.log(TAG, "CANCELLED", {
+        reason: "NO_DATA_RETRIES_EXHAUSTED",
         failedDayIndex: window.dayIndex,
         retries: newCount,
         diag,
@@ -268,7 +341,7 @@ export async function processDueWindow(
       return {
         state: {
           ...state,
-          status: 'CANCELLED',
+          status: "CANCELLED",
           currentDueDayIndex: window.dayIndex,
           noDataRetryCount: newCount,
           nextRetryAtUtc: null,
@@ -277,8 +350,8 @@ export async function processDueWindow(
       };
     }
 
-    const nextRetryAtUtc = nowUtc + RETRY_INTERVAL_MS;
-    console.log(TAG, 'no-data → retry', {
+    const nextRetryAtUtc = nowUtc + withJitter(RETRY_INTERVAL_MS);
+    console.log(TAG, "no-data → retry", {
       dayIdx: window.dayIndex,
       noDataRetryCount: newCount,
       nextRetryAtISO: new Date(nextRetryAtUtc).toISOString(),
@@ -296,14 +369,60 @@ export async function processDueWindow(
     };
   }
 
-  // Upload segment — pass the FULL SegmentPayload (matches your API expectation)
-  const rawRes: any = await uploadSegment(payload as any);
-  const res: UploadSegmentResult = normalizeUploadResult(rawRes);
+  // Upload segment — pass the FULL SegmentPayload
+  // const rawRes: any = await uploadSegment(payload as any);
+  //   const res: UploadSegmentResult = normalizeUploadResult(rawRes);
+
+  //   if (res.ok) {
+  //     console.log('[SHARE][API] upload success', {
+  //       dayIndex: payload.dayIndex,
+  //       status: res.status ?? 'ACTIVE',
+  //       diag,
+  //     });
+
+  //     const next: ShareSessionState = {
+  //       ...state,
+  //       lastSentDayIndex: payload.dayIndex,
+  //       segmentsSent: (state.segmentsSent ?? 0) + 1,
+  //       currentDueDayIndex: null,
+  //       noDataRetryCount: 0,
+  //       nextRetryAtUtc: null,
+  //       graceAppliedForDay: null,
+  //     };
+
+  //     const expected = next.segmentsExpected ?? 0;
+  //     const sent = next.segmentsSent ?? 0;
+  //     next.status = (res.status === 'COMPLETE' || (expected > 0 && sent >= expected)) ? 'COMPLETE' : 'ACTIVE';
+
+  //     return { state: next, diag };
+  //   } else {
+  //     console.warn('[SHARE][API] upload failed', {
+  //       dayIndex: payload.dayIndex,
+  //       error: res.error,
+  //       diag,
+  //     });
+  //     // Keep state unchanged; caller can decide UX
+  //     return { state, diag };
+  //   }
+  // }
+
+  let res: UploadSegmentResult;
+  try {
+    const rawRes: any = await uploadSegment(payload as any);
+    res = normalizeUploadResult(rawRes);
+  } catch (e: any) {
+    // ★ Transport errors become a normalized failure
+    console.warn("[SHARE][API] upload threw", {
+      dayIndex: payload.dayIndex,
+      err: String(e?.message ?? e),
+    });
+    res = { ok: false, error: String(e?.message ?? e) };
+  }
 
   if (res.ok) {
-    console.log('[SHARE][API] upload success', {
+    console.log("[SHARE][API] upload success", {
       dayIndex: payload.dayIndex,
-      status: res.status ?? 'ACTIVE',
+      status: res.status ?? "ACTIVE",
       diag,
     });
 
@@ -319,11 +438,14 @@ export async function processDueWindow(
 
     const expected = next.segmentsExpected ?? 0;
     const sent = next.segmentsSent ?? 0;
-    next.status = (res.status === 'COMPLETE' || (expected > 0 && sent >= expected)) ? 'COMPLETE' : 'ACTIVE';
+    next.status =
+      res.status === "COMPLETE" || (expected > 0 && sent >= expected)
+        ? "COMPLETE"
+        : "ACTIVE";
 
     return { state: next, diag };
   } else {
-    console.warn('[SHARE][API] upload failed', {
+    console.warn("[SHARE][API] upload failed", {
       dayIndex: payload.dayIndex,
       error: res.error,
       diag,
@@ -332,4 +454,3 @@ export async function processDueWindow(
     return { state, diag };
   }
 }
-
