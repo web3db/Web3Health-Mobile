@@ -27,10 +27,7 @@ import React, {
 } from "react";
 import { Alert, Linking, Platform, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-<<<<<<< HEAD
 
-=======
->>>>>>> main
 // --- tiny helpers (local to this file to keep it self-contained) ---
 const hasAny = (arr?: Array<any>) => Array.isArray(arr) && arr.length > 0;
 const hasText = (s?: string | null) => !!(s && s.trim().length > 0);
@@ -159,18 +156,6 @@ function buildMetricMapStrict(
 // ─────────────────────────────────────────────────────────────────────────────
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
-<<<<<<< HEAD
-=======
-function windowForDayIndex(anchorISO: string, dayIdx: number) {
-  const anchorMs = Date.parse(anchorISO);
-  const toMs = anchorMs + dayIdx * ONE_DAY_MS;
-  const fromMs = toMs - ONE_DAY_MS;
-  return {
-    fromUtc: new Date(fromMs).toISOString(),
-    toUtc: new Date(toMs).toISOString(),
-  };
-}
->>>>>>> main
 
 function fmtUTC(iso: string) {
   return new Date(iso).toISOString().replace(".000Z", "Z");
@@ -188,7 +173,6 @@ function fmtLocal(iso: string) {
   });
 }
 
-<<<<<<< HEAD
 // === [SECTION_HEADER_COMPONENT] reusable title + subtitle
 function SectionHeader({
   title,
@@ -212,128 +196,8 @@ function SectionHeader({
   );
 }
 
-// const codeToKey = (c: MetricCode): IOSMetricKey => {
-//   switch (c) {
-//     case "STEPS":
-//       return "steps";
-//     case "FLOORS":
-//       return "floors";
-//     case "DISTANCE":
-//       return "distance";
-//     case "KCAL":
-//       return "activeCalories";
-//     case "HR":
-//       return "heartRate";
-//     case "SLEEP":
-//       return "sleep";
-//   }
-// };
 
-// const keyToCode = (k: IOSMetricKey): MetricCode | undefined => {
-//   switch (k) {
-//     case "steps":
-//       return "STEPS";
-//     case "floors":
-//       return "FLOORS";
-//     case "distance":
-//       return "DISTANCE";
-//     case "activeCalories":
-//       return "KCAL";
-//     case "heartRate":
-//       return "HR";
-//     case "sleep":
-//       return "SLEEP";
-//     default:
-//       return undefined;
-//   }
-// };
 
-// function typeIdToKey(t: string): IOSMetricKey | undefined {
-//   switch (t) {
-//     case HK_TYPES.steps: return "steps";
-//     case HK_TYPES.floors: return "floors";
-//     case HK_TYPES.distance: return "distance";
-//     case HK_TYPES.activeCalories: return "activeCalories";
-//     case HK_TYPES.heartRate: return "heartRate";
-//     // case HK_TYPES.weight: return "weight";
-//     // case HK_TYPES.respiratoryRate: return "respiratoryRate";
-//     case HK_TYPES.sleep: return "sleep";
-//     default: return undefined;
-//   }
-// }
-
-// // helper for clarity
-// type HKPerTypeStatus = {
-//   authorizedKeys: IOSMetricKey[];      // e.g., "steps", "heartRate"
-//   deniedKeys: IOSMetricKey[];
-//   shouldRequestTypes: IOSMetricKey[];  // still-needed KEYS (per-type status)
-// };
-
-// async function iosResolveHealthPermissionsBeforeStart(
-//   metricMap: Partial<Record<MetricCode, number>>
-// ): Promise<MetricCode[]> {
-//   if (Platform.OS !== "ios") return [];
-
-//   // requestedCodes: our UPPERCASE codes → our lowercase metric keys
-//   const requestedCodes = Object.keys(metricMap) as MetricCode[];
-//   const requestedKeys: IOSMetricKey[] = requestedCodes.map(codeToKey);
-
-//   // 1) Ask HealthKit which read TYPES are still undetermined (these are HK type identifiers, NOT our keys)
-//   const undeterminedTypes = await getUndeterminedReadTypes(requestedKeys);
-
-//   // 2) Prompt only for those undetermined TYPES (safe; library accepts type IDs)
-//   if (undeterminedTypes.length > 0) {
-//     await requestAuthorizationForTypes(undeterminedTypes);
-//   }
-
-//   // 3) Re-check per-type status; this returns:
-//   //    - authorizedKeys: IOSMetricKey[]
-//   //    - shouldRequestTypes: string[] (type IDs)
-//   //    - deniedKeys: IOSMetricKey[]
-//   const { authorizedKeys, shouldRequestTypes, deniedKeys } =
-//     await hkGetPerTypeStatus(requestedKeys);
-
-//   // Convert remaining “should request” type IDs → metric keys
-//   const shouldRequestKeys = shouldRequestTypes
-//     .map(typeIdToKey)
-//     .filter((x): x is IOSMetricKey => !!x);
-
-//   // Treat “should request” + denied as unavailable keys
-//   const unavailableKeySet = new Set<IOSMetricKey>([
-//     ...shouldRequestKeys,
-//     ...deniedKeys,
-//   ]);
-
-//   // Any originally requested key that isn't authorized is also unavailable
-//   const authSet = new Set<IOSMetricKey>(authorizedKeys);
-//   for (const k of requestedKeys) {
-//     if (!authSet.has(k)) unavailableKeySet.add(k);
-//   }
-
-//   // Convert unavailable metric KEYS → your MetricCodes (UPPERCASE)
-//   const unavailableCodes: MetricCode[] = Array.from(unavailableKeySet)
-//     .map(keyToCode)
-//     .filter((x): x is MetricCode => !!x);
-
-//   // If anything is explicitly denied, offer Settings deeplink
-//   if (deniedKeys.length > 0) {
-//     await new Promise<void>((resolve) => {
-//       Alert.alert(
-//         "Health permissions denied",
-//         "To share all requested metrics, enable access in iOS Settings → Health.",
-//         [
-//           { text: "Not now", style: "cancel", onPress: () => resolve() },
-//           { text: "Open Settings", onPress: async () => { await openHealthSettings(); resolve(); } },
-//         ]
-//       );
-//     });
-//   }
-
-//   return unavailableCodes;
-// }
-
-=======
->>>>>>> main
 export default function OpportunityDetails() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -348,12 +212,6 @@ export default function OpportunityDetails() {
   const cycleAnchorUtc = useShareStore((s) => s.cycleAnchorUtc);
   const originalCycleAnchorUtc = useShareStore((s) => s.originalCycleAnchorUtc);
   const engine = useShareStore((s) => s.engine);
-<<<<<<< HEAD
-=======
-  const setBackdatedAnchorTestOnly = useShareStore(
-    (s) => s.setBackdatedAnchorTestOnly
-  );
->>>>>>> main
   const tick = useShareStore((s) => s.tick);
   const catchUpIfNeeded = useShareStore((s) => s.catchUpIfNeeded);
   const sessionId = useShareStore((s) => s.sessionId);
@@ -578,7 +436,6 @@ export default function OpportunityDetails() {
     }
   }, [cycleAnchorUtc]);
 
-<<<<<<< HEAD
   // const handleApply = useCallback(async () => {
   //   if (!item) return;
   //   if (userId == null) {
@@ -695,8 +552,6 @@ export default function OpportunityDetails() {
   //   );
   // }, [item, startSession, userId, refreshSessionLookup]);
 
-=======
->>>>>>> main
   const handleApply = useCallback(async () => {
     if (!item) return;
     if (userId == null) {
@@ -737,7 +592,6 @@ export default function OpportunityDetails() {
               const postingId = Number(
                 (item as any).postingId ?? (item as any).id
               );
-<<<<<<< HEAD
 
               // Build map once for the session
               const metricMap = buildMetricMapStrict(item) as Partial<
@@ -758,20 +612,6 @@ export default function OpportunityDetails() {
                   `You can still start sharing; those metrics will be reported as unavailable until data becomes readable.`;
                 const cont = await new Promise<boolean>((resolve) => {
                   Alert.alert("Some metrics unavailable", msg, [
-=======
-              const probe = await checkMetricPermissionsForMap(
-                metricMap as Record<MetricCode, number>
-              );
-              if (!probe.ok) {
-                const missingLabels = probe.missing
-                  .map(labelOfMetric)
-                  .join(", ");
-                const msg =
-                  `We don’t have permission for:\n• ${missingLabels}\n\n` +
-                  `You can still start sharing; those metrics will be reported as unavailable until you grant access.`;
-                const cont = await new Promise<boolean>((resolve) => {
-                  Alert.alert("Missing permissions", msg, [
->>>>>>> main
                     {
                       text: "Cancel",
                       style: "cancel",
@@ -783,16 +623,12 @@ export default function OpportunityDetails() {
                 if (!cont) return;
               }
 
-<<<<<<< HEAD
               await startSession(
                 postingId,
                 userId!,
                 metricMap,
                 Number(item.dataCoverageDaysRequired ?? 5)
               );
-=======
-              await startSession(postingId, userId, metricMap, days);
->>>>>>> main
               setSessionLookup((prev) => ({
                 sessionId: prev?.sessionId ?? 0,
                 statusName: "ACTIVE",
@@ -907,8 +743,6 @@ export default function OpportunityDetails() {
     };
   })();
 
-<<<<<<< HEAD
-=======
   // const backdateToDayIndexAndTick = useCallback((targetDayIdx: number) => {
   //   if (!testFlags.TEST_MODE) return;
   //   const baseIso = originalAnchorRef.current ?? cycleAnchorUtc;
@@ -941,7 +775,6 @@ export default function OpportunityDetails() {
   //   // Sweep all past windows in order
   //   catchUpIfNeeded();
   // }, [segmentsExpected, cycleAnchorUtc, setBackdatedAnchorTestOnly, catchUpIfNeeded]);
->>>>>>> main
 
   const simNextDay = useCallback(async () => {
     if (!testFlags.TEST_MODE) return;
@@ -1007,7 +840,6 @@ export default function OpportunityDetails() {
             gap: 8,
           }}
         >
-<<<<<<< HEAD
           <SectionHeader
             title="At a glance"
             subtitle="Key information for a quick review."
@@ -1016,11 +848,6 @@ export default function OpportunityDetails() {
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {typeof item.reward?.credits === "number" ? (
               <Chip label={`Reward total: +${item.reward.credits}`} />
-=======
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-            {typeof item.reward?.credits === "number" ? (
-              <Chip label={`+${item.reward.credits}`} />
->>>>>>> main
             ) : null}
             {item.createdAt ? (
               <Chip
@@ -1029,17 +856,12 @@ export default function OpportunityDetails() {
             ) : null}
             {item.applyOpenAt && item.applyCloseAt ? (
               <Chip
-<<<<<<< HEAD
                 label={`Apply window: ${new Date(item.applyOpenAt).toLocaleDateString()} → ${new Date(
-=======
-                label={`Apply: ${new Date(item.applyOpenAt).toLocaleDateString()} → ${new Date(
->>>>>>> main
                   item.applyCloseAt
                 ).toLocaleDateString()}`}
               />
             ) : null}
             {typeof item.daysRemaining === "number" ? (
-<<<<<<< HEAD
               <Chip label={`Days left to apply: ${item.daysRemaining}`} />
             ) : null}
             {typeof item.dataCoverageDaysRequired === "number" ? (
@@ -1051,21 +873,11 @@ export default function OpportunityDetails() {
               <Chip
                 label={`Study status: ${(item as any).postingStatusCode}`}
               />
-=======
-              <Chip label={`Days left: ${item.daysRemaining}`} />
-            ) : null}
-            {typeof item.dataCoverageDaysRequired === "number" ? (
-              <Chip label={`Requires ${item.dataCoverageDaysRequired} days`} />
-            ) : null}
-            {(item as any).postingStatusCode ? (
-              <Chip label={`Status: ${(item as any).postingStatusCode}`} />
->>>>>>> main
             ) : null}
             {item.reward?.typeName ? (
               <Chip label={item.reward.typeName} />
             ) : null}
             {apiStatusUpper === "ACTIVE" ? (
-<<<<<<< HEAD
               <Chip label="Sharing status: Active" />
             ) : null}
             {apiStatusUpper === "COMPLETED" ? (
@@ -1073,25 +885,13 @@ export default function OpportunityDetails() {
             ) : null}
             {apiStatusUpper === "CANCELLED" ? (
               <Chip label="Sharing status: Cancelled" />
-=======
-              <Chip label="Sharing: Active" />
-            ) : null}
-            {apiStatusUpper === "COMPLETED" ? (
-              <Chip label="Sharing: Completed" />
-            ) : null}
-            {apiStatusUpper === "CANCELLED" ? (
-              <Chip label="Sharing: Cancelled" />
->>>>>>> main
             ) : null}
           </View>
         </View>
 
         {/* Overview */}
         {hasText(item.description) && (
-<<<<<<< HEAD
           // === [SECTION_ABOUT]
-=======
->>>>>>> main
           <View
             style={{
               backgroundColor: c.surface,
@@ -1102,18 +902,10 @@ export default function OpportunityDetails() {
               gap: 8,
             }}
           >
-<<<<<<< HEAD
             <SectionHeader
               title="About this opportunity"
               subtitle="Purpose and overview provided by the organizer."
             />
-=======
-            <Text
-              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
-            >
-              Overview
-            </Text>
->>>>>>> main
             <Text style={{ color: c.text.secondary }}>{item.description}</Text>
           </View>
         )}
@@ -1164,22 +956,10 @@ export default function OpportunityDetails() {
                 gap: 8,
               }}
             >
-<<<<<<< HEAD
               <SectionHeader
                 title="Data requested for sharing"
                 subtitle="Health metrics the organizer asks you to share."
               />
-=======
-              <Text
-                style={{
-                  color: c.text.primary,
-                  fontSize: 16,
-                  fontWeight: "700",
-                }}
-              >
-                Requested Data
-              </Text>
->>>>>>> main
 
               {deduped.length > 0 ? (
                 <View
@@ -1213,7 +993,6 @@ export default function OpportunityDetails() {
               gap: 8,
             }}
           >
-<<<<<<< HEAD
             <SectionHeader
               title="Who can participate"
               subtitle="Participation criteria such as age range and health conditions."
@@ -1221,16 +1000,6 @@ export default function OpportunityDetails() {
             {formatAgeRange(item.minAge, item.maxAge) ? (
               <Text style={{ color: c.text.secondary }}>
                 Age range: {formatAgeRange(item.minAge, item.maxAge)}
-=======
-            <Text
-              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
-            >
-              Eligibility
-            </Text>
-            {formatAgeRange(item.minAge, item.maxAge) ? (
-              <Text style={{ color: c.text.secondary }}>
-                Age: {formatAgeRange(item.minAge, item.maxAge)}
->>>>>>> main
               </Text>
             ) : null}
 
@@ -1260,18 +1029,10 @@ export default function OpportunityDetails() {
               gap: 8,
             }}
           >
-<<<<<<< HEAD
             <SectionHeader
               title="Data use and privacy"
               subtitle="Organizer-provided policies describing what is collected, why, how it is stored, and who may access it."
             />
-=======
-            <Text
-              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
-            >
-              Policies
-            </Text>
->>>>>>> main
             {hasAny(item.viewPolicies) ? (
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
                 {item.viewPolicies!.map((p, idx) => {
@@ -1281,13 +1042,8 @@ export default function OpportunityDetails() {
                       (p as any).displayName ??
                       (p as any).id ??
                       (p as any).viewPolicyId ??
-<<<<<<< HEAD
                       "Policy"
                   );
-=======
-                      "policy"
-                  ); // ← force to string
->>>>>>> main
                   return <Chip key={key} label={label} />;
                 })}
               </View>
@@ -1311,18 +1067,10 @@ export default function OpportunityDetails() {
               gap: 8,
             }}
           >
-<<<<<<< HEAD
             <SectionHeader
               title="Labels"
               subtitle="Labels that describe this study."
             />
-=======
-            <Text
-              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
-            >
-              Tags
-            </Text>
->>>>>>> main
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
               {item.tags!.map((t) => (
                 <Chip key={t} label={`#${t}`} />
@@ -1343,18 +1091,10 @@ export default function OpportunityDetails() {
               gap: 8,
             }}
           >
-<<<<<<< HEAD
             <SectionHeader
               title="Official documents"
               subtitle="Links provided by the organizer (e.g., Privacy Policy, Terms & Conditions)."
             />
-=======
-            <Text
-              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
-            >
-              Links
-            </Text>
->>>>>>> main
             {item.privacyUrl ? (
               <Text
                 style={{ color: c.primary }}
@@ -1384,19 +1124,10 @@ export default function OpportunityDetails() {
               padding: 12,
             }}
           >
-<<<<<<< HEAD
             <SectionHeader
               title="Sign in required"
               subtitle="Sign in to check your session and apply."
             />
-=======
-            <Text style={{ color: c.text.primary, fontWeight: "700" }}>
-              Sign in required
-            </Text>
-            <Text style={{ color: c.text.secondary, marginTop: 4 }}>
-              Sign in to check your session and apply.
-            </Text>
->>>>>>> main
           </View>
         )}
 
@@ -1434,19 +1165,10 @@ export default function OpportunityDetails() {
               gap: 6,
             }}
           >
-<<<<<<< HEAD
             <SectionHeader
               title="Your sharing status"
               subtitle="Progress, last share, and your next sharing window. Times shown in your local time."
             />
-=======
-            <Text
-              style={{ color: c.text.primary, fontSize: 16, fontWeight: "700" }}
-            >
-              Sharing status
-            </Text>
-
->>>>>>> main
             {(() => {
               const s = snapshot;
               if (!s) {
@@ -1462,11 +1184,7 @@ export default function OpportunityDetails() {
                 ? null
                 : computeNextWindowFromSnapshot(
                     s.cycleAnchorUtc,
-<<<<<<< HEAD
                     s.lastSentDayIndex,
-=======
-                    s.segmentsSent,
->>>>>>> main
                     s.segmentsExpected
                   );
 
@@ -1642,11 +1360,7 @@ export default function OpportunityDetails() {
               </Text>
             </View>
 
-<<<<<<< HEAD
             {/* NEW: Next simulated window preview */}
-=======
-            {/* 🔎 NEW: Next simulated window preview */}
->>>>>>> main
             {nextWindowPreview ? (
               <View style={{ marginTop: 6 }}>
                 <Text style={{ color: c.text.primary, fontWeight: "700" }}>
