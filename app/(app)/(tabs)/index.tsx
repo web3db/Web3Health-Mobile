@@ -2,7 +2,7 @@
 import SettingsCoach from "@/src/components/overlay/SettingsCoach";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import { useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 // ===== Tracking =====

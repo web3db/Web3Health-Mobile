@@ -2,7 +2,6 @@
 import Button from "@/src/components/ui/Button";
 import Chip from "@/src/components/ui/Chip";
 import { useThemeColors } from "@/src/theme/useThemeColors";
-import React from "react";
 import { Image, Pressable, Text, View } from "react-native";
 
 type Props = {

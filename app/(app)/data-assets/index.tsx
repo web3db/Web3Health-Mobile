@@ -8,7 +8,7 @@ import { useTrackingStore } from "@/src/store/useTrackingStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Platform,
   RefreshControl,
