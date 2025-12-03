@@ -101,12 +101,9 @@ export default function Header() {
           setShowCoach(false);
           await handleHealthSettingsReturn();
         } else if (Platform.OS === "android") {
+          // Re-snapshot HC permissions + timezone, then refresh datasets.
           await probeHealthPlatform();
-          const hasAny =
-            (useTrackingStore.getState().hcGrantedKeys?.length ?? 0) > 0;
-          if (hasAny) {
-            await hcRefresh();
-          }
+          await hcRefresh();
         }
       } catch (e) {
         console.log(
@@ -115,6 +112,7 @@ export default function Header() {
         );
       }
     });
+
     return () => sub.remove();
   }, [handleHealthSettingsReturn, probeHealthPlatform, hcRefresh]);
 
@@ -221,17 +219,14 @@ export default function Header() {
         await refreshHealthKitData();
       } else if (Platform.OS === "android" && healthPlatform === "android") {
         console.log("[Header] onPressRefresh: Android");
-        await probeHealthPlatform();
-        const hasAny =
-          (useTrackingStore.getState().hcGrantedKeys?.length ?? 0) > 0;
-        if (hasAny) {
-          await hcRefresh();
-        }
+        // Permissions + timezone are already tracked in the store;
+        // hcRefresh will no-op if there are no granted keys.
+        await hcRefresh();
       }
     } catch (e) {
       console.log("[Header] refresh failed", (e as any)?.message ?? e);
     }
-  }, [healthPlatform, refreshHealthKitData, probeHealthPlatform, hcRefresh]);
+  }, [healthPlatform, refreshHealthKitData, hcRefresh]);
 
   // Permissions button: single entrypoint per platform
   // const onPressPermissions = useCallback(async () => {
@@ -272,7 +267,7 @@ export default function Header() {
   //   }
   // }, [healthPlatform, handleHealthPermissionPress, hcGrantAll, hcOpenSettings]);
 
-    const onPressPermissions = useCallback(async () => {
+  const onPressPermissions = useCallback(async () => {
     try {
       if (Platform.OS === "ios" && healthPlatform === "ios") {
         // Snapshot BEFORE we do anything, to detect the "no more sheets" state.

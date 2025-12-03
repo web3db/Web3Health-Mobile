@@ -440,32 +440,8 @@ export const useTrackingStore = create<Store>((set, get) => ({
    */
   probeHealthPlatform: async () => {
     if (Platform.OS === "android") {
-      try {
-        if (!hcIsInitialized()) {
-          await hcEnsureInitialized();
-        }
-
-        const keys = (await hcListGrantedMetricKeys()) as MetricKey[];
-        const tz = hcGetLocalTimezoneInfo().label;
-
-        set({
-          hcInitialized: true,
-          hcAvailable: true,
-          hcGrantedKeys: keys,
-          hcTimezoneLabel: tz,
-          healthAvailable: true,
-          healthGranted: keys.length > 0,
-        });
-      } catch (e) {
-        logE("HC probe failed", e);
-        set({
-          hcInitialized: true,
-          hcAvailable: false,
-          hcGrantedKeys: [],
-          healthAvailable: false,
-          healthGranted: false,
-        });
-      }
+      // Avoid duplicating initialization logic here; reuse hcInitialize.
+      await get().hcInitialize();
       return;
     }
 
@@ -547,20 +523,33 @@ export const useTrackingStore = create<Store>((set, get) => ({
 
   hcRefresh: async () => {
     if (Platform.OS !== "android") return; // iOS uses HK path
-    const { hcWindow, hcLoading, hcRunId } = get();
+
+    const { hcWindow, hcLoading, hcRunId, hcGrantedKeys, hcTimezoneLabel } =
+      get();
 
     // prevent overlapping refreshes
     if (hcLoading) return;
+
+    // If no granted keys, there is nothing to read.
+    if (!hcGrantedKeys || hcGrantedKeys.length === 0) {
+      set({
+        hcDatasets: [],
+        hcError: undefined,
+        hcLoading: false,
+        healthGranted: false,
+      });
+      return;
+    }
 
     const myRun = hcRunId + 1;
     set({ hcLoading: true, hcError: undefined, hcRunId: myRun });
 
     const fetchedAtISO = new Date().toISOString();
-    const tz = hcGetLocalTimezoneInfo().label;
+    const tz = hcTimezoneLabel;
     log("[HC] Using timezone:", tz);
 
     try {
-      const granted = (await hcListGrantedMetricKeys()) as MetricKey[];
+      const granted = hcGrantedKeys;
       log("[HC] refresh window=", hcWindow, "granted=", granted);
 
       const datasets: Dataset[] = [];
@@ -882,19 +871,15 @@ export const useTrackingStore = create<Store>((set, get) => ({
         }
       }
 
-      // Only commit if still the latest run; also avoid churning hcGrantedKeys unnecessarily
+      // Only commit if still the latest run
       if (get().hcRunId === myRun) {
-        const prev = get().hcGrantedKeys;
-        const same =
-          prev.length === granted.length &&
-          prev.every((k, i) => k === granted[i]);
+        const currentGranted = get().hcGrantedKeys;
 
         set({
           hcDatasets: datasets,
-          hcGrantedKeys: same ? prev : granted,
           hcTimezoneLabel: tz,
           healthAvailable: true,
-          healthGranted: granted.length > 0,
+          healthGranted: (currentGranted?.length ?? 0) > 0,
           hcLoading: false,
         });
       }
@@ -910,6 +895,7 @@ export const useTrackingStore = create<Store>((set, get) => ({
       }
     }
   },
+
 
   hcSetWindow: async (w: WindowKey) => {
     const cur = get().hcWindow;
