@@ -668,9 +668,16 @@ export async function hkRequestReadAuthorization(): Promise<boolean> {
   try {
     const HK = await getHK();
     const requestAuthorization = (HK as any).requestAuthorization as
+      | ((
+          writeTypes: readonly SampleTypeIdentifier[],
+          readTypes?: readonly SampleTypeIdentifier[]
+        ) => Promise<boolean>)
       | ((opts: {
-          toRead: readonly SampleTypeIdentifier[];
+          // Different versions use different keys; we support both.
+          writeTypes?: readonly SampleTypeIdentifier[];
+          readTypes?: readonly SampleTypeIdentifier[];
           toWrite?: readonly SampleTypeIdentifier[];
+          toRead?: readonly SampleTypeIdentifier[];
         }) => Promise<boolean>)
       | undefined;
 
@@ -680,10 +687,32 @@ export async function hkRequestReadAuthorization(): Promise<boolean> {
     }
 
     const readTypes = READ_TYPES as readonly SampleTypeIdentifier[];
+    const emptyWrite: readonly SampleTypeIdentifier[] = [];
 
-    log("[AUTH] requestAuthorization({ toRead }) readTypes=", readTypes);
-    const ok = !!(await requestAuthorization({ toRead: readTypes }));
-    log("[AUTH] requestAuthorization →", ok);
+
+    let ok = false;
+
+    if (requestAuthorization.length <= 1) {
+      // Object-form API (options object). We populate both legacy and new keys.
+      ok = !!(await (requestAuthorization as any)({
+        writeTypes: emptyWrite,
+        readTypes,
+        toWrite: emptyWrite,
+        toRead: readTypes,
+      }));
+      log(
+        "[HK] [AUTH] requestAuthorization({ writeTypes: [], readTypes }) →",
+        ok
+      );
+    } else {
+      // Positional API used by Core.requestAuthorization(writeTypes, readTypes)
+      ok = !!(await (requestAuthorization as any)(emptyWrite, readTypes));
+      log(
+        "[HK] [AUTH] requestAuthorization([], readTypes) →",
+        ok
+      );
+    }
+
     return ok;
   } catch (e) {
     logError("hkRequestReadAuthorization failed", e);
@@ -1359,8 +1388,6 @@ export async function hkReadHeartRateInWindow(win: Window): Promise<{
     return {};
   }
 }
-
-
 
 /** Heart rate hourly buckets over the last 24h (average bpm per hour) */
 

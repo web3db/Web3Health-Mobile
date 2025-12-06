@@ -284,12 +284,13 @@ export default function Header() {
         await handleHealthPermissionPress();
 
         // After the attempt, re-check the snapshot.
-        const { hkStatus: latestStatus } = useTrackingStore.getState();
+        // const { hkStatus: latestStatus } = useTrackingStore.getState();
+        
 
         // If we ended up in "unnecessary" after this tap, always guide to Settings.
-        if (latestStatus === "unnecessary") {
-          setShowCoach(true);
-        }
+        // if (latestStatus === "unnecessary") {
+        //   setShowCoach(true);
+        // }
 
         return;
       }
