@@ -167,3 +167,105 @@ export async function fetchLoginProfileByClerkId(
     };
   }
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// User share-store hydration after login
+// Edge Function: user_login_share_hydration
+// ─────────────────────────────────────────────────────────────────────────────
+
+const HydrationSessionZ = z.object({
+  sessionId: z.number().int(),
+  postingId: z.number().int(),
+  userId: z.number().int(),
+
+  statusCode: z.string(),
+  statusName: z.string(),
+
+  segmentsExpected: z.number().int(),
+  segmentsSent: z.number().int(),
+  lastSentDayIndex: z.number().int().nullable(),
+
+  cycleAnchorUtc: z.string(),
+  joinTimeLocalISO: z.string(),
+  joinTimezone: z.string(),
+
+  lastUploadedAt: z.string().nullable(),
+  lastWindowFromUtc: z.string().nullable(),
+  lastWindowToUtc: z.string().nullable(),
+
+  metricMap: z.record(z.string(), z.number()),
+});
+
+const UserLoginShareHydrationResponseZ = z.object({
+  userId: z.number().int(),
+  sessions: z.array(HydrationSessionZ),
+});
+
+export type UserLoginShareHydrationSession = z.infer<typeof HydrationSessionZ>;
+
+export type UserLoginShareHydrationResponse = z.infer<
+  typeof UserLoginShareHydrationResponseZ
+>;
+
+/**
+ * Fetch share-session hydration payload for a given MST_User userId using
+ * the Edge Function `user_login_share_hydration`.
+ *
+ * Contract is internal between your backend Edge Function and this frontend.
+ * It is not based on any external standard or documentation.
+ */
+export async function fetchUserLoginShareHydration(
+  userId: number,
+): Promise<UserLoginShareHydrationResponse> {
+  if (!Number.isFinite(userId)) {
+    throw new Error("userId must be a finite number");
+  }
+
+  const baseUrl = getEdgeUrl("user_login_share_hydration");
+  const url = `${baseUrl}?userId=${encodeURIComponent(String(userId))}`;
+  if (__DEV__) {
+    console.log("[auth] fetchUserLoginShareHydration → calling", {
+      userId,
+      url,
+    });
+  }
+
+  const res = await fetch(url, { method: "GET" });
+
+  const contentType = res.headers.get("content-type") ?? "";
+  const isJson = contentType.includes("application/json");
+  const body = isJson ? await res.json() : await res.text();
+
+  if (!res.ok) {
+    const msg =
+      isJson &&
+      body &&
+      typeof (body as any).message === "string"
+        ? (body as any).message
+        : `HTTP ${res.status}`;
+    if (__DEV__) {
+      console.warn(
+        "[fetchUserLoginShareHydration] non-OK",
+        res.status,
+        msg,
+      );
+    }
+    throw new Error(msg);
+  }
+
+  const parsed = UserLoginShareHydrationResponseZ.safeParse(body);
+  if (!parsed.success) {
+    if (__DEV__) {
+      console.warn(
+        "[fetchUserLoginShareHydration] invalid payload",
+        parsed.error,
+      );
+    }
+    throw new Error("Invalid share hydration payload");
+  }
+
+  return parsed.data;
+}
+
+

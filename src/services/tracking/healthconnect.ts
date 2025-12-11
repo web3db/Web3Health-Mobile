@@ -95,7 +95,7 @@ type MetricDef = {
   aggregateKey?:
     | "COUNT_TOTAL" // Steps
     | "FLOORS_CLIMBED_TOTAL" // Floors
-    | "DISTANCE_TOTAL" // Distance (meters)
+    | "DISTANCE" // Distance (meters)
     | "ACTIVE_CALORIES_TOTAL"; // Active cals (kcal)
   /** Read permission for this record type */
   permission: Permission;
@@ -117,7 +117,7 @@ const METRICS: Record<MetricKey, MetricDef> = {
   distance: {
     label: "Distance",
     recordType: "Distance",
-    aggregateKey: "DISTANCE_TOTAL",
+    aggregateKey: "DISTANCE",
     permission: { accessType: "read", recordType: "Distance" },
   },
   activeCalories: {
@@ -161,12 +161,11 @@ export function hcIsInitialized() {
   return HC_INIT_DONE;
 }
 
-
 /** ───────────────────────── Init & Permissions ───────────────────────── */
 export async function ensureInitialized(): Promise<void> {
   if (Platform.OS !== "android") return;
-  if (HC_INIT_DONE) return;               // fast-path
-  if (HC_INIT_LOCK) return HC_INIT_LOCK;  // de-dupe concurrent callers
+  if (HC_INIT_DONE) return; // fast-path
+  if (HC_INIT_LOCK) return HC_INIT_LOCK; // de-dupe concurrent callers
 
   HC_INIT_LOCK = (async () => {
     try {
@@ -184,7 +183,6 @@ export async function ensureInitialized(): Promise<void> {
 
   return HC_INIT_LOCK;
 }
-
 
 /** Ask for *all* read permissions we support right now. */
 export async function requestAllReadPermissions(): Promise<void> {
@@ -205,7 +203,7 @@ export async function requestAllReadPermissions(): Promise<void> {
 
 export async function hasReadPermission(metric: MetricKey): Promise<boolean> {
   if (Platform.OS !== "android") return false;
-  await ensureInitialized(); // ← add
+  await ensureInitialized(); 
   try {
     const granted = await getGrantedPermissions();
     const ok = granted.some(
@@ -1015,6 +1013,54 @@ export async function readRespiratoryRateLatest(): Promise<number | null> {
 
 /** Optional: seven daily buckets for Steps/Distance/Cals/Floors */
 export type Bucket = { start: string; end: string; value: number };
+// export async function read7dBuckets(
+//   metric: Exclude<
+//     MetricKey,
+//     "heartRate" | "weight" | "sleep" | "respiratoryRate"
+//   >
+// ): Promise<Bucket[]> {
+//   if (Platform.OS !== "android") return [];
+//   if (!(await hasReadPermission(metric))) return [];
+
+//   const m = METRICS[metric];
+//   try {
+//     const endLocal = new Date();
+//     endLocal.setSeconds(0, 0);
+//     const startLocal = new Date(endLocal);
+//     startLocal.setDate(endLocal.getDate() - 7);
+
+//     const rows = await aggregateGroupByDuration({
+//       recordType: m.recordType,
+//       timeRangeFilter: lastNDaysLocal(7),
+//       timeRangeSlicer: { duration: "DAYS", length: 1 },
+//     });
+
+//     const key = m.aggregateKey!;
+//     let buckets = rows.map((b) => ({
+//       start: b.startTime,
+//       end: b.endTime,
+//       value: unwrapAggregateValue(
+//         metric as MetricKey,
+//         (b as any)?.result?.[key]
+//       ),
+//     }));
+
+//     const sum = buckets.reduce((s, x) => s + (x.value || 0), 0);
+//     log("[Buckets][agg]", metric, "7d len=", buckets.length, "sum=", sum);
+
+//     if (metric === "distance" && (buckets.length === 0 || sum === 0)) {
+//       log("[Buckets][distance] falling back to rawDailyDistanceBuckets(7)");
+//       buckets = await rawDailyDistanceBuckets(7);
+//     }
+
+//     return buckets;
+//   } catch (e) {
+//     logErr(`read7dBuckets(${metric}) error`, e);
+//     if (metric === "distance") return await rawDailyDistanceBuckets(7);
+//     return [];
+//   }
+// }
+
 export async function read7dBuckets(
   metric: Exclude<
     MetricKey,
@@ -1038,16 +1084,20 @@ export async function read7dBuckets(
     });
 
     const key = m.aggregateKey!;
-    let buckets = rows.map((b) => ({
-      start: b.startTime,
-      end: b.endTime,
-      value: unwrapAggregateValue(
-        metric as MetricKey,
-        (b as any)?.result?.[key]
-      ),
-    }));
+    let buckets = rows.map((b) => {
+      const raw = (b as any)?.result?.[key];
+      const value = unwrapAggregateValue(metric as MetricKey, raw);
+
+      return {
+        start: b.startTime,
+        end: b.endTime,
+        value,
+      };
+    });
 
     const sum = buckets.reduce((s, x) => s + (x.value || 0), 0);
+
+    // Final bucket-level log (all metrics)
     log("[Buckets][agg]", metric, "7d len=", buckets.length, "sum=", sum);
 
     if (metric === "distance" && (buckets.length === 0 || sum === 0)) {
@@ -1172,12 +1222,6 @@ function last24hLocal(): Between {
     startTime: start.toISOString(),
     endTime: end.toISOString(),
   };
-}
-
-/** Convert HC’s UTC boundaries back to local ISO (for display & bucketing in UI) */
-function toLocalFromUTCISO(iso: string) {
-  const d = new Date(iso); // parses as UTC
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString();
 }
 
 /** ───────────────────── Local timezone info (for UI/logs) ───────────────────── */
@@ -1373,28 +1417,6 @@ export async function requestStepsPermission(): Promise<void> {
   await requestPermission([{ accessType: "read", recordType: "Steps" }]);
 }
 
-
-function toLocalDateTimeString(d: Date) {
-  const pad2 = (n: number) => String(n).padStart(2, "0");
-  const pad3 = (n: number) => String(n).padStart(3, "0");
-  return (
-    `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` +
-    `T${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.` +
-    `${pad3(d.getMilliseconds())}`
-  );
-}
-
-function lastNDaysZ(days: number) {
-  const end = new Date();
-  const start = new Date(end);
-  start.setDate(start.getDate() - days);
-  return {
-    operator: "between",
-    startTime: start.toISOString(), // with Z
-    endTime: end.toISOString(),
-  } as const;
-}
-
 export async function readAllToday(): Promise<TodaySnapshot> {
   await ensureInitialized(); // safe to call repeatedly
   const [steps, floors, dist, cals, hr, wt, sleepMin, rr] = await Promise.all([
@@ -1489,7 +1511,7 @@ export async function hcHasDataInRange(
       },
       distance: {
         recordType: "Distance" as const,
-        key: "DISTANCE_TOTAL" as const,
+        key: "DISTANCE" as const,
       },
       activeCalories: {
         recordType: "ActiveCaloriesBurned" as const,

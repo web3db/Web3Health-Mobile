@@ -1,12 +1,13 @@
 import {
   fetchLoginProfileByClerkId,
-  type LoginProfileResult,
+  type LoginProfileResult
 } from "@/src/services/auth/api";
 import {
   selectHydrated,
   selectUserId,
   useAuthStore,
 } from "@/src/store/useAuthStore";
+// import { useShareStore } from "@/src/store/useShareStore";
 import { useAuth } from "@clerk/clerk-expo";
 import { Redirect } from "expo-router";
 import React from "react";
@@ -17,9 +18,12 @@ export default function Gate() {
   const hydrated = useAuthStore(selectHydrated);
 
   // Local flags so we only run the rehydrate flow once per mount
-  const [attemptedRehydrate, setAttemptedRehydrate] =
-    React.useState(false);
+  const [attemptedRehydrate, setAttemptedRehydrate] = React.useState(false);
   const [rehydrating, setRehydrating] = React.useState(false);
+
+  // const [attemptedShareHydrate, setAttemptedShareHydrate] =
+  //   React.useState(false);
+  // const [shareHydrating, setShareHydrating] = React.useState(false);
 
   // ────────────────────────────────────────────────────────────────
   // Rehydrate MST_User when:
@@ -58,13 +62,11 @@ export default function Gate() {
         if (result.kind === "ok") {
           const u = result.user;
           // Hydrate the local auth store with MST_User row
-          useAuthStore
-            .getState()
-            .setAuth({
-              userId: u.UserId ?? null,
-              email: u.Email ?? null,
-              name: u.Name ?? null,
-            });
+          useAuthStore.getState().setAuth({
+            userId: u.UserId ?? null,
+            email: u.Email ?? null,
+            name: u.Name ?? null,
+          });
         } else {
           // USER_NOT_FOUND or generic error → sign out and reset
           try {
@@ -93,6 +95,74 @@ export default function Gate() {
   ]);
 
   // ────────────────────────────────────────────────────────────────
+  // Rehydrate share store when:
+  // - Clerk + auth store are hydrated
+  // - user is signed in
+  // - MST_User userId is known (non-null)
+  // This runs once per mount per login.
+  // ────────────────────────────────────────────────────────────────
+
+  // React.useEffect(() => {
+  //   if (__DEV__) {
+  //     console.log("[Gate] shareHydrate effect check", {
+  //       isLoaded,
+  //       hydrated,
+  //       isSignedIn,
+  //       userId,
+  //       attemptedShareHydrate,
+  //     });
+  //   }
+
+  //   if (!isLoaded || !hydrated) return;
+  //   if (!isSignedIn) return;
+  //   if (userId == null) return; // need MST_User userId
+  //   if (attemptedShareHydrate) return;
+
+  //   setAttemptedShareHydrate(true);
+  //   setShareHydrating(true);
+
+  //   (async () => {
+  //     try {
+  //       if (__DEV__) {
+  //         console.log("[Gate] shareHydrate → fetchUserLoginShareHydration", {
+  //           userId,
+  //         });
+  //       }
+
+  //       const payload = await fetchUserLoginShareHydration(userId);
+
+  //       if (__DEV__) {
+  //         console.log("[Gate] shareHydrate → payload received", {
+  //           userId,
+  //           sessionCount: payload?.sessions?.length ?? 0,
+  //         });
+  //       }
+
+  //       useShareStore.getState().hydrateFromServer(payload);
+
+  //       if (__DEV__) {
+  //         console.log("[Gate] shareHydrate → hydrateFromServer done", {
+  //           userId,
+  //         });
+  //       }
+  //     } catch (e) {
+  //       if (__DEV__) {
+  //         console.warn(
+  //           "[Gate] share-store hydration failed",
+  //           (e as any)?.message ?? e
+  //         );
+  //       }
+  //       // Do NOT sign the user out; app can still run without hydrated share store.
+  //     } finally {
+  //       setShareHydrating(false);
+  //       if (__DEV__) {
+  //         console.log("[Gate] shareHydrate → complete", { userId });
+  //       }
+  //     }
+  //   })();
+  // }, [isLoaded, hydrated, isSignedIn, userId, attemptedShareHydrate]);
+
+  // ────────────────────────────────────────────────────────────────
   // Rendering logic
   // ────────────────────────────────────────────────────────────────
 
@@ -112,7 +182,21 @@ export default function Gate() {
   }
 
   // Normal case: signed in + MST_User present → go to app tabs
-  console.log("Gate", { isLoaded, isSignedIn, hydrated, userId, rehydrating });
+  // console.log("Gate", {
+  //   isLoaded,
+  //   isSignedIn,
+  //   hydrated,
+  //   userId,
+  //   rehydrating,
+  //   shareHydrating,
+  // });
+  console.log("Gate", {
+    isLoaded,
+    isSignedIn,
+    hydrated,
+    userId,
+    rehydrating,
+  });
 
   return <Redirect href="/(app)/(tabs)" />;
 }

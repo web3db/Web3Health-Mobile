@@ -136,39 +136,58 @@ function MetricChartBase({
     setSelectedIndex(null);
   }, [buckets, granularity]);
 
-  const n = items.length;
+    const n = items.length;
+  const isHourly = granularity === "hourly";
+  const isDaily = granularity === "daily";
 
-  // Bar / gap sizing: dynamic but with comfortable minimums (no needle bars)
-  const preferredBar = 10;
-  const preferredGap = 6;
+  // Minimums to avoid needle bars / gaps
   const minBar = 6;
   const minGap = 4;
 
-  // compute total width we'd need with preferred sizes
-  const requiredW =
-    n > 0 ? n * preferredBar + Math.max(0, n - 1) * preferredGap : 0;
+  // Base (unscaled) bar/gap defaults per granularity
+  const baseBarHourly = 8;
+  const baseGapHourly = 4;
 
-  // if container is wider than required, fit bars into container by scaling gap evenly
-  const fitMode = containerW > 0 && requiredW <= containerW;
-  const barW = fitMode
-    ? Math.max(
-        minBar,
-        Math.floor(
-          containerW /
-            (n * (preferredBar / (preferredBar + preferredGap)) + (n - 1))
-        )
-      )
-    : preferredBar;
+  const baseBarDaily = 10;
+  const baseGapDaily = 10;
 
-  const gapW = fitMode
-    ? Math.max(minGap, Math.floor((containerW - n * barW) / Math.max(1, n - 1)))
-    : preferredGap;
+  const baseBar = isDaily ? baseBarDaily : baseBarHourly;
+  const baseGap = isDaily ? baseGapDaily : baseGapHourly;
 
-  // each "slot" is bar + surrounding gap → use that as the tap/scroll unit
+  // Unscaled slot + gutters
+  const baseSlotW = baseBar + baseGap;
+  const baseGutter = n > 0 ? baseSlotW * 0.5 : 0;
+  const baseContentW =
+    n > 0 ? baseGutter + n * baseSlotW + baseGutter : 0;
+
+  // We want smaller windows (24H, 7D) to be slightly wider than the card
+  // so they scroll nicely. Larger windows (30D/90D) are already wide.
+  let scale = 1;
+  if (n > 0 && containerW > 0 && baseContentW > 0) {
+    const targetContentW = containerW * 1.1; // ~10% wider than viewport
+    if (baseContentW < targetContentW) {
+      scale = targetContentW / baseContentW;
+    }
+  }
+
+  // Apply scale (never shrink below base)
+  const barW = Math.max(minBar, baseBar * scale);
+  const gapW = Math.max(minGap, baseGap * scale);
   const slotW = barW + gapW;
 
-  // if still too wide, we’ll render inside a horizontal ScrollView with contentWidth = n * slotW
-  const contentW = fitMode ? containerW : n * slotW;
+  // Gutters based on final slot width
+  const gutter = n > 0 ? slotW * 0.5 : 0;
+  const leftGutter = gutter;
+  const rightGutter = gutter;
+
+  // Final logical content width
+  const contentW =
+    n > 0 ? leftGutter + n * slotW + rightGutter : 0;
+
+  // Always allow scrolling when there is data;
+  // if contentW <= viewport, there is nothing to scroll anyway.
+  const scrollEnabled = n > 0;
+
 
   // X-axis label density: simple anchor-based rule
   //  - 7-day or fewer: label every bucket
@@ -302,11 +321,12 @@ function MetricChartBase({
               </View>
             </View>
 
-            {/* Bars + X-axis: scroll horizontally when needed */}
+            {/* Bars + X-axis: horizontal layout, optionally scrollable */}
             <ScrollView
-              horizontal={!fitMode}
-              showsHorizontalScrollIndicator={true}
-              persistentScrollbar={true}
+              horizontal={true}
+              scrollEnabled={scrollEnabled}
+              showsHorizontalScrollIndicator={scrollEnabled}
+              persistentScrollbar={scrollEnabled}
               bounces={false}
               contentContainerStyle={{
                 width: contentW,
@@ -327,6 +347,14 @@ function MetricChartBase({
                     height: 120,
                   }}
                 >
+                  {leftGutter > 0 ? (
+                    <View
+                      style={{
+                        width: leftGutter,
+                      }}
+                    />
+                  ) : null}
+
                   {items.map((r, i) => {
                     // Height rules (unchanged):
                     const scaled = Math.round((r.value / max) * 110); // leave ~10px top padding
@@ -408,6 +436,14 @@ function MetricChartBase({
                       </Pressable>
                     );
                   })}
+
+                  {rightGutter > 0 ? (
+                    <View
+                      style={{
+                        width: rightGutter,
+                      }}
+                    />
+                  ) : null}
                 </View>
 
                 {/* Baseline */}
@@ -421,6 +457,14 @@ function MetricChartBase({
 
                 {/* X-axis labels */}
                 <View style={{ flexDirection: "row", marginTop: 6 }}>
+                  {leftGutter > 0 ? (
+                    <View
+                      style={{
+                        width: leftGutter,
+                      }}
+                    />
+                  ) : null}
+
                   {items.map((r, i) => {
                     const showLabel = labelIndices.includes(i);
 
@@ -457,6 +501,14 @@ function MetricChartBase({
                       </View>
                     );
                   })}
+
+                  {rightGutter > 0 ? (
+                    <View
+                      style={{
+                        width: rightGutter,
+                      }}
+                    />
+                  ) : null}
                 </View>
               </View>
             </ScrollView>
