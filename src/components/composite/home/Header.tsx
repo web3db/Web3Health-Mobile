@@ -89,7 +89,7 @@ export default function Header() {
         );
       }
     })();
-  }, [initHealthKitIfNeeded, probeHealthPlatform]);
+  }, [initHealthKitIfNeeded, probeHealthPlatform, isRegistered]);
 
   // On app foreground: let store re-evaluate
   React.useEffect(() => {
@@ -114,7 +114,7 @@ export default function Header() {
     });
 
     return () => sub.remove();
-  }, [handleHealthSettingsReturn, probeHealthPlatform, hcRefresh]);
+  }, [handleHealthSettingsReturn, probeHealthPlatform, hcRefresh, isRegistered]);
 
   // Status line model (kept intentionally simple)
   const status = useMemo((): { label: string; tint: string } => {

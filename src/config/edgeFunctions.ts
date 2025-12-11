@@ -6,7 +6,10 @@ const buildQs = (qs?: Record<string, unknown>) =>
     ? "?" +
       Object.entries(qs)
         .filter(([, v]) => v !== undefined && v !== null && v !== "")
-        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+        .map(
+          ([k, v]) =>
+            `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`
+        )
         .join("&")
     : "";
 
@@ -29,7 +32,10 @@ export const fns = {
       const res = await fetch(url, {
         ...rest,
         headers: { "Content-Type": "application/json", ...(headers || {}) },
-        body: body && typeof body !== "string" ? JSON.stringify(body) : (body as any),
+        body:
+          body && typeof body !== "string"
+            ? JSON.stringify(body)
+            : (body as any),
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
@@ -64,15 +70,16 @@ export const EDGE_FUNCTIONS = {
 
   // Users
   users_create: `${EDGE_BASE}/users_create`,
-  users_profile: `${EDGE_BASE}/users_profile`,   
-  users_update: `${EDGE_BASE}/users_update`,     
+  users_profile: `${EDGE_BASE}/users_profile`,
+  users_update: `${EDGE_BASE}/users_update`,
   user_login_profile_by_clerk_id: `${EDGE_BASE}/user_login_profile_by_clerk_id`,
   // Sharing / Rewards
   user_rewards_summary: `${EDGE_BASE}/user_rewards_summary`,
-
+  // Hydration endpoint
+  user_login_share_hydration: `${EDGE_BASE}/user_login_share_hydration`,
 
   // (Optional) share endpoints could live here too...
-   // (Optional) If you want to also centralize sharing endpoints here, mirror your existing keys:
+  // (Optional) If you want to also centralize sharing endpoints here, mirror your existing keys:
   // user_start_share_session: `${EDGE_BASE}/user_start_share_session`,
   // user_get_session_by_posting: `${EDGE_BASE}/user_get_session_by_posting`,
   // user_submit_segment: `${EDGE_BASE}/user_submit_segment`,

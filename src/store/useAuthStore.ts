@@ -24,7 +24,7 @@ export const useAuthStore = create<AuthState>()(
     (set, get) => ({
       userId: null,
       email: null,
-      name: null, // NEW
+      name: null,
       _hasHydrated: false,
 
       setAuth: ({ userId, email = get().email, name = get().name }) =>

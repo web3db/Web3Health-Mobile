@@ -1,38 +1,122 @@
-import { hkStopBackgroundObservers } from '@/src/services/tracking/healthkit';
-import { useAuthStore } from '@/src/store/useAuthStore';
-import { useThemeController } from '@/src/theme/ThemeController';
-import { useThemeColors } from '@/src/theme/useThemeColors';
-import { useAuth, useUser } from '@clerk/clerk-expo';
-import Ionicons from '@expo/vector-icons/Ionicons';
-import React from 'react';
-import { ActivityIndicator, Platform, Pressable, Text, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import BackButton from '../../src/components/ui/BackButton';
+import { hkStopBackgroundObservers } from "@/src/services/tracking/healthkit";
+import { useAuthStore } from "@/src/store/useAuthStore";
+import { useShareStore } from "@/src/store/useShareStore";
+import { useThemeController } from "@/src/theme/ThemeController";
+import { useThemeColors } from "@/src/theme/useThemeColors";
+import { useAuth, useUser } from "@clerk/clerk-expo";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import React from "react";
+import {
+  ActivityIndicator,
+  Platform,
+  Pressable,
+  Text,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import BackButton from "../../src/components/ui/BackButton";
 export default function SettingsScreen() {
   const c = useThemeColors();
   const { appearanceOverride, setAppearanceOverride } = useThemeController();
   const { signOut } = useAuth();
   const { user, isLoaded } = useUser();
 
+
   // const onLogout = async () => {
   //   try {
-  //     await signOut();                // end Clerk session
+  //     // iOS: stop HealthKit observers first so background wakes stop immediately
+  //     if (Platform.OS === "ios") {
+  //       try {
+  //         await hkStopBackgroundObservers();
+  //       } catch {}
+  //     }
+  //     await signOut(); // end Clerk session
   //   } finally {
-  //     useAuthStore.getState().clear(); // clear local app auth state
+  //     // Clear auth store
+  //     useAuthStore.getState().clear();
+
+  //     // Clear share store session-related state
+  //     try {
+  //       const resetForLogout = useShareStore.getState().resetForLogout;
+  //       resetForLogout?.();
+  //     } catch {}
   //   }
   // };
 
-  const onLogout = async () => {
-  try {
-    // iOS: stop HealthKit observers first so background wakes stop immediately
-    if (Platform.OS === 'ios') {
-      try { await hkStopBackgroundObservers(); } catch {}
+
+    const onLogout = async () => {
+    if (__DEV__) {
+      console.log("[Settings] onLogout → begin");
     }
-    await signOut();                 // end Clerk session
-  } finally {
-    useAuthStore.getState().clear(); // clear local app auth state
-  }
-};
+
+    try {
+      // iOS: stop HealthKit observers first so background wakes stop immediately
+      if (Platform.OS === "ios") {
+        try {
+          if (__DEV__) {
+            console.log("[Settings] onLogout → hkStopBackgroundObservers()");
+          }
+          await hkStopBackgroundObservers();
+          if (__DEV__) {
+            console.log("[Settings] onLogout → hkStopBackgroundObservers done");
+          }
+        } catch (e) {
+          if (__DEV__) {
+            console.warn(
+              "[Settings] onLogout → hkStopBackgroundObservers error",
+              e,
+            );
+          }
+        }
+      }
+
+      if (__DEV__) {
+        console.log("[Settings] onLogout → Clerk signOut()");
+      }
+      await signOut(); // end Clerk session
+      if (__DEV__) {
+        console.log("[Settings] onLogout → Clerk signOut done");
+      }
+    } finally {
+      // Clear auth store
+      try {
+        if (__DEV__) {
+          console.log("[Settings] onLogout → clearing auth store");
+        }
+        useAuthStore.getState().clear();
+      } catch (e) {
+        if (__DEV__) {
+          console.warn("[Settings] onLogout → clear auth store error", e);
+        }
+      }
+
+      // Clear share store session-related state
+      try {
+        const resetForLogout = useShareStore.getState().resetForLogout;
+        if (resetForLogout) {
+          if (__DEV__) {
+            console.log("[Settings] onLogout → resetForLogout()");
+          }
+          resetForLogout();
+        } else if (__DEV__) {
+          console.log(
+            "[Settings] onLogout → no resetForLogout on share store",
+          );
+        }
+      } catch (e) {
+        if (__DEV__) {
+          console.warn(
+            "[Settings] onLogout → resetForLogout error",
+            e,
+          );
+        }
+      }
+
+      if (__DEV__) {
+        console.log("[Settings] onLogout → complete");
+      }
+    }
+  };
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>
@@ -41,11 +125,15 @@ export default function SettingsScreen() {
         <Section title="Appearance">
           <Segmented3
             options={[
-              { key: 'system', label: 'System', icon: 'phone-portrait-outline' as const },
-              { key: 'light',  label: 'Light',  icon: 'sunny-outline' as const },
-              { key: 'dark',   label: 'Dark',   icon: 'moon-outline' as const },
+              {
+                key: "system",
+                label: "System",
+                icon: "phone-portrait-outline" as const,
+              },
+              { key: "light", label: "Light", icon: "sunny-outline" as const },
+              { key: "dark", label: "Dark", icon: "moon-outline" as const },
             ]}
-            value={appearanceOverride as 'system' | 'light' | 'dark'}
+            value={appearanceOverride as "system" | "light" | "dark"}
             onChange={(v) => setAppearanceOverride(v)}
           />
         </Section>
@@ -53,13 +141,13 @@ export default function SettingsScreen() {
         <Section title="Account">
           <View style={{ paddingHorizontal: 8, gap: 8 }}>
             {!isLoaded ? (
-              <View style={{ paddingVertical: 8, alignItems: 'center' }}>
+              <View style={{ paddingVertical: 8, alignItems: "center" }}>
                 <ActivityIndicator />
               </View>
             ) : (
               <SettingRow
                 icon="person-circle-outline"
-                label={user?.primaryEmailAddress?.emailAddress ?? 'Signed in'}
+                label={user?.primaryEmailAddress?.emailAddress ?? "Signed in"}
                 disabled
               />
             )}
@@ -79,18 +167,30 @@ export default function SettingsScreen() {
 
 /* ---------- UI bits (unchanged) ---------- */
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   const c = useThemeColors();
   return (
-    <View style={{
-      backgroundColor: c.surface,
-      borderColor: c.border,
-      borderWidth: 1,
-      borderRadius: 16,
-      marginBottom: 16
-    }}>
+    <View
+      style={{
+        backgroundColor: c.surface,
+        borderColor: c.border,
+        borderWidth: 1,
+        borderRadius: 16,
+        marginBottom: 16,
+      }}
+    >
       <View style={{ paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8 }}>
-        <Text style={{ color: c.text.primary, fontSize: 14, fontWeight: '700' }}>{title}</Text>
+        <Text
+          style={{ color: c.text.primary, fontSize: 14, fontWeight: "700" }}
+        >
+          {title}
+        </Text>
       </View>
       <View style={{ padding: 8 }}>{children}</View>
     </View>
@@ -111,15 +211,15 @@ function SettingRow({
   disabled?: boolean;
 }) {
   const c = useThemeColors();
-  const color = destructive ? (c.danger ?? '#ef4444') : c.text.primary;
+  const color = destructive ? (c.danger ?? "#ef4444") : c.text.primary;
 
   return (
     <Pressable
       disabled={disabled || !onPress}
       onPress={onPress}
       style={{
-        flexDirection: 'row',
-        alignItems: 'center',
+        flexDirection: "row",
+        alignItems: "center",
         gap: 10,
         paddingVertical: 12,
         paddingHorizontal: 10,
@@ -129,14 +229,16 @@ function SettingRow({
       }}
     >
       <Ionicons name={icon} size={18} color={color} />
-      <Text style={{ color, fontSize: 15, fontWeight: destructive ? '700' : '500' }}>
+      <Text
+        style={{ color, fontSize: 15, fontWeight: destructive ? "700" : "500" }}
+      >
         {label}
       </Text>
     </Pressable>
   );
 }
 
-function Segmented3<T extends 'system' | 'light' | 'dark'>({
+function Segmented3<T extends "system" | "light" | "dark">({
   options,
   value,
   onChange,
@@ -147,7 +249,15 @@ function Segmented3<T extends 'system' | 'light' | 'dark'>({
 }) {
   const c = useThemeColors();
   return (
-    <View style={{ flexDirection: 'row', backgroundColor: c.muted, borderRadius: 12, padding: 4, marginHorizontal: 8 }}>
+    <View
+      style={{
+        flexDirection: "row",
+        backgroundColor: c.muted,
+        borderRadius: 12,
+        padding: 4,
+        marginHorizontal: 8,
+      }}
+    >
       {options.map((opt) => {
         const selected = opt.key === value;
         return (
@@ -156,17 +266,27 @@ function Segmented3<T extends 'system' | 'light' | 'dark'>({
             onPress={() => onChange(opt.key)}
             style={{
               flex: 1,
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'center',
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "center",
               gap: 6,
               paddingVertical: 10,
               borderRadius: 8,
-              backgroundColor: selected ? c.primary : 'transparent',
+              backgroundColor: selected ? c.primary : "transparent",
             }}
           >
-            <Ionicons name={opt.icon} size={16} color={selected ? (c.text.inverse ?? '#fff') : c.text.secondary} />
-            <Text style={{ color: selected ? (c.text.inverse ?? '#fff') : c.text.secondary, fontWeight: '700', fontSize: 13 }}>
+            <Ionicons
+              name={opt.icon}
+              size={16}
+              color={selected ? (c.text.inverse ?? "#fff") : c.text.secondary}
+            />
+            <Text
+              style={{
+                color: selected ? (c.text.inverse ?? "#fff") : c.text.secondary,
+                fontWeight: "700",
+                fontSize: 13,
+              }}
+            >
               {opt.label}
             </Text>
           </Pressable>

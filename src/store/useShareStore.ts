@@ -43,6 +43,7 @@ import {
 } from "@/src/services/tracking/healthconnect";
 
 import { testFlags } from "@/src/config/featureFlags";
+import type { UserLoginShareHydrationResponse } from "@/src/services/auth/api";
 import {
   GRACE_WAIT_MS,
   getShareRuntimeConfig,
@@ -53,13 +54,6 @@ import type {
   ShareSessionState,
   ShareStatus,
 } from "@/src/services/sharing/types";
-// ios
-// import {
-//   hkGetAuthorizationSnapshot,
-//   hkIsAvailable,
-//   hkRequestReadAuthorization,
-// } from "@/src/services/tracking/healthkit";
-
 import { useTrackingStore } from "@/src/store/useTrackingStore";
 
 const TAG = "[SHARE][Store]";
@@ -183,6 +177,9 @@ type StoreState = {
   // optional one-shot probe
   probeHealthPlatform: () => Promise<void>;
   requestHealthPermissions?: () => Promise<void>;
+  // logout + login hydration helpers
+  resetForLogout: () => void;
+  hydrateFromServer: (payload: UserLoginShareHydrationResponse) => void;
 };
 
 const nowISO = () => new Date().toISOString();
@@ -1339,6 +1336,126 @@ export const useShareStore = create<StoreState>()(
           console.warn("[Sharing][ActiveSessions] load error", e);
           set({ activeSessions: null });
         }
+      },
+      // ────────────────────────────────────────────────────────────
+      // Logout + login hydration helpers
+      // ────────────────────────────────────────────────────────────
+
+      resetForLogout() {
+        set(() => ({
+          // core session identity
+          sessionId: undefined,
+          postingId: undefined,
+          userId: undefined,
+          segmentsExpected: undefined,
+          status: "PAUSED",
+
+          // planner/meta
+          cycleAnchorUtc: undefined,
+          originalCycleAnchorUtc: undefined,
+          joinTimezone: undefined,
+          joinTimeLocalISO: undefined,
+
+          // engine + pending window
+          engine: { ...initialEngine },
+          pendingWindow: undefined,
+
+          // metric mapping + snapshots
+          metricMap: {},
+          snapshot: null,
+
+          // simulation / diagnostics
+          restoreAnchorAtExit: undefined,
+          lastWindowDiag: undefined,
+
+          // active sessions list
+          activeSessions: null,
+        }));
+      },
+
+      hydrateFromServer(payload: UserLoginShareHydrationResponse) {
+        const sessions = payload.sessions ?? [];
+
+        // If no active sessions, clear session-specific state and keep store in a clean PAUSED state.
+        if (sessions.length === 0) {
+          set(() => ({
+            sessionId: undefined,
+            postingId: undefined,
+            userId: payload.userId ?? undefined,
+            segmentsExpected: undefined,
+            status: "PAUSED",
+
+            cycleAnchorUtc: undefined,
+            originalCycleAnchorUtc: undefined,
+            joinTimezone: undefined,
+            joinTimeLocalISO: undefined,
+
+            engine: { ...initialEngine },
+            pendingWindow: undefined,
+            metricMap: {},
+            snapshot: null,
+            restoreAnchorAtExit: undefined,
+            lastWindowDiag: undefined,
+          }));
+          return;
+        }
+
+        // For now, choose the first ACTIVE session as the "primary" one for the engine + snapshot.
+        // Server already guarantees sessions are ACTIVE only.
+        const primary = sessions[0];
+
+        const engine: ShareSessionState = {
+          ...initialEngine,
+          status: "ACTIVE",
+          cycleAnchorUtc: new Date(primary.cycleAnchorUtc).getTime(),
+          segmentsExpected: primary.segmentsExpected ?? 0,
+          segmentsSent: primary.segmentsSent ?? 0,
+          lastSentDayIndex: primary.lastSentDayIndex ?? null,
+        };
+
+        set(() => ({
+          // top-level session identity
+          sessionId: primary.sessionId,
+          postingId: primary.postingId,
+          userId: primary.userId,
+          segmentsExpected: primary.segmentsExpected,
+          status: "ACTIVE",
+
+          // planner/meta
+          cycleAnchorUtc: primary.cycleAnchorUtc,
+          originalCycleAnchorUtc: primary.cycleAnchorUtc,
+          joinTimezone: primary.joinTimezone,
+          joinTimeLocalISO: primary.joinTimeLocalISO,
+
+          // engine and pending
+          engine,
+          pendingWindow: undefined,
+
+          // metric map from backend (MetricCode → MetricId)
+          metricMap: primary.metricMap as Partial<Record<MetricCode, number>>,
+
+          // snapshot mirrors the session payload for UI / debug
+          snapshot: {
+            sessionId: primary.sessionId,
+            postingId: primary.postingId,
+            userId: primary.userId,
+            statusCode: primary.statusCode,
+            statusName: primary.statusName,
+            segmentsExpected: primary.segmentsExpected,
+            segmentsSent: primary.segmentsSent,
+            lastSentDayIndex: primary.lastSentDayIndex,
+            cycleAnchorUtc: primary.cycleAnchorUtc,
+            joinTimeLocalISO: primary.joinTimeLocalISO,
+            joinTimezone: primary.joinTimezone,
+            lastUploadedAt: primary.lastUploadedAt,
+            lastWindowFromUtc: primary.lastWindowFromUtc,
+            lastWindowToUtc: primary.lastWindowToUtc,
+          },
+
+          // we leave rewards/dashboard as-is; they are managed by their own fetchers
+          restoreAnchorAtExit: undefined,
+          lastWindowDiag: undefined,
+        }));
       },
     }),
 
