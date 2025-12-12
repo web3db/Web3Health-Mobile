@@ -60,7 +60,6 @@ export default function MetricDetails() {
     })();
   }, [isIOS, initHealthKitIfNeeded, refreshHealthKitData]);
 
-
   const onWindowChange = useCallback(
     async (w: "24h" | "7d" | "30d" | "90d") => {
       if (w === hcWindow) return;
@@ -435,12 +434,25 @@ export default function MetricDetails() {
           <View
             style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 2 }}
           >
-            <Text
-              style={{ color: c.text.primary, fontSize: 22, fontWeight: "900" }}
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                marginBottom: 8,
+              }}
             >
-              {d.label}
-            </Text>
-            <View style={{ marginTop: 8 }}>
+              <Text
+                style={{
+                  color: c.text.primary,
+                  fontSize: 22,
+                  fontWeight: "900",
+                }}
+              >
+                {d.label}
+              </Text>
+            </View>
+
+            <View style={{ marginTop: 0 }}>
               <Text
                 style={{
                   color: c.text.secondary,
@@ -463,6 +475,7 @@ export default function MetricDetails() {
                 All stats and charts below use this time range.
               </Text>
             </View>
+
             <Text
               accessibilityLabel="Current time zone"
               style={{
@@ -509,7 +522,7 @@ export default function MetricDetails() {
                 <Stat label="Trend (vs prev.)" value={trendLabel} highlight />
               </View>
               <View style={{ flexBasis: "48%", flexGrow: 1 }}>
-                <Stat label="Last updated" value={freshnessLabel} highlight/>
+                <Stat label="Last updated" value={freshnessLabel} highlight />
               </View>
             </View>
 

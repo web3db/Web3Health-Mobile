@@ -1,10 +1,12 @@
 // app/data-assets/_layout.tsx
-import { useThemeColors } from '@/src/theme/useThemeColors';
-import { Stack } from 'expo-router';
-import React from 'react';
+import BackButton from "@/src/components/ui/BackButton";
+import { useThemeColors } from "@/src/theme/useThemeColors";
+import { Stack } from "expo-router";
+import React from "react";
 
 export default function DataAssetsLayout() {
   const c = useThemeColors();
+
   return (
     <Stack
       screenOptions={{
@@ -14,9 +16,28 @@ export default function DataAssetsLayout() {
         contentStyle: { backgroundColor: c.bg },
       }}
     >
-      <Stack.Screen name="index" options={{ title: 'Data Assets', headerShown: false }} />
-      <Stack.Screen name="[metricId]" options={{ title: 'Asset Graph' }} />
-      <Stack.Screen name="permissions" options={{ title: 'Permissions' }} />
+      <Stack.Screen
+        name="index"
+        options={{
+          title: "Data Assets",
+          headerLeft: () => <BackButton />,
+        }}
+      />
+
+      <Stack.Screen
+        name="[metricId]"
+        options={{
+          title: "Asset Graph",
+          headerLeft: () => <BackButton />,
+        }}
+      />
+
+      <Stack.Screen
+        name="permissions"
+        options={{
+          title: "Permissions",
+        }}
+      />
     </Stack>
   );
 }

@@ -65,10 +65,22 @@ export default function LoginScreen() {
   const [newPassword, setNewPassword] = useState("");
   const [showNewPassword, setShowNewPassword] = useState(false);
 
+  // Second factor (Client Trust) state for sign-in
+  const [secondFactorStep, setSecondFactorStep] = useState<"none" | "verify">(
+    "none"
+  );
+  const [secondFactorCode, setSecondFactorCode] = useState("");
+  const [secondFactorEmailAddressId, setSecondFactorEmailAddressId] = useState<
+    string | null
+  >(null);
+
   let headerTitle = "";
   let headerSubtitle = "";
-
-  if (mode === "signIn" && resetStep === "none") {
+  if (mode === "signIn" && secondFactorStep === "verify") {
+    headerTitle = "Verification needed";
+    headerSubtitle =
+      "Enter the verification code we sent to your email to finish signing in.";
+  } else if (mode === "signIn" && resetStep === "none") {
     headerTitle = "Sign in";
     headerSubtitle = "Enter your email and password to sign in.";
   } else if (mode === "signIn" && resetStep === "request") {
@@ -266,11 +278,117 @@ export default function LoginScreen() {
     setResetCode("");
     setNewPassword("");
     setShowNewPassword(false);
+
+    // Clear second-factor state
+    setSecondFactorStep("none");
+    setSecondFactorCode("");
+    setSecondFactorEmailAddressId(null);
   }, [submitting]);
+
+  const beginEmailSecondFactor = useCallback(
+    async (attempt: any) => {
+      if (!signInLoaded || !signIn) return;
+
+      // Pick the email_code factor (Client Trust usually provides this) :contentReference[oaicite:2]{index=2}
+      const factors = attempt?.supportedSecondFactors;
+      const emailFactor = Array.isArray(factors)
+        ? factors.find((f: any) => f?.strategy === "email_code")
+        : null;
+
+      if (!emailFactor?.emailAddressId) {
+        Alert.alert(
+          "Verification required",
+          "This sign-in requires a verification step, but no email second factor is available for this account."
+        );
+        return;
+      }
+
+      setSecondFactorEmailAddressId(emailFactor.emailAddressId);
+      setSecondFactorCode("");
+      setSecondFactorStep("verify");
+
+      // Send the code (Client Trust flow) :contentReference[oaicite:3]{index=3}
+      await signIn.prepareSecondFactor({
+        strategy: "email_code",
+        emailAddressId: emailFactor.emailAddressId,
+      });
+    },
+    [signIn, signInLoaded]
+  );
+
+  const verifyEmailSecondFactor = useCallback(async () => {
+    if (!signInLoaded || !signIn || submitting) return;
+
+    if (!secondFactorCode) {
+      Alert.alert("Missing code", "Please enter the verification code.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const result = await signIn.attemptSecondFactor({
+        strategy: "email_code",
+        code: secondFactorCode,
+      });
+
+      if (result.status === "complete" && result.createdSessionId) {
+        await setActiveSignIn!({ session: result.createdSessionId });
+
+        // Exit second-factor UI and continue normal login flow
+        setSecondFactorStep("none");
+        setSecondFactorCode("");
+        setSecondFactorEmailAddressId(null);
+
+        await goAfterAuth(email);
+        return;
+      }
+
+      Alert.alert("Verification not complete", `Status: ${result.status}`);
+    } catch (e: any) {
+      Alert.alert(
+        "Verification failed",
+        e?.errors?.[0]?.longMessage ?? e?.message ?? "Unknown error"
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }, [
+    email,
+    goAfterAuth,
+    secondFactorCode,
+    setActiveSignIn,
+    signIn,
+    signInLoaded,
+    submitting,
+  ]);
+
+  const resendEmailSecondFactor = useCallback(async () => {
+    if (!secondFactorEmailAddressId) return;
+    if (!signInLoaded || !signIn || submitting) return;
+
+    setSubmitting(true);
+    try {
+      await signIn.prepareSecondFactor({
+        strategy: "email_code",
+        emailAddressId: secondFactorEmailAddressId,
+      });
+      Alert.alert(
+        "Code sent",
+        "We sent a new verification code to your email."
+      );
+    } catch (e: any) {
+      Alert.alert(
+        "Could not resend",
+        e?.errors?.[0]?.longMessage ?? e?.message ?? "Unknown error"
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }, [secondFactorEmailAddressId, signIn, signInLoaded, submitting]);
 
   const onSignIn = useCallback(async () => {
     try {
-      if (!signInLoaded || submitting) return;
+      if (!signInLoaded || !signIn || submitting) return;
       if (!email || !password) {
         Alert.alert("Missing info", "Please enter email and password.");
         return;
@@ -281,11 +399,28 @@ export default function LoginScreen() {
         identifier: email.trim(),
         password,
       });
+
+      console.log("[Clerk] signIn attempt status:", attempt.status);
+
+      const factors = (attempt as any).supportedSecondFactors;
+      console.log("[Clerk] supportedSecondFactors (raw):", factors);
+
+      const strategies = Array.isArray(factors)
+        ? factors.map((f: any) => f?.strategy).filter(Boolean)
+        : [];
+      console.log("[Clerk] supportedSecondFactors (strategies):", strategies);
+
       if (attempt.status === "complete" && attempt.createdSessionId) {
         await setActiveSignIn!({ session: attempt.createdSessionId });
         await goAfterAuth(email);
         return;
       }
+
+      if (attempt.status === "needs_second_factor") {
+        await beginEmailSecondFactor(attempt);
+        return;
+      }
+
       Alert.alert("Sign in", `Status: ${attempt.status}`);
     } catch (e: any) {
       Alert.alert(
@@ -401,7 +536,7 @@ export default function LoginScreen() {
 
   const onStartPasswordReset = useCallback(async () => {
     try {
-      if (!signInLoaded || submitting) return;
+      if (!signInLoaded || !signIn || submitting) return;
       if (!email) {
         Alert.alert(
           "Missing email",
@@ -434,7 +569,8 @@ export default function LoginScreen() {
 
   const onCompletePasswordReset = useCallback(async () => {
     try {
-      if (!signInLoaded || submitting) return;
+      if (!signInLoaded || !signIn || submitting) return;
+
       if (!resetCode) {
         Alert.alert(
           "Missing code",
@@ -655,7 +791,8 @@ export default function LoginScreen() {
 
                     {/* Password row (only when relevant) */}
                     {!(mode === "signIn" && resetStep !== "none") &&
-                      !(mode === "signUp" && pendingVerification) && (
+                      !(mode === "signUp" && pendingVerification) &&
+                      !(mode === "signIn" && secondFactorStep === "verify") && (
                         <View style={{ gap: 6 }}>
                           <View
                             style={{
@@ -754,7 +891,92 @@ export default function LoginScreen() {
 
                   {/* Flow-specific actions and extra fields */}
                   {mode === "signIn" ? (
-                    resetStep === "none" ? (
+                    secondFactorStep === "verify" ? (
+                      // Second factor (Client Trust) verification
+                      <View style={{ gap: 12, marginTop: 16 }}>
+                        <Text
+                          style={{
+                            color: c.text.secondary,
+                            fontSize: 14,
+                          }}
+                        >
+                          Enter the verification code sent to {email.trim()}.
+                        </Text>
+
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            backgroundColor: c.elevated,
+                            borderColor: c.muted,
+                            borderWidth: 1.5,
+                            borderRadius: 12,
+                            paddingHorizontal: 12,
+                            height: 56,
+                          }}
+                        >
+                          <Ionicons
+                            name="keypad-outline"
+                            size={20}
+                            color={c.text.secondary}
+                            style={{ marginRight: 8 }}
+                            accessible={false}
+                            importantForAccessibility="no"
+                          />
+
+                          <TextInput
+                            value={secondFactorCode}
+                            onChangeText={setSecondFactorCode}
+                            placeholder="Verification code"
+                            placeholderTextColor={c.text.muted}
+                            keyboardType="number-pad"
+                            autoCapitalize="none"
+                            editable={!submitting}
+                            style={{
+                              flex: 1,
+                              color: c.text.primary,
+                              fontSize: 16,
+                            }}
+                          />
+                        </View>
+
+                        <Button
+                          title={submitting ? "Verifying…" : "Verify"}
+                          onPress={verifyEmailSecondFactor}
+                          disabled={submitting}
+                        />
+
+                        <Pressable
+                          onPress={resendEmailSecondFactor}
+                          disabled={submitting}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          style={{ alignSelf: "flex-start" }}
+                        >
+                          <Text
+                            style={{ color: c.text.secondary, fontSize: 14 }}
+                          >
+                            Resend code
+                          </Text>
+                        </Pressable>
+
+                        <Pressable
+                          onPress={() => {
+                            if (submitting) return;
+                            setSecondFactorStep("none");
+                            setSecondFactorCode("");
+                            setSecondFactorEmailAddressId(null);
+                          }}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          style={{ alignSelf: "flex-start" }}
+                        >
+                          <Text
+                            style={{ color: c.text.secondary, fontSize: 14 }}
+                          >
+                            Back to sign in
+                          </Text>
+                        </Pressable>
+                      </View>
+                    ) : resetStep === "none" ? (
                       // Normal sign-in
                       <View style={{ gap: 12, marginTop: 16 }}>
                         <Button
