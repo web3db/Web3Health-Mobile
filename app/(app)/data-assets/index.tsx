@@ -2,20 +2,13 @@
 import DataWindowSelector from "@/src/components/composite/assets/DataWindowSelector";
 import MetricCard from "@/src/components/composite/assets/MetricCard";
 import SettingsCoach from "@/src/components/overlay/SettingsCoach";
-import BackButton from "@/src/components/ui/BackButton";
 import { openAppSettings } from "@/src/services/navigation/linking";
 import { useTrackingStore } from "@/src/store/useTrackingStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Platform,
-  RefreshControl,
-  ScrollView,
-  Text,
-  View
-} from "react-native";
+import { Platform, RefreshControl, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function DataAssetsIndex() {
@@ -234,12 +227,12 @@ export default function DataAssetsIndex() {
   if (isAndroid && !initialized) {
     return (
       <SafeAreaView
-        edges={["top", "bottom"]}
+       edges={["bottom"]}
         style={{ flex: 1, backgroundColor: c.bg }}
       >
-        <BackButton />
         <ScrollView contentContainerStyle={{ padding: 16 }}>
-          <Header title="Data Assets" subtitle="Preparing Health Connect…" />
+          <Header subtitle="Preparing Health Connect…" />
+
           <Text style={{ color: c.text.secondary, marginTop: 8 }}>
             Initializing…
           </Text>
@@ -263,10 +256,9 @@ export default function DataAssetsIndex() {
           appDisplayName="Web3Health"
         />
         <SafeAreaView
-          edges={["top", "bottom"]}
+          edges={["bottom"]}
           style={{ flex: 1, backgroundColor: c.bg }}
         >
-          <BackButton />
           <ScrollView
             contentContainerStyle={{ padding: 16 }}
             refreshControl={
@@ -276,7 +268,8 @@ export default function DataAssetsIndex() {
               />
             }
           >
-            <Header title="Data Assets" subtitle={subtitle} />
+            <Header subtitle={subtitle} />
+
             <EmptyState
               mode="unavailable"
               errorText={errorText}
@@ -302,10 +295,9 @@ export default function DataAssetsIndex() {
           appDisplayName="Web3Health"
         />
         <SafeAreaView
-          edges={["top", "bottom"]}
+          edges={["bottom"]}
           style={{ flex: 1, backgroundColor: c.bg }}
         >
-          <BackButton />
           <ScrollView
             contentContainerStyle={{ padding: 16 }}
             refreshControl={
@@ -316,13 +308,13 @@ export default function DataAssetsIndex() {
             }
           >
             <Header
-              title="Data Assets"
               subtitle={
                 isAndroid
                   ? "Choose what to share from Health Connect"
                   : "Allow Web3Health to read Apple Health data"
               }
             />
+
             <EmptyState
               mode="no-permissions"
               errorText={errorText}
@@ -347,20 +339,16 @@ export default function DataAssetsIndex() {
         appDisplayName="Web3Health"
       />
       <SafeAreaView
-        edges={["top", "bottom"]}
+        edges={["bottom"]}
         style={{ flex: 1, backgroundColor: c.bg }}
       >
-        <BackButton />
         <ScrollView
-          contentContainerStyle={{ paddingBottom: 24 }}
+          contentContainerStyle={{ paddingTop: 0, paddingBottom: 24 }}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onPullRefresh} />
           }
         >
-          <Header
-            title="Data Assets"
-            subtitle="Your health signals packaged as sellable datasets."
-          />
+          <Header subtitle="Your health signals packaged as sellable datasets." />
 
           <View style={{ paddingHorizontal: 16, marginTop: 8 }}>
             <DataWindowSelector value={hcWindow} onChange={onWindowChange} />
@@ -530,15 +518,19 @@ function computeCoverage(
   );
 }
 
-function Header({ title, subtitle }: { title: string; subtitle?: string }) {
+function Header({ title, subtitle }: { title?: string; subtitle?: string }) {
   const c = useThemeColors();
   return (
-    <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 2 }}>
-      <Text style={{ color: c.text.primary, fontSize: 22, fontWeight: "900" }}>
-        {title}
-      </Text>
+    <View style={{ paddingHorizontal: 16, paddingTop: 0, paddingBottom: 0 }}>
+      {!!title && (
+        <Text
+          style={{ color: c.text.primary, fontSize: 22, fontWeight: "900" }}
+        >
+          {title}
+        </Text>
+      )}
       {!!subtitle && (
-        <Text style={{ color: c.text.secondary, marginTop: 4 }}>
+        <Text style={{ color: c.text.secondary, marginTop: 0 }}>
           {subtitle}
         </Text>
       )}
