@@ -1,6 +1,6 @@
 import {
   fetchLoginProfileByClerkId,
-  type LoginProfileResult
+  type LoginProfileResult,
 } from "@/src/services/auth/api";
 import {
   selectHydrated,
@@ -20,7 +20,8 @@ export default function Gate() {
   // Local flags so we only run the rehydrate flow once per mount
   const [attemptedRehydrate, setAttemptedRehydrate] = React.useState(false);
   const [rehydrating, setRehydrating] = React.useState(false);
-
+  // Clerk is signed in, but MST_User doesn't exist yet → user must complete Register
+  const [needsRegister, setNeedsRegister] = React.useState(false);
   // const [attemptedShareHydrate, setAttemptedShareHydrate] =
   //   React.useState(false);
   // const [shareHydrating, setShareHydrating] = React.useState(false);
@@ -67,13 +68,22 @@ export default function Gate() {
             email: u.Email ?? null,
             name: u.Name ?? null,
           });
-        } else {
-          // USER_NOT_FOUND or generic error → sign out and reset
-          try {
-            await signOut();
-          } catch {}
-          useAuthStore.getState().clear();
+          setNeedsRegister(false);
+          return;
         }
+
+        if (result.kind === "not_found") {
+          // Expected for first-time users: Clerk is signed in, but backend profile isn't created yet.
+          // Do NOT sign out; route them to registration.
+          setNeedsRegister(true);
+          return;
+        }
+
+        // result.kind === "error" → reset to login (existing behavior)
+        try {
+          await signOut();
+        } catch {}
+        useAuthStore.getState().clear();
       } catch {
         // Network or unexpected error → safest is to reset to login
         try {
@@ -171,7 +181,13 @@ export default function Gate() {
 
   // Not signed in at all → go to login
   if (!isSignedIn) {
+    if (needsRegister) setNeedsRegister(false);
     return <Redirect href="/auth/login" />;
+  }
+
+  // Signed in, but backend user doesn't exist yet → go to register
+  if (needsRegister) {
+    return <Redirect href="/auth/register" />;
   }
 
   // Signed in, but we don't yet know the MST_User (rehydration in progress)
