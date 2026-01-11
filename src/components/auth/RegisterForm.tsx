@@ -103,10 +103,20 @@ export default function RegisterForm() {
       });
 
       const created = await createUser(parsed);
-      useAuthStore.getState().setUserId(created.userId);
+
+      // Persist backend user id (and basic identity fields) in the auth store.
+      // Keep the Clerk session signed in; onboarding is a signed-in flow.
+      useAuthStore.getState().setAuth({
+        userId: created.userId,
+        email: parsed.email ?? null,
+        name: parsed.name ?? null,
+      });
+
       Alert.alert("Success", "Your profile has been created.");
       reset();
-      await signOut();
+
+      // Go into the app now that MST_User exists
+      router.replace("/(app)/(tabs)");
     } catch (e: any) {
       Alert.alert("Register failed", e?.message || "Failed to register.");
     } finally {
@@ -126,6 +136,7 @@ export default function RegisterForm() {
     measurementSystemId,
     healthConditionIds,
     reset,
+    router,
   ]);
 
   const disabled = submitting || loading;
