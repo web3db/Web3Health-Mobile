@@ -311,6 +311,8 @@ async function queryCategorySamplesNormalized(
   }
 }
 // ───────────────────────── Low-level statistics query wrappers ─────────────────────────
+// REPLACE WITH THIS (drop-in safe version that matches your TS types: filter.date.startDate/endDate)
+
 async function hkQueryStatisticsForQuantity(
   id: QuantityTypeIdentifier,
   statistics: readonly StatisticsOptions[],
@@ -318,6 +320,7 @@ async function hkQueryStatisticsForQuantity(
 ): Promise<QueryStatisticsResponse | null> {
   try {
     const HK = await getHK();
+
     const fn = (HK as any).queryStatisticsForQuantity as
       | ((
           identifier: QuantityTypeIdentifier,
@@ -331,30 +334,38 @@ async function hkQueryStatisticsForQuantity(
       return null;
     }
 
-    // Pass filter through in the library's expected JS shape.
-    // If caller provided ISO/number, normalize to Date objects.
+    // Normalize date range into: options.filter.date.{startDate,endDate}
     let opts = options;
     if (options?.filter) {
       const f: any = options.filter;
-      const start =
-        f.startDate instanceof Date
-          ? f.startDate
-          : f.startDate
-            ? new Date(f.startDate)
+      const d: any = f?.date ?? {};
+
+      const rawStart = d?.startDate;
+      const rawEnd = d?.endDate;
+
+      const startDate =
+        rawStart instanceof Date
+          ? rawStart
+          : rawStart != null
+            ? new Date(rawStart)
             : undefined;
-      const end =
-        f.endDate instanceof Date
-          ? f.endDate
-          : f.endDate
-            ? new Date(f.endDate)
+
+      const endDate =
+        rawEnd instanceof Date
+          ? rawEnd
+          : rawEnd != null
+            ? new Date(rawEnd)
             : undefined;
 
       opts = {
         ...options,
         filter: {
           ...f,
-          startDate: start,
-          endDate: end,
+          date: {
+            ...d,
+            startDate,
+            endDate,
+          },
         },
       } as any;
     }
@@ -363,8 +374,7 @@ async function hkQueryStatisticsForQuantity(
       ...(id === "HKQuantityTypeIdentifierDistanceWalkingRunning"
         ? { unit: "m" }
         : {}),
-
-      ...opts,
+      ...(opts ?? {}),
     });
 
     return res ?? null;
@@ -383,11 +393,12 @@ async function hkQueryStatisticsCollectionForQuantity(
 ): Promise<QueryStatisticsResponse[]> {
   try {
     const HK = await getHK();
+
     const fn = (HK as any).queryStatisticsCollectionForQuantity as
       | ((
           identifier: QuantityTypeIdentifier,
           stats: readonly StatisticsOptions[],
-          anchorIso: string,
+          anchor: Date,
           intervalComponents: IntervalComponents,
           opts?: StatisticsQueryOptions
         ) => Promise<QueryStatisticsResponse[]>)
@@ -398,42 +409,47 @@ async function hkQueryStatisticsCollectionForQuantity(
       return [];
     }
 
-    // Pass filter through in the library's expected JS shape.
-    // If caller provided ISO/number, normalize to Date objects.
+    // Normalize date range into: options.filter.date.{startDate,endDate}
     let opts = options;
     if (options?.filter) {
       const f: any = options.filter;
-      const start =
-        f.startDate instanceof Date
-          ? f.startDate
-          : f.startDate
-            ? new Date(f.startDate)
+      const d: any = f?.date ?? {};
+
+      const rawStart = d?.startDate;
+      const rawEnd = d?.endDate;
+
+      const startDate =
+        rawStart instanceof Date
+          ? rawStart
+          : rawStart != null
+            ? new Date(rawStart)
             : undefined;
-      const end =
-        f.endDate instanceof Date
-          ? f.endDate
-          : f.endDate
-            ? new Date(f.endDate)
+
+      const endDate =
+        rawEnd instanceof Date
+          ? rawEnd
+          : rawEnd != null
+            ? new Date(rawEnd)
             : undefined;
 
       opts = {
         ...options,
         filter: {
           ...f,
-          startDate: start,
-          endDate: end,
+          date: {
+            ...d,
+            startDate,
+            endDate,
+          },
         },
       } as any;
     }
 
-    const anchorIso = anchorDate.toISOString().replace(/\.\d{3}Z$/, "Z");
-
-    const res = await fn(id, statistics, anchorIso, interval, {
+    const res = await fn(id, statistics, anchorDate, interval, {
       ...(id === "HKQuantityTypeIdentifierDistanceWalkingRunning"
         ? { unit: "m" }
         : {}),
-
-      ...opts,
+      ...(opts ?? {}),
     });
 
     return Array.isArray(res) ? res : [];
@@ -579,6 +595,116 @@ export async function hkIsAvailable(): Promise<boolean> {
 
 export type HKReadRequestStatus = "unknown" | "shouldRequest" | "unnecessary";
 
+// export async function hkGetReadRequestStatus(): Promise<HKReadRequestStatus> {
+//   if (Platform.OS !== "ios") return "unknown";
+
+//   const available = await hkIsAvailable();
+//   if (!available) return "unknown";
+
+//   try {
+//     const HK = await getHK();
+//     const fn = (HK as any).getRequestStatusForAuthorization as
+//       | ((
+//           writeTypes: readonly SampleTypeIdentifier[],
+//           readTypes?: readonly SampleTypeIdentifier[]
+//         ) => Promise<number | string>)
+//       | ((opts: {
+//           writeTypes?: readonly SampleTypeIdentifier[];
+//           readTypes?: readonly SampleTypeIdentifier[];
+//         }) => Promise<number | string>)
+//       | undefined;
+
+//     if (!fn) {
+//       log("[HK] [AUTH] getRequestStatusForAuthorization not available");
+//       return "unknown";
+//     }
+
+//     const readTypes = READ_TYPES as readonly SampleTypeIdentifier[];
+//     const emptyWrite: readonly SampleTypeIdentifier[] = [];
+
+//     log(
+//       "[HK] [AUTH] hkGetReadRequestStatus: intending READ-ONLY",
+//       "readTypes=",
+//       readTypes,
+//       "fn.length=",
+//       fn.length
+//     );
+
+//     let raw: number | string;
+
+//     // If API looks like options-object (length <= 1), send explicit readTypes/writeTypes.
+//     if (fn.length <= 1) {
+//       raw = await (fn as any)({
+//         writeTypes: emptyWrite,
+//         readTypes,
+//       });
+//       log(
+//         "[HK] [AUTH] getRequestStatusForAuthorization({ writeTypes: [], readTypes }) →",
+//         raw
+//       );
+//     } else {
+//       // Positional form: treat first param as writeTypes, second as readTypes.
+//       raw = await (fn as any)(emptyWrite, readTypes);
+//       log("[HK] [AUTH] getRequestStatusForAuthorization([], readTypes) →", raw);
+//     }
+
+//     if (raw === 1 || raw === "shouldRequest") return "shouldRequest";
+//     if (raw === 2 || raw === "unnecessary") return "unnecessary";
+//     if (raw === 0 || raw === "unknown") return "unknown";
+
+//     // Defensive fallback
+//     return "unknown";
+//   } catch (e) {
+//     logError("hkGetReadRequestStatus failed", e);
+//     return "unknown";
+//   }
+// }
+
+/** ───────────────────────── Request status ───────────────────────── */
+// export async function hkGetReadRequestStatus(): Promise<HKReadRequestStatus> {
+//   if (Platform.OS !== "ios") return "unknown";
+
+//   const available = await hkIsAvailable();
+//   if (!available) return "unknown";
+
+//   try {
+//     const HK = await getHK();
+//     const fn = (HK as any).getRequestStatusForAuthorization;
+
+//     if (!fn) {
+//       log("[HK] [AUTH] getRequestStatusForAuthorization not available");
+//       return "unknown";
+//     }
+
+//     const readTypes = READ_TYPES as readonly SampleTypeIdentifier[];
+//     const emptyWrite: readonly SampleTypeIdentifier[] = [];
+
+//     let raw: number | string;
+
+//     try {
+//       // Try Object syntax first
+//       raw = await (fn as any)({
+//         read: readTypes,
+//         write: emptyWrite,
+//       });
+//       log("[HK] [AUTH] status via object →", raw);
+//     } catch {
+//        // Fallback to positional
+//        raw = await (fn as any)(readTypes, emptyWrite);
+//        log("[HK] [AUTH] status via positional →", raw);
+//     }
+
+//     if (raw === 1 || raw === "shouldRequest") return "shouldRequest";
+//     if (raw === 2 || raw === "unnecessary") return "unnecessary";
+    
+//     return "unknown";
+//   } catch (e) {
+//     logError("hkGetReadRequestStatus failed", e);
+//     return "unknown";
+//   }
+// }
+
+/** ───────────────────────── Request status ───────────────────────── */
 export async function hkGetReadRequestStatus(): Promise<HKReadRequestStatus> {
   if (Platform.OS !== "ios") return "unknown";
 
@@ -587,62 +713,48 @@ export async function hkGetReadRequestStatus(): Promise<HKReadRequestStatus> {
 
   try {
     const HK = await getHK();
-    const fn = (HK as any).getRequestStatusForAuthorization as
-      | ((
-          writeTypes: readonly SampleTypeIdentifier[],
-          readTypes?: readonly SampleTypeIdentifier[]
-        ) => Promise<number | string>)
-      | ((opts: {
-          writeTypes?: readonly SampleTypeIdentifier[];
-          readTypes?: readonly SampleTypeIdentifier[];
-        }) => Promise<number | string>)
-      | undefined;
+    const fn = (HK as any).getRequestStatusForAuthorization;
 
-    if (!fn) {
+    if (typeof fn !== "function") {
       log("[HK] [AUTH] getRequestStatusForAuthorization not available");
       return "unknown";
     }
 
     const readTypes = READ_TYPES as readonly SampleTypeIdentifier[];
-    const emptyWrite: readonly SampleTypeIdentifier[] = [];
-
-    log(
-      "[HK] [AUTH] hkGetReadRequestStatus: intending READ-ONLY",
-      "readTypes=",
-      readTypes,
-      "fn.length=",
-      fn.length
-    );
+    const emptyShare: readonly SampleTypeIdentifier[] = [];
 
     let raw: number | string;
 
-    // If API looks like options-object (length <= 1), send explicit readTypes/writeTypes.
-    if (fn.length <= 1) {
+    // Prefer the documented object form (toRead/toShare). :contentReference[oaicite:1]{index=1}
+    try {
       raw = await (fn as any)({
-        writeTypes: emptyWrite,
-        readTypes,
+        toRead: readTypes,
+        toShare: emptyShare,
       });
-      log(
-        "[HK] [AUTH] getRequestStatusForAuthorization({ writeTypes: [], readTypes }) →",
-        raw
-      );
-    } else {
-      // Positional form: treat first param as writeTypes, second as readTypes.
-      raw = await (fn as any)(emptyWrite, readTypes);
-      log("[HK] [AUTH] getRequestStatusForAuthorization([], readTypes) →", raw);
+      log("[HK] [AUTH] status via object { toRead, toShare } →", raw);
+    } catch (objErr) {
+      log("[HK] [AUTH] object status failed, trying positional fallbacks...", objErr);
+
+      // Fallback 1: some builds accept (toRead, toShare)
+      try {
+        raw = await (fn as any)(readTypes, emptyShare);
+        log("[HK] [AUTH] status via positional (toRead, toShare) →", raw);
+      } catch (posErr1) {
+        // Fallback 2: older variants may accept (toShare, toRead)
+        raw = await (fn as any)(emptyShare, readTypes);
+        log("[HK] [AUTH] status via positional (toShare, toRead) →", raw);
+      }
     }
 
     if (raw === 1 || raw === "shouldRequest") return "shouldRequest";
     if (raw === 2 || raw === "unnecessary") return "unnecessary";
-    if (raw === 0 || raw === "unknown") return "unknown";
-
-    // Defensive fallback
     return "unknown";
   } catch (e) {
     logError("hkGetReadRequestStatus failed", e);
     return "unknown";
   }
 }
+
 
 /** ───────────────────────── Request read authorization ─────────────────────────
  *
@@ -656,6 +768,68 @@ export async function hkGetReadRequestStatus(): Promise<HKReadRequestStatus> {
  *   We detect the signature at runtime and always pass an empty write set.
  */
 
+// export async function hkRequestReadAuthorization(): Promise<boolean> {
+//   if (Platform.OS !== "ios") return false;
+
+//   const available = await hkIsAvailable();
+//   if (!available) {
+//     log("[AUTH] hkRequestReadAuthorization: HealthKit not available");
+//     return false;
+//   }
+
+//   try {
+//     const HK = await getHK();
+//     const requestAuthorization = (HK as any).requestAuthorization as
+//       | ((
+//           writeTypes: readonly SampleTypeIdentifier[],
+//           readTypes?: readonly SampleTypeIdentifier[]
+//         ) => Promise<boolean>)
+//       | ((opts: {
+//           // Different versions use different keys; we support both.
+//           writeTypes?: readonly SampleTypeIdentifier[];
+//           readTypes?: readonly SampleTypeIdentifier[];
+//           toWrite?: readonly SampleTypeIdentifier[];
+//           toRead?: readonly SampleTypeIdentifier[];
+//         }) => Promise<boolean>)
+//       | undefined;
+
+//     if (typeof requestAuthorization !== "function") {
+//       log("[AUTH] requestAuthorization not available on HK module");
+//       return false;
+//     }
+
+//     const readTypes = READ_TYPES as readonly SampleTypeIdentifier[];
+//     const emptyWrite: readonly SampleTypeIdentifier[] = [];
+
+//     let ok = false;
+
+//     if (requestAuthorization.length <= 1) {
+//       // Object-form API (options object). We populate both legacy and new keys.
+//       ok = !!(await (requestAuthorization as any)({
+//         writeTypes: emptyWrite,
+//         readTypes,
+//         toWrite: emptyWrite,
+//         toRead: readTypes,
+//       }));
+//       log(
+//         "[HK] [AUTH] requestAuthorization({ writeTypes: [], readTypes }) →",
+//         ok
+//       );
+//     } else {
+//       // Positional API used by Core.requestAuthorization(writeTypes, readTypes)
+//       ok = !!(await (requestAuthorization as any)(emptyWrite, readTypes));
+//       log("[HK] [AUTH] requestAuthorization([], readTypes) →", ok);
+//     }
+
+//     return ok;
+//   } catch (e) {
+//     logError("hkRequestReadAuthorization failed", e);
+//     return false;
+//   }
+// }
+
+/** ───────────────────────── Request read authorization ───────────────────────── */
+/** ───────────────────────── Request read authorization ───────────────────────── */
 export async function hkRequestReadAuthorization(): Promise<boolean> {
   if (Platform.OS !== "ios") return false;
 
@@ -667,19 +841,7 @@ export async function hkRequestReadAuthorization(): Promise<boolean> {
 
   try {
     const HK = await getHK();
-    const requestAuthorization = (HK as any).requestAuthorization as
-      | ((
-          writeTypes: readonly SampleTypeIdentifier[],
-          readTypes?: readonly SampleTypeIdentifier[]
-        ) => Promise<boolean>)
-      | ((opts: {
-          // Different versions use different keys; we support both.
-          writeTypes?: readonly SampleTypeIdentifier[];
-          readTypes?: readonly SampleTypeIdentifier[];
-          toWrite?: readonly SampleTypeIdentifier[];
-          toRead?: readonly SampleTypeIdentifier[];
-        }) => Promise<boolean>)
-      | undefined;
+    const requestAuthorization = (HK as any).requestAuthorization;
 
     if (typeof requestAuthorization !== "function") {
       log("[AUTH] requestAuthorization not available on HK module");
@@ -687,33 +849,37 @@ export async function hkRequestReadAuthorization(): Promise<boolean> {
     }
 
     const readTypes = READ_TYPES as readonly SampleTypeIdentifier[];
-    const emptyWrite: readonly SampleTypeIdentifier[] = [];
+    const emptyShare: readonly SampleTypeIdentifier[] = [];
 
-
-    let ok = false;
-
-    if (requestAuthorization.length <= 1) {
-      // Object-form API (options object). We populate both legacy and new keys.
-      ok = !!(await (requestAuthorization as any)({
-        writeTypes: emptyWrite,
-        readTypes,
-        toWrite: emptyWrite,
+    // Prefer the documented object form (toRead/toShare). :contentReference[oaicite:2]{index=2}
+    try {
+      const ok = !!(await (requestAuthorization as any)({
         toRead: readTypes,
+        toShare: emptyShare,
       }));
-      log(
-        "[HK] [AUTH] requestAuthorization({ writeTypes: [], readTypes }) →",
-        ok
-      );
-    } else {
-      // Positional API used by Core.requestAuthorization(writeTypes, readTypes)
-      ok = !!(await (requestAuthorization as any)(emptyWrite, readTypes));
-      log(
-        "[HK] [AUTH] requestAuthorization([], readTypes) →",
-        ok
-      );
+      log("[HK] [AUTH] requestAuthorization({ toRead, toShare }) →", ok);
+      return ok;
+    } catch (objErr) {
+      log("[HK] [AUTH] object auth failed, trying positional fallbacks...", objErr);
     }
 
-    return ok;
+    // Fallbacks for older builds / alternate signatures.
+    try {
+      // Fallback 1: (toRead, toShare)
+      const ok = !!(await (requestAuthorization as any)(readTypes, emptyShare));
+      log("[HK] [AUTH] requestAuthorization(toRead, toShare) →", ok);
+      return ok;
+    } catch (posErr1) {
+      try {
+        // Fallback 2: (toShare, toRead)
+        const ok = !!(await (requestAuthorization as any)(emptyShare, readTypes));
+        log("[HK] [AUTH] requestAuthorization(toShare, toRead) →", ok);
+        return ok;
+      } catch (posErr2) {
+        logError("[HK] [AUTH] all auth call forms failed", posErr2);
+        return false;
+      }
+    }
   } catch (e) {
     logError("hkRequestReadAuthorization failed", e);
     return false;
@@ -851,7 +1017,6 @@ export async function hkRead24hBuckets(
 
     const from = edges[0].start;
     const to = new Date();
-
     const statsRes = await hkQueryStatisticsCollectionForQuantity(
       typeId,
       stats,
@@ -859,8 +1024,10 @@ export async function hkRead24hBuckets(
       interval,
       {
         filter: {
-          startDate: from,
-          endDate: to,
+          date: {
+            startDate: from,
+            endDate: to,
+          },
         },
       }
     );
@@ -1014,8 +1181,10 @@ async function hkReadDailyBuckets(
       interval,
       {
         filter: {
-          startDate: from,
-          endDate: to,
+          date: {
+            startDate: from,
+            endDate: to,
+          },
         },
       }
     );
@@ -1367,8 +1536,10 @@ export async function hkReadHeartRateInWindow(win: Window): Promise<{
       ["discreteAverage"],
       {
         filter: {
-          startDate: from,
-          endDate: to,
+          date: {
+            startDate: from,
+            endDate: to,
+          },
         },
       }
     );
@@ -1502,7 +1673,14 @@ export async function hkReadHeartRateHourly24(): Promise<Bucket[]> {
       stats, // ["discreteAverage"]
       anchorDate,
       interval,
-      { filter: { startDate: from, endDate: to } }
+      {
+        filter: {
+          date: {
+            startDate: from,
+            endDate: to,
+          },
+        },
+      }
     );
 
     const toKey = (d: any) => {
@@ -1657,7 +1835,14 @@ export async function hkReadHeartRateDailyBuckets(
       stats, // ["discreteAverage"]
       anchorDate,
       interval,
-      { filter: { startDate: from, endDate: to } }
+      {
+        filter: {
+          date: {
+            startDate: from,
+            endDate: to,
+          },
+        },
+      }
     );
 
     const toKey = (d: any) => {
@@ -2528,8 +2713,10 @@ export async function hkReadSumInWindow(
     // so we do not pass a speculative filter object.
     const res = await hkQueryStatisticsForQuantity(typeId, stats, {
       filter: {
-        startDate: from,
-        endDate: to,
+        date: {
+          startDate: from,
+          endDate: to,
+        },
       },
     });
 
