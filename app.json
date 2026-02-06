@@ -11,7 +11,10 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "UIBackgroundModes": ["processing", "fetch"],
+        "UIBackgroundModes": [
+          "processing",
+          "fetch"
+        ],
         "NSHealthShareUsageDescription": "Allow Web3Health to read steps, distance, heart rate and sleep to generate insights and enable sharing.",
         "NSHealthUpdateUsageDescription": "Allow Web3Health to write optional well-being entries (e.g., mindful minutes).",
         "ITSAppUsesNonExemptEncryption": false
@@ -24,6 +27,7 @@
       "bundleIdentifier": "com.mohitnaik21.Web3Health"
     },
     "android": {
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/Web3Health-adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -49,6 +53,7 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      "expo-notifications",
       "expo-router",
       [
         "expo-splash-screen",
@@ -62,7 +67,6 @@
       "expo-secure-store",
       "expo-health-connect",
       "expo-background-task",
-      "expo-notifications",
       [
         "expo-build-properties",
         {
@@ -89,9 +93,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "7c693ae4-7c4a-44b0-8ecd-22169f1dcaf1"
+        "projectId": "9ac61297-a9b5-4a84-a194-ddf75d55fc18"
       }
     },
-    "owner": "mohitnaik21"
+    "owner": "andrew-primiano"
   }
 }

@@ -1,3 +1,4 @@
+import { NotificationProvider } from '@/src/providers/NotificationProvider';
 import { ThemeControllerProvider, useThemeController } from '@/src/theme/ThemeController';
 import { ClerkLoaded, ClerkProvider, SignedIn, SignedOut } from '@clerk/clerk-expo';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
@@ -48,16 +49,18 @@ export default function RootLayout() {
         <SafeAreaProvider>
           <ThemeFrame>
             <ClerkLoaded>
-              <SignedIn>
-                {/* If a signed-in user somehow hits /auth/login, send them home. 
-                    Note: DO NOT block /auth/register here; first-time users need it. */}
-                {isLoginRoute ? <Redirect href="/" /> : <Slot />}
-              </SignedIn>
+              <NotificationProvider>
+                <SignedIn>
+                  {/* If a signed-in user somehow hits /auth/login, send them home.
+                      Note: DO NOT block /auth/register here; first-time users need it. */}
+                  {isLoginRoute ? <Redirect href="/" /> : <Slot />}
+                </SignedIn>
 
-              <SignedOut>
-                {/* When signed out, render any /auth/* page directly; otherwise, go to /auth/login */}
-                {isAuthRoute ? <Slot /> : <Redirect href="/auth/login" />}
-              </SignedOut>
+                <SignedOut>
+                  {/* When signed out, render any /auth/* page directly; otherwise, go to /auth/login */}
+                  {isAuthRoute ? <Slot /> : <Redirect href="/auth/login" />}
+                </SignedOut>
+              </NotificationProvider>
             </ClerkLoaded>
           </ThemeFrame>
         </SafeAreaProvider>
