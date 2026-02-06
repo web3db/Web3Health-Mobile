@@ -5,15 +5,18 @@
 // In Production, we always fall back to real 24h days and safe timings.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { testFlags } from '@/src/config/featureFlags';
+import { testFlags } from "@/src/config/featureFlags";
 
 // Real 24h day for production
 const REAL_DAY_MS = 24 * 60 * 60 * 1000;
 
+// Bucket size for Sharing pipeline only (in minutes).
+export const SHARE_BUCKET_MINUTES = 5 as const;
+
 // ENV knobs (kept exactly as you use them; populate via .env/.app config)
-const retryMsFromEnv  = Number(process.env.EXPO_PUBLIC_RETRY_INTERVAL_MS ?? '');
-const graceMsFromEnv  = Number(process.env.EXPO_PUBLIC_GRACE_WAIT_MS ?? '');
-const simDayFromEnv   = Number(process.env.EXPO_PUBLIC_SIM_DAY_MS ?? '');
+const retryMsFromEnv = Number(process.env.EXPO_PUBLIC_RETRY_INTERVAL_MS ?? "");
+const graceMsFromEnv = Number(process.env.EXPO_PUBLIC_GRACE_WAIT_MS ?? "");
+const simDayFromEnv = Number(process.env.EXPO_PUBLIC_SIM_DAY_MS ?? "");
 // ─────────────────────────────────────────────────────────────────────────────
 // Test Mode timing (QA-friendly defaults; still overridable via env)
 // Production timing (safer defaults)
@@ -25,18 +28,20 @@ const RAW_DAY_LENGTH_MS = REAL_DAY_MS;
 // Retry interval:
 // - Test Mode: env override or 20s default
 // - Prod:      1h (tweak to 10–15m if you prefer)
-const RAW_RETRY_INTERVAL_MS =
-  TEST_MODE
-    ? (Number.isFinite(retryMsFromEnv) && retryMsFromEnv > 0 ? retryMsFromEnv : 20_000)
-    : 60 * 60 * 1000;// 1h
+const RAW_RETRY_INTERVAL_MS = TEST_MODE
+  ? Number.isFinite(retryMsFromEnv) && retryMsFromEnv > 0
+    ? retryMsFromEnv
+    : 20_000
+  : 60 * 60 * 1000; // 1h
 
 // One-time grace at the start of a new due day:
 // - Test Mode: env override or 12s default
 // - Prod:      10s default (safer than 0)
-const RAW_GRACE_WAIT_MS =
-  TEST_MODE
-    ? (Number.isFinite(graceMsFromEnv) && graceMsFromEnv >= 0 ? graceMsFromEnv : 12_000)
-    : 10_000;
+const RAW_GRACE_WAIT_MS = TEST_MODE
+  ? Number.isFinite(graceMsFromEnv) && graceMsFromEnv >= 0
+    ? graceMsFromEnv
+    : 12_000
+  : 10_000;
 
 // Max NO_DATA retries before cancel (policy shared across modes)
 export const MAX_RETRIES = 3 as const;
@@ -57,9 +62,9 @@ if (!TEST_MODE && SAFE_DAY_LENGTH_MS < 6 * 60 * 60 * 1000) {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Exports consumed by planner/producer/store
 // ─────────────────────────────────────────────────────────────────────────────
-export const DAY_LENGTH_MS   = SAFE_DAY_LENGTH_MS;
+export const DAY_LENGTH_MS = SAFE_DAY_LENGTH_MS;
 export const RETRY_INTERVAL_MS = RAW_RETRY_INTERVAL_MS;
-export const GRACE_WAIT_MS     = RAW_GRACE_WAIT_MS;
+export const GRACE_WAIT_MS = RAW_GRACE_WAIT_MS;
 
 // One-line config for first-run banner
 export function getShareRuntimeConfig() {
@@ -70,10 +75,12 @@ export function getShareRuntimeConfig() {
     RETRY_INTERVAL_MS,
     MAX_RETRIES,
     GRACE_WAIT_MS,
-    DAY_LENGTH_SOURCE: 'fixed_24h',
+    SHARE_BUCKET_MINUTES,
+    DAY_LENGTH_SOURCE: "fixed_24h",
     EXPO_PUBLIC_SIM_DAY_MS: process.env.EXPO_PUBLIC_SIM_DAY_MS || undefined,
-    EXPO_PUBLIC_RETRY_INTERVAL_MS: process.env.EXPO_PUBLIC_RETRY_INTERVAL_MS || undefined,
-    EXPO_PUBLIC_GRACE_WAIT_MS: process.env.EXPO_PUBLIC_GRACE_WAIT_MS || undefined,
+    EXPO_PUBLIC_RETRY_INTERVAL_MS:
+      process.env.EXPO_PUBLIC_RETRY_INTERVAL_MS || undefined,
+    EXPO_PUBLIC_GRACE_WAIT_MS:
+      process.env.EXPO_PUBLIC_GRACE_WAIT_MS || undefined,
   };
 }
-

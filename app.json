@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "Web3Health",
+    "name": "Web3Health(Beta Testing)",
     "slug": "Web3Health",
-    "version": "1.0.8",
+    "version": "1.2.0",
     "orientation": "portrait",
     "icon": "./assets/images/Web3Health.png",
     "scheme": "web3health",
@@ -24,6 +24,7 @@
       "bundleIdentifier": "com.mohitnaik21.Web3Health"
     },
     "android": {
+      "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/Web3Health-adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -69,7 +70,7 @@
           "android": {
             "minSdkVersion": 26,
             "compileSdkVersion": 35,
-            "targetSdkVersion": 34
+            "targetSdkVersion": 35
           }
         }
       ],

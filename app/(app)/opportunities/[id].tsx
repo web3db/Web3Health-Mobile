@@ -6,6 +6,7 @@ import { useCurrentUserId } from "@/src/hooks/useCurrentUserId";
 import { getSessionByPosting } from "@/src/services/sharing/api";
 import { getShareRuntimeConfig } from "@/src/services/sharing/constants";
 import {
+  checkMetricDataLast24Hours,
   checkMetricPermissionsForMap,
   type MetricCode,
 } from "@/src/services/sharing/summarizer";
@@ -28,6 +29,8 @@ import React, {
 import { Alert, Linking, Platform, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { useApplyGateStore } from "@/src/store/useApplyGateStore";
+
 // --- tiny helpers (local to this file to keep it self-contained) ---
 const hasAny = (arr?: Array<any>) => Array.isArray(arr) && arr.length > 0;
 const hasText = (s?: string | null) => !!(s && s.trim().length > 0);
@@ -37,6 +40,28 @@ const formatAgeRange = (min?: number | null, max?: number | null) => {
   if (max != null) return `≤${max}`;
   return null;
 };
+
+// Match onboarding labels (so missing fields look human)
+const PROFILE_FIELD_LABELS: Record<string, string> = {
+  BirthYear: "Birth year",
+  RaceId: "Race",
+  SexId: "Sex",
+  HeightNum: "Height",
+  HeightUnitId: "Height unit",
+  WeightNum: "Weight",
+  WeightUnitId: "Weight unit",
+  MeasurementSystemId: "Measurement system",
+};
+
+function humanizeMissingFields(raw: unknown) {
+  const arr = Array.isArray(raw) ? raw : [];
+  const mapped = arr
+    .map((k) => PROFILE_FIELD_LABELS[String(k)] ?? null)
+    .filter((x): x is string => !!x);
+
+  // De-dupe + hide unknown backend keys
+  return Array.from(new Set(mapped));
+}
 
 type AnyMetricRow = {
   id?: number;
@@ -75,6 +100,23 @@ const labelOfMetric = (m: string) => {
   }
 };
 
+function showNoRecentDataAlert(missing: MetricCode[]) {
+  const labels = missing.map(labelOfMetric).join(", ");
+  Alert.alert(
+    "No recent data found",
+    `We couldn’t find any data in the last 24 hours for:\n• ${labels}\n\n` +
+      `To apply, please make sure these metrics are being recorded on your device, then try again.`,
+  );
+}
+
+function showMissingPermissionsAlert(missing: MetricCode[]) {
+  const labels = missing.map(labelOfMetric).join(", ");
+  Alert.alert(
+    "Permissions needed",
+    `To apply, please allow access to:\n• ${labels}\n\nThen try again.`,
+  );
+}
+
 // Normalize names → MetricCode
 function normalizeMetricCode(raw?: string | null): MetricCode | undefined {
   if (!raw) return;
@@ -95,7 +137,7 @@ function normalizeMetricCode(raw?: string | null): MetricCode | undefined {
 // Build a map of SupportedCode → metricId from the posting object (no hard-coding of IDs)
 function buildMetricMapStrict(
   posting: any,
-  metricCatalog?: Array<{ metricId: number; code: string }>
+  metricCatalog?: Array<{ metricId: number; code: string }>,
 ): Partial<Record<MetricCode, number>> {
   const out: Partial<Record<MetricCode, number>> = {};
 
@@ -142,7 +184,7 @@ function buildMetricMapStrict(
   ) {
     if (__DEV__) {
       console.log(
-        "[OppDetails] metricIds present but no catalog provided — cannot resolve codes from IDs yet"
+        "[OppDetails] metricIds present but no catalog provided — cannot resolve codes from IDs yet",
       );
     }
   }
@@ -155,7 +197,6 @@ function buildMetricMapStrict(
 // NEW: fixed 24h helpers for preview/backdating (Test Mode rule)
 // ─────────────────────────────────────────────────────────────────────────────
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-
 
 function fmtUTC(iso: string) {
   return new Date(iso).toISOString().replace(".000Z", "Z");
@@ -171,6 +212,57 @@ function fmtLocal(iso: string) {
     minute: "2-digit",
     hour12: false,
   });
+}
+
+function fmtMonthDay(iso: string) {
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: "short",
+    day: "2-digit",
+  });
+}
+
+function computeMissedCatchUp(
+  snap: {
+    cycleAnchorUtc: string;
+    segmentsExpected: number;
+    lastSentDayIndex: number | null;
+  },
+  nowMs: number,
+  dayMs: number,
+  graceMs: number,
+): {
+  missedCount: number;
+  nextMissedDayIndex: number | null;
+  nextFromUtc: string | null;
+} {
+  const anchorMs = Date.parse(snap.cycleAnchorUtc);
+  if (!Number.isFinite(anchorMs)) {
+    return { missedCount: 0, nextMissedDayIndex: null, nextFromUtc: null };
+  }
+
+  const expected = Number(snap.segmentsExpected ?? 0);
+  const lastSent =
+    snap.lastSentDayIndex == null ? 0 : Number(snap.lastSentDayIndex);
+
+  let missedCount = 0;
+  let nextMissedDayIndex: number | null = null;
+  let nextFromUtc: string | null = null;
+
+  for (let dayIdx = Math.max(1, lastSent + 1); dayIdx <= expected; dayIdx++) {
+    const toMs = anchorMs + dayIdx * dayMs;
+    const fromMs = toMs - dayMs;
+    const dueAtMs = toMs + graceMs;
+
+    if (nowMs >= dueAtMs) {
+      missedCount += 1;
+      if (nextMissedDayIndex == null) {
+        nextMissedDayIndex = dayIdx;
+        nextFromUtc = new Date(fromMs).toISOString();
+      }
+    }
+  }
+
+  return { missedCount, nextMissedDayIndex, nextFromUtc };
 }
 
 // === [SECTION_HEADER_COMPONENT] reusable title + subtitle
@@ -196,8 +288,6 @@ function SectionHeader({
   );
 }
 
-
-
 export default function OpportunityDetails() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -214,10 +304,12 @@ export default function OpportunityDetails() {
   const engine = useShareStore((s) => s.engine);
   const tick = useShareStore((s) => s.tick);
   const catchUpIfNeeded = useShareStore((s) => s.catchUpIfNeeded);
+  const catchUpNextOne = useShareStore((s) => s.catchUpNextOne);
   const sessionId = useShareStore((s) => s.sessionId);
-  const isProcessing = !!engine?.currentDueDayIndex;
+  const isProcessing = engine?.currentDueDayIndex != null;
   const completed = (engine?.segmentsSent ?? 0) >= (segmentsExpected ?? 0);
   const userId = useCurrentUserId();
+  const ensureCanApply = useApplyGateStore((s) => s.ensureCanApply);
   const { getByIdSafe, savedIds, toggleSave, loadById, loading } =
     useMarketplaceStore();
   const lastDiag = useShareStore((s) => s.lastWindowDiag);
@@ -226,7 +318,7 @@ export default function OpportunityDetails() {
 
   const cached = useMemo(
     () => (id ? getByIdSafe(String(id)) : undefined),
-    [getByIdSafe, id]
+    [getByIdSafe, id],
   );
   const [item, setItem] = useState(cached);
   const [sessionLookup, setSessionLookup] = useState<null | {
@@ -264,7 +356,7 @@ export default function OpportunityDetails() {
     setSessionLookupLoading(true);
     try {
       const res = await getSessionByPosting(postingId, userId).catch(
-        () => null
+        () => null,
       );
       if (res) {
         const next = {
@@ -298,7 +390,7 @@ export default function OpportunityDetails() {
     useCallback(() => {
       const id = setInterval(() => setNowTick(Date.now()), 60_000);
       return () => clearInterval(id as unknown as number);
-    }, [])
+    }, []),
   );
 
   // Keep UI in sync: refresh on screen focus and when share engine progresses
@@ -344,7 +436,7 @@ export default function OpportunityDetails() {
           shareSnapRef.current = next;
           refreshSessionLookup();
           const postingId = Number(
-            (item as any)?.postingId ?? (item as any)?.id
+            (item as any)?.postingId ?? (item as any)?.id,
           );
           if (userId != null && postingId) {
             void useShareStore
@@ -355,7 +447,7 @@ export default function OpportunityDetails() {
       });
 
       return () => unsubscribe();
-    }, [refreshSessionLookup, item, userId])
+    }, [refreshSessionLookup, item, userId]),
   );
 
   useEffect(() => {
@@ -366,7 +458,7 @@ export default function OpportunityDetails() {
         const postingId = Number((item as any).postingId ?? (item as any).id);
         setSessionLookupLoading(true);
         const res = await getSessionByPosting(postingId, userId).catch(
-          () => null
+          () => null,
         );
         if (!mounted) return;
         if (res) {
@@ -398,13 +490,13 @@ export default function OpportunityDetails() {
       try {
         const forceFn = loadById as unknown as (
           a: string,
-          b?: { force?: boolean }
+          b?: { force?: boolean },
         ) => any;
         const fetched = await forceFn(String(id), { force: true }).catch(
           async () => {
             const legacyFn = loadById as unknown as (a: string) => any;
             return legacyFn(String(id));
-          }
+          },
         );
         // always prefer fresh fetched data, even if the same id
         if (mounted && fetched) {
@@ -557,7 +649,42 @@ export default function OpportunityDetails() {
     if (userId == null) {
       Alert.alert(
         "Sign in required",
-        "Please sign in to apply and start sharing."
+        "Please sign in to apply and start sharing.",
+      );
+      return;
+    }
+
+    // Apply gate: ensure profile is complete before applying
+    const gate = await ensureCanApply(userId);
+
+    if (!gate.ok) {
+      // Case A: profile truly incomplete → route to onboarding
+      if (gate.needsProfile) {
+        const missingPretty = humanizeMissingFields(gate.missingProfileFields);
+        const missing =
+          missingPretty.length > 0
+            ? `\n\nMissing: ${missingPretty.join(", ")}`
+            : "";
+
+        Alert.alert(
+          "Complete your profile",
+          `Please complete your profile before applying.${missing}`,
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Go to profile",
+              onPress: () => router.push("/(app)/onboarding/profile"),
+            },
+          ],
+        );
+        return;
+      }
+
+      // Case B: backend error/unreachable or other non-profile block → do NOT route
+      Alert.alert(
+        "Unable to verify profile",
+        gate.error ??
+          "We couldn't verify your profile right now. Please try again.",
       );
       return;
     }
@@ -570,7 +697,7 @@ export default function OpportunityDetails() {
       console.log("[OppDetails] No resolvable metrics for posting", { item });
       Alert.alert(
         "Unsupported",
-        "This posting’s metrics cannot be resolved yet. Please try again later."
+        "This posting’s metrics cannot be resolved yet. Please try again later.",
       );
       return;
     }
@@ -590,7 +717,7 @@ export default function OpportunityDetails() {
           onPress: async () => {
             try {
               const postingId = Number(
-                (item as any).postingId ?? (item as any).id
+                (item as any).postingId ?? (item as any).id,
               );
 
               // Build map once for the session
@@ -600,34 +727,49 @@ export default function OpportunityDetails() {
 
               // Cross-platform readability probe (permissions / provider / data)
               const probe = await checkMetricPermissionsForMap(
-                metricMap as Record<MetricCode, number>
+                metricMap as Record<MetricCode, number>,
               );
               const missing = probe.missing ?? [];
 
+              // if (missing.length > 0) {
+              //   const missingLabels = missing.map(labelOfMetric).join(", ");
+              //   const msg =
+              //     `Right now we cannot read data for:\n• ${missingLabels}\n\n` +
+              //     `This can happen if Health permissions are disabled or there is no data yet for those metrics.\n\n` +
+              //     `You can still start sharing; those metrics will be reported as unavailable until data becomes readable.`;
+              //   const cont = await new Promise<boolean>((resolve) => {
+              //     Alert.alert("Some metrics unavailable", msg, [
+              //       {
+              //         text: "Cancel",
+              //         style: "cancel",
+              //         onPress: () => resolve(false),
+              //       },
+              //       { text: "Start anyway", onPress: () => resolve(true) },
+              //     ]);
+              //   });
+              //   if (!cont) return;
+              // }
+
               if (missing.length > 0) {
-                const missingLabels = missing.map(labelOfMetric).join(", ");
-                const msg =
-                  `Right now we cannot read data for:\n• ${missingLabels}\n\n` +
-                  `This can happen if Health permissions are disabled or there is no data yet for those metrics.\n\n` +
-                  `You can still start sharing; those metrics will be reported as unavailable until data becomes readable.`;
-                const cont = await new Promise<boolean>((resolve) => {
-                  Alert.alert("Some metrics unavailable", msg, [
-                    {
-                      text: "Cancel",
-                      style: "cancel",
-                      onPress: () => resolve(false),
-                    },
-                    { text: "Start anyway", onPress: () => resolve(true) },
-                  ]);
-                });
-                if (!cont) return;
+                showMissingPermissionsAlert(missing);
+                return;
+              }
+
+              // NEW: strict eligibility gate — require data in the last 24 hours
+              const dataProbe = await checkMetricDataLast24Hours(codes);
+              if (!dataProbe.ok) {
+                if (__DEV__) {
+                  console.log("[OppDetails] 24h data gate failed", dataProbe);
+                }
+                showNoRecentDataAlert(dataProbe.missingData);
+                return;
               }
 
               await startSession(
                 postingId,
                 userId!,
                 metricMap,
-                Number(item.dataCoverageDaysRequired ?? 5)
+                Number(item.dataCoverageDaysRequired ?? 5),
               );
               setSessionLookup((prev) => ({
                 sessionId: prev?.sessionId ?? 0,
@@ -643,20 +785,27 @@ export default function OpportunityDetails() {
                 "Sharing started",
                 __DEV__
                   ? "First segment will send now.\nDay progression is accelerated for testing."
-                  : "We’ll send your first segment now and continue every 24 hours."
+                  : "We’ll send your first segment now and continue every 24 hours.",
               );
             } catch (e) {
               console.log("[OppDetails] startSession error", e);
               Alert.alert(
                 "Error",
-                "Failed to start sharing. Please try again."
+                "Failed to start sharing. Please try again.",
               );
             }
           },
         },
-      ]
+      ],
     );
-  }, [item, startSession, userId, refreshSessionLookup]);
+  }, [
+    item,
+    startSession,
+    userId,
+    ensureCanApply,
+    router,
+    refreshSessionLookup,
+  ]);
 
   if (!item) {
     return (
@@ -697,6 +846,17 @@ export default function OpportunityDetails() {
 
   const apiStatusUpper = (sessionLookup?.statusName || "").toUpperCase();
 
+  const organizerLabel =
+    (hasText(item?.sponsor) ? String(item.sponsor).trim() : null) ??
+    "the study team";
+
+  const coverageDays = Number(item?.dataCoverageDaysRequired ?? 5);
+
+  const applyDisclosureLine =
+    `By applying, you agree to share the requested health metrics for ${coverageDays} day` +
+    `${coverageDays === 1 ? "" : "s"} with ${organizerLabel}. ` +
+    `Your data is shared in de-identified form and is not labeled with your name or direct personal identifiers.`;
+
   const { applyTitle, applyDisabled } = useMemo(() => {
     if (userId == null)
       return { applyTitle: "Sign in to apply", applyDisabled: true };
@@ -716,7 +876,7 @@ export default function OpportunityDetails() {
   // nextTargetIdx = next unsent day (1..segmentsExpected)
   const nextTargetIdx = Math.min(
     Math.max(1, (engine?.lastSentDayIndex ?? 0) + 1),
-    Number(segmentsExpected ?? 0) || 0
+    Number(segmentsExpected ?? 0) || 0,
   );
 
   const nextWindowPreview = (() => {
@@ -791,6 +951,14 @@ export default function OpportunityDetails() {
     mode,
   ]);
 
+  const doCatchUpOne = useCallback(async () => {
+    try {
+      await catchUpNextOne();
+    } catch (e) {
+      if (__DEV__) console.warn("[OppDetails] catch-up error", e);
+    }
+  }, [catchUpNextOne]);
+
   const simAllRemaining = useCallback(async () => {
     if (!testFlags.TEST_MODE) return;
     if (!segmentsExpected) return;
@@ -857,7 +1025,7 @@ export default function OpportunityDetails() {
             {item.applyOpenAt && item.applyCloseAt ? (
               <Chip
                 label={`Apply window: ${new Date(item.applyOpenAt).toLocaleDateString()} → ${new Date(
-                  item.applyCloseAt
+                  item.applyCloseAt,
                 ).toLocaleDateString()}`}
               />
             ) : null}
@@ -936,7 +1104,7 @@ export default function OpportunityDetails() {
                 m.code ??
                 m.id ??
                 m.metricId ??
-                "metric"
+                "metric",
             ); // ← force to string
             const sig = `${id}|${label}`;
             if (!seen.has(sig)) {
@@ -1042,7 +1210,7 @@ export default function OpportunityDetails() {
                       (p as any).displayName ??
                       (p as any).id ??
                       (p as any).viewPolicyId ??
-                      "Policy"
+                      "Policy",
                   );
                   return <Chip key={key} label={label} />;
                 })}
@@ -1131,6 +1299,11 @@ export default function OpportunityDetails() {
           </View>
         )}
 
+        {/* Apply disclosure (always visible before Apply) */}
+        <Text style={{ color: c.text.secondary, marginTop: 4, lineHeight: 18 }}>
+          {applyDisclosureLine}
+        </Text>
+
         {/* CTAs */}
         <View
           style={{
@@ -1185,13 +1358,13 @@ export default function OpportunityDetails() {
                 : computeNextWindowFromSnapshot(
                     s.cycleAnchorUtc,
                     s.lastSentDayIndex,
-                    s.segmentsExpected
+                    s.segmentsExpected,
                   );
 
               if (__DEV__ && nextWin) {
                 console.log(
                   "[OppDetails] Next share window (server-anchored) =",
-                  nextWin
+                  nextWin,
                 );
               }
 
@@ -1217,8 +1390,63 @@ export default function OpportunityDetails() {
                     })
                   : "—";
 
+              const rc = getShareRuntimeConfig();
+              const dayMs = Number(rc.DAY_LENGTH_MS ?? ONE_DAY_MS);
+              const graceMs = Number(rc.GRACE_WAIT_MS ?? 0);
+
+              const catchUpInfo = completed
+                ? {
+                    missedCount: 0,
+                    nextMissedDayIndex: null,
+                    nextFromUtc: null,
+                  }
+                : computeMissedCatchUp(
+                    {
+                      cycleAnchorUtc: s.cycleAnchorUtc,
+                      segmentsExpected: s.segmentsExpected,
+                      lastSentDayIndex: s.lastSentDayIndex,
+                    },
+                    nowTick,
+                    dayMs,
+                    graceMs,
+                  );
+
+              const snapStatusUpper = String(
+                s.statusName ?? s.statusCode ?? "",
+              ).toUpperCase();
+
+              const showCatchUp =
+                snapStatusUpper === "ACTIVE" &&
+                catchUpInfo.missedCount > 0 &&
+                engine?.mode !== "SIM" &&
+                engine?.currentDueDayIndex == null;
+
               return (
                 <View style={{ gap: 4 }}>
+                  {showCatchUp ? (
+                    <View style={{ marginTop: 6, gap: 6 }}>
+                      <Text style={{ color: c.text.secondary }}>
+                        You missed {catchUpInfo.missedCount} day
+                        {catchUpInfo.missedCount === 1 ? "" : "s"}. Catch them
+                        up one at a time.
+                      </Text>
+
+                      <Button
+                        title={
+                          catchUpInfo.nextFromUtc
+                            ? `Catch up ${fmtMonthDay(catchUpInfo.nextFromUtc)}`
+                            : "Catch up"
+                        }
+                        onPress={doCatchUpOne}
+                        disabled={
+                          status !== "ACTIVE" ||
+                          engine?.currentDueDayIndex != null ||
+                          engine?.mode === "SIM"
+                        }
+                      />
+                    </View>
+                  ) : null}
+
                   <Text style={{ color: c.text.secondary }}>
                     <Text style={{ fontWeight: "700", color: c.text.primary }}>
                       Started on:
@@ -1418,7 +1646,7 @@ export default function OpportunityDetails() {
               />
               <Button
                 title="Catch up"
-                onPress={() => catchUpIfNeeded()}
+                onPress={() => useShareStore.getState().catchUpNextOne()}
                 variant="secondary"
                 disabled={!sessionId || status !== "ACTIVE"}
               />

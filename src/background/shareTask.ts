@@ -26,7 +26,10 @@ export const SHARE_BG_TASK = "SHARE_BACKGROUND_TICK";
 const STALE_MS = 24 * 60 * 60 * 1000; // 24h
 const NUDGE_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12h
 
+// Breadcrumbs
+// KEY_LAST_RUN should mean: last time we actually progressed (uploaded a segment)
 export const KEY_LAST_RUN = "bg.lastRunAt";
+export const KEY_LAST_ATTEMPT = "bg.lastAttemptAt";
 export const KEY_SEGMENTS = "bg.segmentsSent";
 export const KEY_LAST_NUDGE = "bg.lastNudgeAt";
 export const KEY_LAST_SNAPSHOT = "bg.lastSnapshotJson";
@@ -130,9 +133,11 @@ TaskManager.defineTask(SHARE_BG_TASK, async () => {
     // Ensure store is hydrated before reading values
     await waitForShareStoreHydration();
 
-    // Initial breadcrumbs
+    // Breadcrumbs:
+    // - attempt: task executed
+    // - run: only updated when we actually upload/progress
     const nowISO = new Date().toISOString();
-    await AsyncStorage.setItem(KEY_LAST_RUN, nowISO);
+    await AsyncStorage.setItem(KEY_LAST_ATTEMPT, nowISO);
 
     // Snapshot (pre-flight)
     await writeBgSnapshot("preflight");
@@ -144,57 +149,92 @@ TaskManager.defineTask(SHARE_BG_TASK, async () => {
       try {
         const resolved = await getSessionByPosting(s.postingId, s.userId);
         if (resolved && resolved.sessionId) {
+          // useShareStore.setState((prev) => ({
+          //   sessionId: resolved.sessionId,
+          //   segmentsExpected: Number(
+          //     resolved.segmentsExpected ?? prev.segmentsExpected ?? 0
+          //   ),
+          //   status: "ACTIVE",
+          //   engine: { ...prev.engine, status: "ACTIVE" },
+
+          //   // Optional (only if missing); safe defaults
+          //   cycleAnchorUtc: prev.cycleAnchorUtc ?? new Date().toISOString(),
+          //   originalCycleAnchorUtc:
+          //     prev.originalCycleAnchorUtc ?? new Date().toISOString(),
+          // }));
+
+          // useShareStore.setState((prev) => ({
+          //   sessionId: resolved.sessionId,
+          //   segmentsExpected: Number(
+          //     resolved.segmentsExpected ?? prev.segmentsExpected ?? 0,
+          //   ),
+          //   status: "ACTIVE",
+          //   engine: { ...(prev.engine ?? {}), status: "ACTIVE" },
+
+          //   // IMPORTANT: do not invent anchors here.
+          //   // We will pull the canonical server snapshot below and then align anchors from it.
+          // }));
+
+          // // Pull canonical server snapshot so planner uses server truth in this same run
+          // await useShareStore
+          //   .getState()
+          //   .fetchSessionSnapshot(
+          //     useShareStore.getState().userId!,
+          //     useShareStore.getState().postingId!,
+          //   );
+
+          // // Align planner anchors to the canonical server anchor right away
+          // {
+          //   const snap = useShareStore.getState().snapshot;
+          //   if (snap?.cycleAnchorUtc) {
+          //     useShareStore.setState((prev) => ({
+          //       cycleAnchorUtc: snap.cycleAnchorUtc, // planner ISO used by planner/tick
+          //       engine: {
+          //         ...prev.engine,
+          //         // engine.cycleAnchorUtc is stored in ms (number)
+          //         cycleAnchorUtc: new Date(snap.cycleAnchorUtc).getTime(),
+          //       },
+          //     }));
+          //     if (typeof snap?.segmentsExpected === "number") {
+          //       useShareStore.setState((prev) => ({
+          //         segmentsExpected: snap.segmentsExpected,
+          //         engine: {
+          //           ...prev.engine,
+          //           segmentsExpected: snap.segmentsExpected,
+          //         },
+          //       }));
+          //     }
+          //   }
+          // }
+
+          // if (__DEV__)
+          //   console.log(
+          //     "[BG] session resolved via resolver",
+          //     resolved.sessionId,
+          //   );
+
+          // Minimal local activation (do NOT invent anchors here)
           useShareStore.setState((prev) => ({
             sessionId: resolved.sessionId,
-            segmentsExpected: Number(
-              resolved.segmentsExpected ?? prev.segmentsExpected ?? 0
-            ),
             status: "ACTIVE",
-            engine: { ...prev.engine, status: "ACTIVE" },
-
-            // Optional (only if missing); safe defaults
-            cycleAnchorUtc: prev.cycleAnchorUtc ?? new Date().toISOString(),
-            originalCycleAnchorUtc:
-              prev.originalCycleAnchorUtc ?? new Date().toISOString(),
+            engine: { ...(prev.engine ?? {}), status: "ACTIVE" },
+            // NOTE: timeline fields (anchor/join/lastSent) are hydrated from snapshot below
           }));
 
-          // Pull canonical server snapshot so planner uses server truth in this same run
-          await useShareStore
-            .getState()
-            .fetchSessionSnapshot(
-              useShareStore.getState().userId!,
-              useShareStore.getState().postingId!
-            );
-
-          // Align planner anchors to the canonical server anchor right away
+          // Pull canonical server snapshot (and hydrate live fields via ShareStore)
           {
-            const snap = useShareStore.getState().snapshot;
-            if (snap?.cycleAnchorUtc) {
-              useShareStore.setState((prev) => ({
-                cycleAnchorUtc: snap.cycleAnchorUtc, // planner ISO used by planner/tick
-                engine: {
-                  ...prev.engine,
-                  // engine.cycleAnchorUtc is stored in ms (number)
-                  cycleAnchorUtc: new Date(snap.cycleAnchorUtc).getTime(),
-                },
-              }));
-              if (typeof snap?.segmentsExpected === "number") {
-                useShareStore.setState((prev) => ({
-                  segmentsExpected: snap.segmentsExpected,
-                  engine: {
-                    ...prev.engine,
-                    segmentsExpected: snap.segmentsExpected,
-                  },
-                }));
-              }
+            const cur = useShareStore.getState();
+            if (cur.userId && cur.postingId) {
+              await cur.fetchSessionSnapshot(cur.userId, cur.postingId);
             }
           }
 
-          if (__DEV__)
+          if (__DEV__) {
             console.log(
               "[BG] session resolved via resolver",
-              resolved.sessionId
+              resolved.sessionId,
             );
+          }
         }
       } catch (e) {
         if (__DEV__) console.log("[BG] resolver failed (non-fatal)", e);
@@ -204,6 +244,16 @@ TaskManager.defineTask(SHARE_BG_TASK, async () => {
     // Re-read after possible resolver update
     const st = useShareStore.getState();
 
+    // If we already have an ACTIVE session, refresh snapshot once so planning uses server truth
+    // (requires ShareStore.fetchSessionSnapshot to hydrate live fields)
+    if (st.sessionId && st.userId && st.postingId) {
+      try {
+        await useShareStore
+          .getState()
+          .fetchSessionSnapshot(st.userId, st.postingId);
+      } catch {}
+    }
+
     // Gate: no ACTIVE session or readiness
     const active =
       !!st.sessionId &&
@@ -211,9 +261,17 @@ TaskManager.defineTask(SHARE_BG_TASK, async () => {
       st.engine?.status === "ACTIVE";
     const ready = isShareReady();
 
+    // const mode = st.engine?.mode;
+    // if (mode !== "NORMAL") {
+    //   await writeBgSnapshot("skip-non-normal", { mode });
+    //   return BackgroundTask.BackgroundTaskResult.Success;
+    // }
+
     const mode = st.engine?.mode;
-    if (mode !== "NORMAL") {
-      await writeBgSnapshot("skip-non-normal", { mode });
+    const simulationLock = (st.engine as any)?.simulationLock === true;
+
+    if (mode !== "NORMAL" || simulationLock) {
+      await writeBgSnapshot("skip-non-normal", { mode, simulationLock });
       return BackgroundTask.BackgroundTaskResult.Success;
     }
 
@@ -240,7 +298,7 @@ TaskManager.defineTask(SHARE_BG_TASK, async () => {
         console.log("[BG] skip: inactive or not ready", { active, ready });
       await AsyncStorage.setItem(
         KEY_SEGMENTS,
-        String(st.engine?.segmentsSent ?? 0)
+        String(st.engine?.segmentsSent ?? 0),
       );
       await maybeNudgeIfStale(Date.parse(nowISO));
       return BackgroundTask.BackgroundTaskResult.Success;
@@ -259,12 +317,12 @@ TaskManager.defineTask(SHARE_BG_TASK, async () => {
             healthAvailable,
             healthGranted,
             metricKeysCount: metricKeys.length,
-          }
+          },
         );
 
       await AsyncStorage.setItem(
         KEY_SEGMENTS,
-        String(st.engine?.segmentsSent ?? 0)
+        String(st.engine?.segmentsSent ?? 0),
       );
       await writeBgSnapshot("health-missing", {
         healthPlatform,
@@ -286,7 +344,20 @@ TaskManager.defineTask(SHARE_BG_TASK, async () => {
     if (__DEV__)
       console.log("[BG] tick() done", { after, changed: after > before });
 
+    // await AsyncStorage.setItem(KEY_SEGMENTS, String(after));
+    // await writeBgSnapshot("post-tick", {
+    //   before,
+    //   after,
+    //   changed: after > before,
+    // });
+
     await AsyncStorage.setItem(KEY_SEGMENTS, String(after));
+
+    // Only mark "lastRunAt" when we actually progressed (uploaded at least one segment)
+    if (after > before) {
+      await AsyncStorage.setItem(KEY_LAST_RUN, new Date().toISOString());
+    }
+
     await writeBgSnapshot("post-tick", {
       before,
       after,
@@ -299,7 +370,7 @@ TaskManager.defineTask(SHARE_BG_TASK, async () => {
       if (stateAfter.userId && stateAfter.postingId) {
         void stateAfter.fetchSessionSnapshot(
           stateAfter.userId,
-          stateAfter.postingId
+          stateAfter.postingId,
         );
       }
     }
@@ -357,7 +428,7 @@ export async function registerShareBackgroundTask() {
     }
     if (status !== BackgroundTask.BackgroundTaskStatus.Available) {
       console.warn(
-        "[BG] Background task not available; relying on foreground polling."
+        "[BG] Background task not available; relying on foreground polling.",
       );
       return;
     }
@@ -389,7 +460,7 @@ export async function unregisterShareBackgroundTask() {
   } catch (e: any) {
     console.warn(
       "[BG] unregisterShareBackgroundTask → error:",
-      e?.message ?? e
+      e?.message ?? e,
     );
   }
 }
@@ -403,7 +474,7 @@ export async function triggerShareBackgroundTaskForTesting() {
   } catch (e: any) {
     console.warn(
       "[BG] triggerTaskWorkerForTestingAsync → error:",
-      e?.message ?? e
+      e?.message ?? e,
     );
   }
 }

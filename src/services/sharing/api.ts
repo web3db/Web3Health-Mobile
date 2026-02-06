@@ -28,7 +28,7 @@ export async function createSession(
     joinTimeLocalISO: string;
     joinTimezone: string;
     cycleAnchorUtc: string;
-  }
+  },
 ): Promise<{
   sessionId: number;
   cycleAnchorUtc: string;
@@ -37,19 +37,21 @@ export async function createSession(
   joinTimezone: string;
 }> {
   const url = buildUrl("user_start_share_session");
-  const body = {
+  const body: any = {
     postingId,
     userId,
     joinTimeLocal: params.joinTimeLocalISO, // map name
     joinTimezone: params.joinTimezone,
-    cycleAnchorUtc: params.cycleAnchorUtc,
     segmentsExpected: params.segmentsExpected,
   };
+  if (params.cycleAnchorUtc) {
+    body.cycleAnchorUtc = params.cycleAnchorUtc;
+  }
 
   const { ok, status, json, text } = await fetchJson("POST", url, body);
   if (!ok || !json) {
     throw new Error(
-      `user_start_share_session ${status} ${String((json as any)?.message ?? text ?? "")}`
+      `user_start_share_session ${status} ${String((json as any)?.message ?? text ?? "")}`,
     );
   }
   const parsed = StartSessionRes.parse(json);
@@ -65,14 +67,14 @@ export async function createSession(
 /** Resolve a session by (postingId, userId). Prefer ACTIVE, else latest. */
 export async function getSessionByPosting(
   postingId: number,
-  userId: number
+  userId: number,
 ): Promise<TResolverRes | null> {
   const url = buildUrl("user_get_session_by_posting", { postingId, userId });
   const { ok, status, json } = await fetchJson("GET", url);
   if (!ok) {
     if (status === 404) return null;
     throw new Error(
-      `user_get_session_by_posting ${status} ${String((json as any)?.message ?? "")}`
+      `user_get_session_by_posting ${status} ${String((json as any)?.message ?? "")}`,
     );
   }
   return ResolverRes.parse(json);
@@ -80,7 +82,7 @@ export async function getSessionByPosting(
 
 /** Upload a segment payload (called from producer). */
 export async function uploadSegment(
-  payload: SegmentPayload
+  payload: SegmentPayload,
 ): Promise<UploadSegmentResult> {
   // Shape already matches server expectations
   const url = buildUrl("user_submit_segment");
@@ -99,7 +101,7 @@ export async function uploadSegment(
   if (!ok && status === 409) {
     if (__DEV__)
       console.log(
-        "[sharing.api] submit_segment idempotent 409 → treating as ok"
+        "[sharing.api] submit_segment idempotent 409 → treating as ok",
       );
     return { ok: true, status: "ACTIVE" };
   }
@@ -155,7 +157,7 @@ export async function cancelShareSession(sessionId: number): Promise<{
       ok: false,
       status: "ACTIVE",
       error: `user_cancel_share_session ${status} ${String(
-        (json as any)?.message ?? text ?? ""
+        (json as any)?.message ?? text ?? "",
       )}`,
     };
   }
@@ -170,7 +172,7 @@ export async function getSharingDashboard(userId: number) {
   const { ok, status, json, text } = await fetchJson("GET", url);
   if (!ok || !json) {
     throw new Error(
-      `user_get_sharing_dashboard ${status} ${String((json as any)?.message ?? text ?? "")}`
+      `user_get_sharing_dashboard ${status} ${String((json as any)?.message ?? text ?? "")}`,
     );
   }
   const parsed = DashboardRes.parse(json);
@@ -183,30 +185,30 @@ export async function getSessionSnapshot(userId: number, postingId: number) {
   const { ok, status, json, text } = await fetchJson("GET", url);
   if (!ok || !json) {
     throw new Error(
-      `share_get_session_snapshot ${status} ${String((json as any)?.message ?? text ?? "")}`
+      `share_get_session_snapshot ${status} ${String((json as any)?.message ?? text ?? "")}`,
     );
   }
   const parsed = SessionSnapshotRes.parse(json);
   return parsed;
 }
 
-
 // === [GET_REWARDS_SUMMARY] call user_rewards_summary with ?userId=
-export async function getRewardsSummary(userId: number): Promise<TRewardsSummaryRes> {
+export async function getRewardsSummary(
+  userId: number,
+): Promise<TRewardsSummaryRes> {
   const url = buildUrl("user_rewards_summary", { userId });
   const { ok, status, json, text } = await fetchJson("GET", url);
   if (!ok || !json) {
     throw new Error(
-      `user_rewards_summary ${status} ${String((json as any)?.message ?? text ?? "")}`
+      `user_rewards_summary ${status} ${String((json as any)?.message ?? text ?? "")}`,
     );
   }
   return RewardsSummaryRes.parse(json);
 }
 
-
 // === [GET_ACTIVE_SHARE_SESSIONS] call user_active-share-sessions with ?userId=
 export async function getActiveShareSessions(
-  userId: number
+  userId: number,
 ): Promise<ActiveShareSessionDto[]> {
   const url = buildUrl("user_active-share-sessions", { userId });
   const { ok, status, json, text } = await fetchJson("GET", url);
@@ -214,8 +216,8 @@ export async function getActiveShareSessions(
   if (!ok || !json) {
     throw new Error(
       `user_active-share-sessions ${status} ${String(
-        (json as any)?.message ?? text ?? ""
-      )}`
+        (json as any)?.message ?? text ?? "",
+      )}`,
     );
   }
 

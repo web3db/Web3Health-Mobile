@@ -5,6 +5,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import React from "react";
 import { Linking, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
 export default function AboutScreen() {
   const c = useThemeColors();
 
@@ -115,7 +116,6 @@ export default function AboutScreen() {
         borderColor: c.border,
       }}
     >
-      {/* Circle avatar */}
       <View
         style={{
           width: 40,
@@ -137,7 +137,6 @@ export default function AboutScreen() {
         </Text>
       </View>
 
-      {/* Details */}
       <View style={{ flex: 1, gap: 4 }}>
         <Text
           style={{
@@ -218,7 +217,6 @@ export default function AboutScreen() {
           </Pressable>
         </View>
 
-        {/* Email text below for easy copy */}
         <Text
           style={{
             color: c.text.muted,
@@ -256,94 +254,26 @@ export default function AboutScreen() {
             marginBottom: 4,
           }}
         >
-          About Web3Health
+          About Web3Health Platform
         </Text>
 
+        {/* Intro */}
         <Text
           style={{
             color: c.text.secondary,
             fontSize: 14,
             textAlign: "center",
             marginHorizontal: 8,
+            lineHeight: 20,
           }}
         >
-          A research initiative at the University of Georgia exploring
-          privacy-preserving health data sharing.
+          Web3Health is a research initiative at the University of Georgia (UGA)
+          focused on enabling privacy-preserving health data sharing. It was
+          initiated by Prof. WenZhan Song and developed by the UGA Center for
+          Cyber-Physical Systems (CCPS) and SensorWeb Research Laboratory.
         </Text>
 
-        {/* Section: Affiliations */}
-        <SectionCard>
-          <Text
-            style={{
-              color: c.text.primary,
-              fontSize: 16,
-              fontWeight: "700",
-            }}
-          >
-            Institutional Affiliations
-          </Text>
-
-          <Text
-            style={{
-              color: c.text.primary,
-              fontSize: 14,
-              lineHeight: 20,
-            }}
-          >
-            This project is conducted under the{" "}
-            <Text style={{ fontWeight: "600" }}>
-              Institute for Cyber-Physical Systems (CCPS)
-            </Text>{" "}
-            at the University of Georgia, in collaboration with the{" "}
-            <Text style={{ fontWeight: "600" }}>SensorWeb Lab</Text>.
-          </Text>
-
-          <View
-            style={{
-              flexDirection: "row",
-              flexWrap: "wrap",
-              marginTop: 8,
-            }}
-          >
-            <PillLink
-              label="CCPS"
-              icon="business-outline"
-              onPress={() => openUrl("https://cps.uga.edu/")}
-            />
-            <PillLink
-              label="SensorWeb Lab"
-              icon="school-outline"
-              onPress={() =>
-                openUrl("https://sensorweb.engr.uga.edu/index.php/song/")
-              }
-            />
-            <PillLink
-              label="SunLab"
-              icon="flash-outline"
-              onPress={() => openUrl("https://sunlab.uga.edu/")}
-            />
-          </View>
-
-          {/* Optional raw links below for clarity / copy */}
-          <View style={{ marginTop: 6 }}>
-            <LinkText
-              label="https://cps.uga.edu/"
-              onPress={() => openUrl("https://cps.uga.edu/")}
-            />
-            <LinkText
-              label="SensorWeb Lab · Prof. WenZhan Song"
-              onPress={() =>
-                openUrl("https://sensorweb.engr.uga.edu/index.php/song/")
-              }
-            />
-            <LinkText
-              label="SunLab · Prof. Haijian Sun"
-              onPress={() => openUrl("https://sunlab.uga.edu/")}
-            />
-          </View>
-        </SectionCard>
-
-        {/* Section: Research purpose */}
+        {/* Section: Research Project & Purpose */}
         <SectionCard>
           <Text
             style={{
@@ -362,10 +292,10 @@ export default function AboutScreen() {
               lineHeight: 20,
             }}
           >
-            Web3Health studies how individuals can track and selectively share
-            health and activity metrics (such as steps, sleep, and related
-            measures) with approved research partners while maintaining strong
-            privacy and user control.
+            Web3Health offers a privacy-preserving data sharing platform where
+            individuals can selectively share health and activity metrics (such
+            as foot step counts, sleep, vital signs, etc.) with approved
+            research partners, while maintaining privacy and user control.
           </Text>
 
           <Text
@@ -378,12 +308,16 @@ export default function AboutScreen() {
             This research is supported in part by funding from the{" "}
             <Text style={{ fontWeight: "700" }}>
               National Science Foundation (NSF)
+            </Text>{" "}
+            and the{" "}
+            <Text style={{ fontWeight: "700" }}>
+              UGA Center for Cyber-Physical Systems
             </Text>
             . The app is intended for research use and is not a medical device.
           </Text>
         </SectionCard>
 
-        {/* Section: Project leads */}
+        {/* Section: Faculty Mentors */}
         <SectionCard>
           <Text
             style={{
@@ -392,53 +326,62 @@ export default function AboutScreen() {
               fontWeight: "700",
             }}
           >
-            Project Leads
+            Faculty Mentors
           </Text>
 
           <View style={{ gap: 10 }}>
             <LeadCard
               initials="WS"
               name="Prof. WenZhan Song"
-              labLabel="SensorWeb Lab, University of Georgia"
-              profileUrl="https://sensorweb.engr.uga.edu/index.php/song/"
+              labLabel="University of Georgia · CCPS / SensorWeb Research Laboratory"
+              profileUrl="https://cps.uga.edu/~song"
               email="wsong@uga.edu"
             />
 
             <LeadCard
               initials="HS"
               name="Prof. Haijian Sun"
-              labLabel="SunLab, University of Georgia"
+              labLabel="University of Georgia"
               profileUrl="https://sunlab.uga.edu/"
               email="hs72164@uga.edu"
             />
 
-            <View
+            <LeadCard
+              initials="TJ"
+              name="Prof. Taeho Jung"
+              labLabel="University of Notre Dame"
+              profileUrl="https://sites.nd.edu/taeho-jung/"
+              email="tjung@nd.edu"
+            />
+          </View>
+
+          <View
+            style={{
+              marginTop: 10,
+              borderTopWidth: 1,
+              borderTopColor: c.border,
+              paddingTop: 10,
+              gap: 6,
+            }}
+          >
+            <Text
               style={{
-                marginTop: 4,
-                borderTopWidth: 1,
-                borderTopColor: c.border,
-                paddingTop: 8,
-                gap: 4,
+                color: c.text.primary,
+                fontSize: 14,
+                fontWeight: "600",
               }}
             >
-              <Text
-                style={{
-                  color: c.text.primary,
-                  fontSize: 14,
-                  fontWeight: "600",
-                }}
-              >
-                General Lab Contact
-              </Text>
-              <LinkText
-                label="engr-sensorweb@uga.edu"
-                onPress={() => openEmail("engr-sensorweb@uga.edu")}
-              />
-            </View>
+              General Lab Contact
+            </Text>
+
+            <LinkText
+              label="engr-sensorweb@uga.edu"
+              onPress={() => openEmail("engr-sensorweb@uga.edu")}
+            />
           </View>
         </SectionCard>
 
-        {/* Section: More info */}
+        {/* Section: More Information */}
         <SectionCard>
           <Text
             style={{
@@ -467,6 +410,44 @@ export default function AboutScreen() {
               openUrl("https://web3db.github.io/Web3Health-Privacy/")
             }
           />
+        </SectionCard>
+
+        {/* Optional: Quick Links */}
+        <SectionCard>
+          <Text
+            style={{
+              color: c.text.primary,
+              fontSize: 16,
+              fontWeight: "700",
+            }}
+          >
+            Quick Links
+          </Text>
+
+          <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+            <PillLink
+              label="Prof. Song Profile"
+              icon="person-outline"
+              onPress={() => openUrl("https://cps.uga.edu/~song")}
+            />
+            <PillLink
+              label="SunLab"
+              icon="flask-outline"
+              onPress={() => openUrl("https://sunlab.uga.edu/")}
+            />
+            <PillLink
+              label="Prof. Jung Profile"
+              icon="globe-outline"
+              onPress={() => openUrl("https://sites.nd.edu/taeho-jung/")}
+            />
+            <PillLink
+              label="Privacy Docs"
+              icon="document-text-outline"
+              onPress={() =>
+                openUrl("https://web3db.github.io/Web3Health-Privacy/")
+              }
+            />
+          </View>
         </SectionCard>
       </ScrollView>
     </SafeAreaView>

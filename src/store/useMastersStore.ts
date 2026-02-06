@@ -7,15 +7,15 @@ import {
   getUnits,
   type HealthConditionOption,
   type Option,
-} from '@/src/services/profile/api';
-import { create } from 'zustand';
+} from "@/src/services/profile/api";
+import { create } from "zustand";
 
 type MastersState = {
   races: Option[];
   sexes: Option[];
   measurementSystems: Option[];
   units: Option[];
-  healthConditions: HealthConditionOption[];   // ✅ fix type
+  healthConditions: HealthConditionOption[]; // ✅ fix type
   loading: boolean;
   error?: string | null;
   loadedAt?: number;
@@ -38,7 +38,15 @@ export const useMastersStore = create<MastersState>((set, get) => ({
   _inflight: null,
 
   async loadMastersOnce(opts) {
-    const { loadedAt, races, sexes, measurementSystems, units, healthConditions, _inflight } = get();
+    const {
+      loadedAt,
+      races,
+      sexes,
+      measurementSystems,
+      units,
+      healthConditions,
+      _inflight,
+    } = get();
     const ttlMs = opts?.ttlMs ?? 0;
 
     // Share the in-flight request
@@ -46,7 +54,17 @@ export const useMastersStore = create<MastersState>((set, get) => ({
 
     // Cache hit (and all lists present)
     const isFresh = loadedAt && (!ttlMs || Date.now() - loadedAt < ttlMs);
-    if (isFresh && races.length && sexes.length && measurementSystems.length && units.length && healthConditions.length) {
+    // if (isFresh && races.length && sexes.length && measurementSystems.length && units.length && healthConditions.length) {
+    //   return Promise.resolve();
+    // }
+
+    if (
+      isFresh &&
+      races.length &&
+      sexes.length &&
+      measurementSystems.length &&
+      units.length
+    ) {
       return Promise.resolve();
     }
 
@@ -63,11 +81,11 @@ export const useMastersStore = create<MastersState>((set, get) => ({
         ]);
 
         // Optional: filter unusable rows (e.g., unit with null label/id)
-        const safeUnits = u.filter(x => Number.isFinite(x.id));
-        const safeRaces = r.filter(x => Number.isFinite(x.id));
-        const safeSexes = s.filter(x => Number.isFinite(x.id));
-        const safeMs = ms.filter(x => Number.isFinite(x.id));
-        const safeHc = hc.filter(x => Number.isFinite(x.id));
+        const safeUnits = u.filter((x) => Number.isFinite(x.id));
+        const safeRaces = r.filter((x) => Number.isFinite(x.id));
+        const safeSexes = s.filter((x) => Number.isFinite(x.id));
+        const safeMs = ms.filter((x) => Number.isFinite(x.id));
+        const safeHc = hc.filter((x) => Number.isFinite(x.id));
 
         set({
           races: safeRaces,
@@ -80,7 +98,7 @@ export const useMastersStore = create<MastersState>((set, get) => ({
           loadedAt: Date.now(),
         });
       } catch (e: any) {
-        set({ loading: false, error: e?.message ?? 'Failed to load masters' });
+        set({ loading: false, error: e?.message ?? "Failed to load masters" });
       } finally {
         set({ _inflight: null });
       }
@@ -106,11 +124,11 @@ export const useMastersStore = create<MastersState>((set, get) => ({
           getHealthConditions(),
         ]);
 
-        const safeUnits = u.filter(x => Number.isFinite(x.id));
-        const safeRaces = r.filter(x => Number.isFinite(x.id));
-        const safeSexes = s.filter(x => Number.isFinite(x.id));
-        const safeMs = ms.filter(x => Number.isFinite(x.id));
-        const safeHc = hc.filter(x => Number.isFinite(x.id));
+        const safeUnits = u.filter((x) => Number.isFinite(x.id));
+        const safeRaces = r.filter((x) => Number.isFinite(x.id));
+        const safeSexes = s.filter((x) => Number.isFinite(x.id));
+        const safeMs = ms.filter((x) => Number.isFinite(x.id));
+        const safeHc = hc.filter((x) => Number.isFinite(x.id));
 
         set({
           races: safeRaces,
@@ -123,7 +141,10 @@ export const useMastersStore = create<MastersState>((set, get) => ({
           loadedAt: Date.now(),
         });
       } catch (e: any) {
-        set({ loading: false, error: e?.message ?? 'Failed to refresh masters' });
+        set({
+          loading: false,
+          error: e?.message ?? "Failed to refresh masters",
+        });
       } finally {
         set({ _inflight: null });
       }

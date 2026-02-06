@@ -15,10 +15,11 @@
 
 import { uploadSegment } from "./api";
 import {
+  getShareRuntimeConfig,
   GRACE_WAIT_MS,
   MAX_RETRIES,
   RETRY_INTERVAL_MS,
-  getShareRuntimeConfig,
+  SHARE_BUCKET_MINUTES,
 } from "./constants";
 import { summarizeWindow, type MetricCode } from "./summarizer";
 import type { ShareSessionState, UploadSegmentResult } from "./types";
@@ -94,7 +95,8 @@ export async function buildSegmentPayload(
     userId: number;
     metricMap: Record<MetricCode, number>; // e.g. { STEPS:101, HR:110, KCAL:140 }
     probeOnly?: boolean; // for Day-0 decisions, optional
-  }
+    bucketMinutes?: number;
+  },
 ): Promise<{ payload: SegmentPayload; diag: WindowDiagnostics }> {
   const { fromUtc, toUtc, dayIndex } = window;
   console.log(TAG, "Building payload", { dayIndex, fromUtc, toUtc });
@@ -108,6 +110,9 @@ export async function buildSegmentPayload(
     hadAnyData: false,
   };
 
+  const isPositive = (v: unknown) =>
+    typeof v === "number" && Number.isFinite(v) && v > 0;
+
   for (const [code, metricId] of Object.entries(ctx.metricMap) as Array<
     [MetricCode, number]
   >) {
@@ -115,7 +120,9 @@ export async function buildSegmentPayload(
       code,
       fromUtc,
       toUtc,
-      ctx.probeOnly ? { probeOnly: true } : undefined
+      ctx.probeOnly
+        ? { probeOnly: true, bucketMinutes: ctx.bucketMinutes }
+        : { bucketMinutes: ctx.bucketMinutes },
     );
 
     // Unreadable metric (no permission / read error) → include placeholder row
@@ -135,9 +142,14 @@ export async function buildSegmentPayload(
     }
 
     // Readable metric: decide if it has meaningful data
+    // NOTE: HR often returns avg/min/max without samplesCount; treat those as meaningful.
     const meaningful =
-      (s.totalValue != null && Number(s.totalValue) > 0) ||
-      (s.samplesCount != null && Number(s.samplesCount) > 0);
+      isPositive(s.totalValue) ||
+      isPositive(s.samplesCount) ||
+      (code === "HR" &&
+        (isPositive(s.avgValue) ||
+          isPositive(s.minValue) ||
+          isPositive(s.maxValue)));
 
     if (!meaningful) {
       diag.zeroData.push(code);
@@ -156,6 +168,16 @@ export async function buildSegmentPayload(
       computedJson: {
         ...(s.computedJson ?? {}),
         status: meaningful ? "OK" : "NO_DATA",
+        meaningfulBy: isPositive(s.totalValue)
+          ? "totalValue"
+          : isPositive(s.samplesCount)
+            ? "samplesCount"
+            : code === "HR" &&
+                (isPositive(s.avgValue) ||
+                  isPositive(s.minValue) ||
+                  isPositive(s.maxValue))
+              ? "hrStats"
+              : "none",
       },
     });
   }
@@ -188,7 +210,9 @@ function iso(t: number | null | undefined) {
 /** Normalize whatever the API returns into an internal UploadSegmentResult shape. */
 function normalizeUploadResult(raw: any): UploadSegmentResult {
   const hasOk = typeof raw?.ok === "boolean";
-  const ok = hasOk ? !!raw.ok : !!raw?.status && !raw?.error;
+  const ok = hasOk
+    ? !!raw.ok
+    : !!raw?.status && !raw?.error && raw?.status !== "ERROR";
   const status = typeof raw?.status === "string" ? raw.status : undefined;
   const error = raw?.error ? String(raw.error) : undefined;
   return { ok, status, error };
@@ -212,7 +236,7 @@ export async function processDueWindow(
     metricMap: Record<MetricCode, number>;
   },
   state: ShareSessionState,
-  nowUtc: number = Date.now()
+  nowUtc: number = Date.now(),
 ): Promise<{ state: ShareSessionState; diag?: WindowDiagnostics }> {
   // One-time config banner per app lifetime
   if (!(global as any).__SHARE_CONFIG_LOGGED__) {
@@ -264,7 +288,7 @@ export async function processDueWindow(
       nextRetryAtISO: iso(state.nextRetryAtUtc),
       secondsRemaining: Math.max(
         0,
-        Math.ceil((state.nextRetryAtUtc - nowUtc) / 1000)
+        Math.ceil((state.nextRetryAtUtc - nowUtc) / 1000),
       ),
       noDataRetryCount: state.noDataRetryCount,
     });
@@ -273,10 +297,14 @@ export async function processDueWindow(
   // ★ Day-0: fast probe-first path (avoid heavy compute when clearly no data yet)
   if (window.dayIndex === 0) {
     const { payload: probePayload, diag: probeDiag } =
-      await buildSegmentPayload(window, { ...ctx, probeOnly: true });
+      await buildSegmentPayload(window, {
+        ...ctx,
+        probeOnly: true,
+        bucketMinutes: SHARE_BUCKET_MINUTES,
+      });
     if (!probePayload.hasData) {
-      const nextRetryAtUtc =
-        nowUtc + withJitter(GRACE_WAIT_MS || RETRY_INTERVAL_MS); // prefer grace, fallback to retry interval
+      const baseWait = GRACE_WAIT_MS > 0 ? GRACE_WAIT_MS : RETRY_INTERVAL_MS;
+      const nextRetryAtUtc = nowUtc + Math.max(1000, withJitter(baseWait)); // enforce at least 1s
       console.log(TAG, "day0-probe no-data → short-wait", {
         dayIdx: window.dayIndex,
         nextRetryAtISO: new Date(nextRetryAtUtc).toISOString(),
@@ -319,6 +347,7 @@ export async function processDueWindow(
     postingId: ctx.postingId,
     userId: ctx.userId,
     metricMap: ctx.metricMap,
+    bucketMinutes: SHARE_BUCKET_MINUTES,
   });
 
   if (!payload.hasData) {

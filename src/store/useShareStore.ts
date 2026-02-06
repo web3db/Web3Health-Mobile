@@ -19,6 +19,7 @@ import {
   getActiveShareSessions,
   getRewardsSummary,
   getSessionByPosting,
+  getSessionSnapshot,
   getSharingDashboard,
 } from "@/src/services/sharing/api";
 
@@ -127,8 +128,18 @@ type StoreState = {
   activeSessions?: ActiveShareSessionDto[] | null;
   fetchActiveSessions: (userId: number) => Promise<void>;
 
+  // // actions
+  // fetchSessionSnapshot: (userId: number, postingId: number) => Promise<void>;
+  // restoreAnchorAtExit?: number;
+
   // actions
   fetchSessionSnapshot: (userId: number, postingId: number) => Promise<void>;
+
+  // NEW: hydrate live timeline + engine from backend snapshot
+  hydrateFromSessionSnapshot: (
+    snap: NonNullable<StoreState["snapshot"]>,
+  ) => void;
+
   restoreAnchorAtExit?: number;
 
   // actions
@@ -136,7 +147,7 @@ type StoreState = {
     postingId: number,
     userId: number,
     metricMap: Partial<Record<MetricCode, number>>,
-    segmentsExpected?: number
+    segmentsExpected?: number,
   ) => Promise<void>;
 
   shareEnabled: boolean; // <— PERSISTED readiness gate
@@ -146,6 +157,17 @@ type StoreState = {
   sendFirstSegment: () => Promise<void>;
   sendNextIfDue: () => Promise<void>;
   catchUpIfNeeded: () => Promise<void>;
+
+  // Catch-up UI support (derived from planner + engine snapshot)
+  catchUpStatus?: {
+    missedCount: number;
+    nextWindow: WindowRef | null;
+    nextLabel: string | null; // e.g., "Jan 26"
+  };
+  refreshCatchUpStatus: () => void;
+
+  // Single-step catch-up (processes exactly ONE missed day per call)
+  catchUpNextOne: () => Promise<void>;
 
   // cadence brain (call on focus/interval or background fetch)
   tick: () => Promise<void>;
@@ -189,7 +211,7 @@ const nowMs = () => Date.now();
 export function computeNextWindowFromSnapshot(
   cycleAnchorUtc: string,
   lastSentDayIndex: number | null,
-  segmentsExpected: number
+  segmentsExpected: number,
 ): { nextIdx: number; fromUtc: string; toUtc: string } | null {
   if (!segmentsExpected) return null;
   const prevIdx = lastSentDayIndex ?? 0; // Day-0 is index 0
@@ -209,7 +231,7 @@ export function computeNextWindowFromSnapshot(
 /** Human label for time left until `toUtc`. */
 export function formatTimeLeftLabel(
   toUtcISO: string,
-  now = Date.now()
+  now = Date.now(),
 ): string {
   const delta = Date.parse(toUtcISO) - now;
   const abs = Math.abs(delta);
@@ -225,9 +247,15 @@ export function formatTimeLeftLabel(
 function localMidnightUTCFromJoinLocalISO(joinLocalISO: string): string {
   const datePart = joinLocalISO.slice(0, 10); // 'YYYY-MM-DD'
   const plus = joinLocalISO.lastIndexOf("+");
-  const minus = joinLocalISO.lastIndexOf("-");
+  const minus = joinLocalISO.lastIndexOf("-", 19);
   const offIdx = Math.max(plus, minus);
-  const offset = offIdx > 10 ? joinLocalISO.slice(offIdx) : "Z";
+
+  const offset = joinLocalISO.endsWith("Z")
+    ? "Z"
+    : offIdx >= 19
+      ? joinLocalISO.slice(offIdx)
+      : "Z";
+
   return new Date(`${datePart}T00:00:00${offset}`).toISOString();
 }
 
@@ -258,6 +286,61 @@ function notifyInfo(message: string) {
       Alert.alert("", message);
     } catch {}
   }
+}
+
+function formatCatchUpLabel(fromUtcISO: string): string {
+  // Uses device locale + timezone (simple + consistent for UI)
+  // If you later want "joinTimezone" specifically, we can add Intl.DateTimeFormat with timeZone.
+  const d = new Date(fromUtcISO);
+  if (!Number.isFinite(d.getTime())) return "";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function computeCatchUpStatusFromState(st: {
+  status: ShareStatus;
+  engine: ShareSessionState;
+  cycleAnchorUtc?: string;
+  joinTimeLocalISO?: string;
+  joinTimezone?: string;
+  segmentsExpected?: number;
+}): {
+  missedCount: number;
+  nextWindow: WindowRef | null;
+  nextLabel: string | null;
+} {
+  // Only meaningful while ACTIVE and not SIM
+  if (st.status !== "ACTIVE") {
+    return { missedCount: 0, nextWindow: null, nextLabel: null };
+  }
+  if (st.engine?.mode === "SIM") {
+    return { missedCount: 0, nextWindow: null, nextLabel: null };
+  }
+  if (!st.cycleAnchorUtc || !st.joinTimeLocalISO) {
+    return { missedCount: 0, nextWindow: null, nextLabel: null };
+  }
+
+  const last = st.engine.lastSentDayIndex ?? 0;
+
+  const ctx: PlannerContext = {
+    joinTimeLocalISO: st.joinTimeLocalISO,
+    joinTimezone: st.joinTimezone || "Local",
+    cycleAnchorUtc: st.cycleAnchorUtc,
+    segmentsExpected: st.segmentsExpected ?? 0,
+    alreadySentDayIndices: [last],
+    lastSentDayIndex: last,
+    mode: "NORMAL",
+  };
+
+  const windows = planCatchUpWindows(ctx, last, nowISO());
+  const next = windows.length ? windows[0] : null;
+
+  return {
+    missedCount: windows.length,
+    nextWindow: next
+      ? { dayIndex: next.dayIndex, fromUtc: next.fromUtc, toUtc: next.toUtc }
+      : null,
+    nextLabel: next ? formatCatchUpLabel(next.fromUtc) : null,
+  };
 }
 
 const labelOfMetric = (m: MetricCode) => {
@@ -380,7 +463,7 @@ export const useShareStore = create<StoreState>()(
             console.log("[SHARE][Config]", getShareRuntimeConfig());
             if (testFlags.TEST_MODE) {
               console.warn(
-                "[SHARE][TestMode] ENABLED — backdated anchor simulations allowed."
+                "[SHARE][TestMode] ENABLED — backdated anchor simulations allowed.",
               );
             }
           }
@@ -428,7 +511,7 @@ export const useShareStore = create<StoreState>()(
             // (Header / Tracking tab) instead of prompting here.
             if (hkStatus === "shouldRequest" && !hkHasAnyData) {
               notifyInfo(
-                "Please enable Health data access from the Health Permissions banner before starting sharing."
+                "Please enable Health data access from the Health Permissions banner before starting sharing.",
               );
               return;
             }
@@ -438,63 +521,177 @@ export const useShareStore = create<StoreState>()(
           const tz = getLocalTimezoneInfo();
           const now = new Date();
           const localIso = new Date(
-            now.getTime() - now.getTimezoneOffset() * 60000
+            now.getTime() - now.getTimezoneOffset() * 60000,
           )
             .toISOString()
             .replace("Z", tz.offsetStr.replace("UTC", ""));
 
+          // // Try to reuse an existing ACTIVE session for (postingId, userId) before creating a new one
+          // try {
+          //   const resolved = await getSessionByPosting(postingId, userId);
+          //   if (resolved && resolved.source === "ACTIVE") {
+          //     const eng: ShareSessionState = {
+          //       ...initialEngine,
+          //       status: "ACTIVE",
+          //       // Use "now" as the engine's numeric anchor; planner ISO is set below.
+          //       cycleAnchorUtc: Date.now(),
+          //       segmentsExpected: Number(resolved.segmentsExpected ?? 0),
+          //       segmentsSent: Number(resolved.segmentsSent ?? 0),
+          //     };
+
+          //     set({
+          //       sessionId: resolved.sessionId,
+          //       postingId,
+          //       userId,
+          //       metricMap,
+          //       segmentsExpected: eng.segmentsExpected,
+          //       status: "ACTIVE",
+
+          //       // Planner-facing ISO anchor (we don't get anchor from resolver; use now for UI/planner)
+          //       cycleAnchorUtc: new Date().toISOString(),
+          //       originalCycleAnchorUtc: new Date().toISOString(),
+          //       joinTimezone: tz.iana || "Local",
+          //       joinTimeLocalISO: localIso,
+
+          //       engine: eng,
+
+          //       shareEnabled: true,
+          //     });
+
+          //     if (__DEV__) {
+          //       console.log(TAG, "startSession → reused ACTIVE session", {
+          //         sessionId: resolved.sessionId,
+          //         segmentsExpected: eng.segmentsExpected,
+          //         segmentsSent: eng.segmentsSent,
+          //       });
+          //     }
+
+          //     // Continue with normal Day-0 behavior (no grace)
+          //     try {
+          //       await sendSessionStarted(postingId);
+          //     } catch {}
+          //     await get().sendFirstSegment();
+          //     return;
+          //   }
+          // } catch (e) {
+          //   if (__DEV__)
+          //     console.warn(
+          //       `${TAG} resolver lookup failed — proceeding to create`,
+          //       e,
+          //     );
+          // }
           // Try to reuse an existing ACTIVE session for (postingId, userId) before creating a new one
           try {
             const resolved = await getSessionByPosting(postingId, userId);
+
             if (resolved && resolved.source === "ACTIVE") {
+              // Pull the authoritative session snapshot (anchor, join times, lastSent, etc.)
+              const snap = await getSessionSnapshot(userId, postingId);
+              const r = snap?.session;
+
+              if (!r) {
+                // If snapshot is unavailable, fall back to creating a new session
+                // (better than re-anchoring from device time).
+                throw new Error(
+                  "ACTIVE resolver returned, but snapshot.session was null",
+                );
+              }
+
+              // Build engine directly from server snapshot
               const eng: ShareSessionState = {
                 ...initialEngine,
                 status: "ACTIVE",
-                // Use "now" as the engine's numeric anchor; planner ISO is set below.
-                cycleAnchorUtc: Date.now(),
-                segmentsExpected: Number(resolved.segmentsExpected ?? 0),
-                segmentsSent: Number(resolved.segmentsSent ?? 0),
+                mode: "NORMAL",
+                simulationLock: false,
+
+                // IMPORTANT: anchor comes from server (stable across restarts)
+                cycleAnchorUtc: new Date(r.cycle_anchor_utc).getTime(),
+
+                segmentsExpected: Number(r.segments_expected ?? 0),
+                segmentsSent: Number(r.segments_sent ?? 0),
+                lastSentDayIndex:
+                  r.last_sent_day_index == null
+                    ? null
+                    : Number(r.last_sent_day_index),
+
+                // Clear per-day transient state on reuse
+                currentDueDayIndex: null,
+                noDataRetryCount: 0,
+                nextRetryAtUtc: null,
+                graceAppliedForDay: null,
               };
 
               set({
-                sessionId: resolved.sessionId,
+                sessionId: r.session_id,
                 postingId,
                 userId,
                 metricMap,
+
                 segmentsExpected: eng.segmentsExpected,
                 status: "ACTIVE",
 
-                // Planner-facing ISO anchor (we don't get anchor from resolver; use now for UI/planner)
-                cycleAnchorUtc: new Date().toISOString(),
-                originalCycleAnchorUtc: new Date().toISOString(),
-                joinTimezone: tz.iana || "Local",
-                joinTimeLocalISO: localIso,
+                // Planner/meta from server snapshot (stable)
+                cycleAnchorUtc: r.cycle_anchor_utc,
+                originalCycleAnchorUtc: r.cycle_anchor_utc,
+                joinTimezone: r.join_timezone,
+                joinTimeLocalISO: r.join_time_local_iso,
 
                 engine: eng,
+
+                // Optional: mirror snapshot for UI/debug
+                snapshot: {
+                  sessionId: r.session_id,
+                  postingId: r.posting_id,
+                  userId: r.user_id,
+                  statusCode: r.status_code,
+                  statusName: r.status_name,
+                  segmentsExpected: r.segments_expected,
+                  segmentsSent: r.segments_sent,
+                  lastSentDayIndex: r.last_sent_day_index,
+                  cycleAnchorUtc: r.cycle_anchor_utc,
+                  joinTimeLocalISO: r.join_time_local_iso,
+                  joinTimezone: r.join_timezone,
+                  lastUploadedAt: r.last_uploaded_at,
+                  lastWindowFromUtc: r.last_window_from_utc,
+                  lastWindowToUtc: r.last_window_to_utc,
+                },
 
                 shareEnabled: true,
               });
 
               if (__DEV__) {
-                console.log(TAG, "startSession → reused ACTIVE session", {
-                  sessionId: resolved.sessionId,
-                  segmentsExpected: eng.segmentsExpected,
-                  segmentsSent: eng.segmentsSent,
-                });
+                console.log(
+                  TAG,
+                  "startSession → reused ACTIVE session (server snapshot)",
+                  {
+                    sessionId: r.session_id,
+                    segmentsExpected: eng.segmentsExpected,
+                    segmentsSent: eng.segmentsSent,
+                    lastSentDayIndex: eng.lastSentDayIndex,
+                    anchor: r.cycle_anchor_utc,
+                  },
+                );
               }
 
-              // Continue with normal Day-0 behavior (no grace)
               try {
                 await sendSessionStarted(postingId);
               } catch {}
-              await get().sendFirstSegment();
+
+              // IMPORTANT: only do Day-0 if nothing has been sent yet.
+              if (eng.lastSentDayIndex == null) {
+                await get().sendFirstSegment();
+              } else {
+                await get().sendNextIfDue();
+                // (catch-up remains user-driven / separate; we’ll wire that next)
+              }
+
               return;
             }
           } catch (e) {
             if (__DEV__)
               console.warn(
-                `${TAG} resolver lookup failed — proceeding to create`,
-                e
+                `${TAG} resolver/snapshot reuse failed — proceeding to create`,
+                e,
               );
           }
 
@@ -618,18 +815,16 @@ export const useShareStore = create<StoreState>()(
         try {
           if (probeMetric) {
             const midnightLocalUtcISO = localMidnightUTCFromJoinLocalISO(
-              st.joinTimeLocalISO!
+              st.joinTimeLocalISO!,
             );
-            const probe = await import(
-              "@/src/services/sharing/summarizer"
-            ).then((m) =>
-              m.summarizeWindow(
-                probeMetric,
-                midnightLocalUtcISO,
-                st.cycleAnchorUtc!,
-                { probeOnly: true }
-              )
+            const mod = await import("@/src/services/sharing/summarizer");
+            const probe = await mod.summarizeWindow(
+              probeMetric,
+              midnightLocalUtcISO,
+              st.cycleAnchorUtc!,
+              { probeOnly: true },
             );
+
             hasDay0Data = !!probe;
 
             if (__DEV__) {
@@ -644,14 +839,14 @@ export const useShareStore = create<StoreState>()(
         } catch (e: any) {
           console.warn(
             `${TAG} sendFirstSegment → probe error`,
-            e?.message ?? e
+            e?.message ?? e,
           );
         }
 
         // === [ANCHOR: DAY0-ALWAYS-QUEUE]
         let day0 = planDay0Window(
           ctx,
-          hasDay0Data || (testFlags.TEST_MODE && testFlags.TEST_FORCE_DAY0)
+          hasDay0Data || (testFlags.TEST_MODE && testFlags.TEST_FORCE_DAY0),
         );
 
         // If planner declines Day-0 (likely no data yet), fall back to an explicit Day-0 window
@@ -660,7 +855,7 @@ export const useShareStore = create<StoreState>()(
           if (__DEV__) {
             console.log(
               "[SHARE][Store] Day0 planner declined; using fallback window",
-              day0
+              day0,
             );
           }
         }
@@ -670,9 +865,9 @@ export const useShareStore = create<StoreState>()(
           pendingWindow: day0!,
           engine: {
             ...s.engine,
-            currentDueDayIndex: 0,
-            // don’t set nextRetryAtUtc here — let producer decide initial backoff based on data presence
-            graceAppliedForDay: 0,
+            currentDueDayIndex: day0!.dayIndex,
+            // keep grace bookkeeping aligned with the actual due window
+            graceAppliedForDay: day0!.dayIndex,
           },
         }));
 
@@ -742,6 +937,42 @@ export const useShareStore = create<StoreState>()(
         await tryProcessWindow(win);
       },
 
+      // async catchUpIfNeeded() {
+      //   if (!isShareReady()) {
+      //     if (SHARE_DEBUG)
+      //       console.log(`${TAG} catchUpIfNeeded → not ready; skipping`);
+      //     return;
+      //   }
+
+      //   const st = get();
+      //   if (!st.sessionId || st.status !== "ACTIVE") return;
+
+      //   if (st.engine.mode === "SIM") {
+      //     if (__DEV__)
+      //       console.log(`${TAG} catchUpIfNeeded → passive (SIM mode)`);
+      //     return;
+      //   }
+
+      //   const last = st.engine.lastSentDayIndex ?? 0;
+
+      //   const ctx: PlannerContext = {
+      //     joinTimeLocalISO: st.joinTimeLocalISO!,
+      //     joinTimezone: st.joinTimezone || "Local",
+      //     cycleAnchorUtc: st.cycleAnchorUtc!,
+      //     segmentsExpected: st.segmentsExpected ?? 0,
+      //     alreadySentDayIndices: [last],
+      //     lastSentDayIndex: last,
+      //     mode: "NORMAL",
+      //   };
+
+      //   const windows = planCatchUpWindows(ctx, last, nowISO());
+      //   for (const win of windows) {
+      //     await tryProcessWindow(win);
+      //     const cur = get();
+      //     if (cur.status !== "ACTIVE") break; // CANCELLED/COMPLETE stops catch-up
+      //   }
+      // },
+
       async catchUpIfNeeded() {
         if (!isShareReady()) {
           if (SHARE_DEBUG)
@@ -771,11 +1002,40 @@ export const useShareStore = create<StoreState>()(
         };
 
         const windows = planCatchUpWindows(ctx, last, nowISO());
-        for (const win of windows) {
-          await tryProcessWindow(win);
-          const cur = get();
-          if (cur.status !== "ACTIVE") break; // CANCELLED/COMPLETE stops catch-up
+        const win = windows.length ? windows[0] : null;
+        if (!win) {
+          get().refreshCatchUpStatus();
+          return;
         }
+
+        await tryProcessWindow(win);
+        get().refreshCatchUpStatus();
+      },
+
+      refreshCatchUpStatus() {
+        const st = get();
+        const s = computeCatchUpStatusFromState(st);
+        set({ catchUpStatus: s });
+      },
+
+      async catchUpNextOne() {
+        if (!isShareReady()) return;
+
+        const st = get();
+        if (!st.sessionId || st.status !== "ACTIVE") return;
+        if (st.engine.mode === "SIM") return;
+
+        // Recompute status right before acting (keeps UI + action consistent)
+        const s = computeCatchUpStatusFromState(st);
+        set({ catchUpStatus: s });
+
+        const next = s.nextWindow;
+        if (!next) return;
+
+        await tryProcessWindow(next);
+
+        // Refresh again after processing (so button advances or disappears)
+        get().refreshCatchUpStatus();
       },
 
       // Call this on focus + short interval (e.g., 5s in DEV, 60s in PROD)
@@ -827,31 +1087,90 @@ export const useShareStore = create<StoreState>()(
             return; // waiting
           }
 
+          // const pw = st.pendingWindow;
+          // const win: WindowRef =
+          //   pw && pw.dayIndex === eng.currentDueDayIndex
+          //     ? pw
+          //     : (() => {
+          //         const { fromUtc, toUtc } = computeWindowForDayIndex(
+          //           st.cycleAnchorUtc!,
+          //           eng.currentDueDayIndex
+          //         );
+          //         if (__DEV__)
+          //           console.log(`${TAG} tick → new window`, {
+          //             dayIndex: eng.currentDueDayIndex,
+          //             fromUtc,
+          //             toUtc,
+          //           });
+          //         return { dayIndex: eng.currentDueDayIndex, fromUtc, toUtc };
+          //       })();
+
+          // set((s) => ({
+          //   pendingWindow: win,
+          //   engine: {
+          //     ...s.engine,
+          //     currentDueDayIndex: win.dayIndex,
+          //   },
+          // }));
+          // await tryProcessWindow(win);
+          // return;
+
           const pw = st.pendingWindow;
-          const win: WindowRef =
-            pw && pw.dayIndex === eng.currentDueDayIndex
-              ? pw
-              : (() => {
-                  const { fromUtc, toUtc } = computeWindowForDayIndex(
-                    st.cycleAnchorUtc!,
-                    eng.currentDueDayIndex
-                  );
-                  if (__DEV__)
-                    console.log(`${TAG} tick → new window`, {
-                      dayIndex: eng.currentDueDayIndex,
-                      fromUtc,
-                      toUtc,
-                    });
-                  return { dayIndex: eng.currentDueDayIndex, fromUtc, toUtc };
-                })();
+          const dueIdx = eng.currentDueDayIndex;
+
+          // If we already have the exact window stashed, always reuse it.
+          if (pw && pw.dayIndex === dueIdx) {
+            const win: WindowRef = pw;
+
+            set((s) => ({
+              pendingWindow: win,
+              engine: { ...s.engine, currentDueDayIndex: win.dayIndex },
+            }));
+
+            await tryProcessWindow(win);
+            return;
+          }
+
+          // Otherwise, rebuild the window safely.
+          // Day-0 must not call computeWindowForDayIndex().
+          const win: WindowRef = (() => {
+            if (dueIdx === 0) {
+              if (st.joinTimeLocalISO && st.cycleAnchorUtc) {
+                const w = buildDay0Window(
+                  st.joinTimeLocalISO,
+                  st.cycleAnchorUtc,
+                );
+                if (__DEV__)
+                  console.log(`${TAG} tick → rebuilt Day-0 window`, {
+                    dayIndex: 0,
+                    fromUtc: w.fromUtc,
+                    toUtc: w.toUtc,
+                  });
+                return w;
+              }
+              throw new Error(
+                `${TAG} tick → cannot rebuild Day-0 (missing joinTimeLocalISO/cycleAnchorUtc)`,
+              );
+            }
+
+            const { fromUtc, toUtc } = computeWindowForDayIndex(
+              st.cycleAnchorUtc!,
+              dueIdx,
+            );
+            if (__DEV__)
+              console.log(`${TAG} tick → new window`, {
+                dayIndex: dueIdx,
+                fromUtc,
+                toUtc,
+              });
+            return { dayIndex: dueIdx, fromUtc, toUtc };
+          })();
 
           set((s) => ({
             pendingWindow: win,
-            engine: {
-              ...s.engine,
-              currentDueDayIndex: win.dayIndex,
-            },
+            engine: { ...s.engine, currentDueDayIndex: win.dayIndex },
           }));
+
           await tryProcessWindow(win);
           return;
         }
@@ -866,7 +1185,7 @@ export const useShareStore = create<StoreState>()(
       setBackdatedAnchorTestOnly(anchorIsoUtc: string) {
         if (!testFlags.TEST_MODE) {
           console.warn(
-            `${TAG} setBackdatedAnchorTestOnly ignored — not in Test Mode.`
+            `${TAG} setBackdatedAnchorTestOnly ignored — not in Test Mode.`,
           );
           return;
         }
@@ -875,7 +1194,7 @@ export const useShareStore = create<StoreState>()(
           if (!Number.isFinite(ms)) {
             console.warn(
               `${TAG} setBackdatedAnchorTestOnly invalid ISO`,
-              anchorIsoUtc
+              anchorIsoUtc,
             );
             return;
           }
@@ -900,7 +1219,7 @@ export const useShareStore = create<StoreState>()(
         } catch (e: any) {
           console.warn(
             `${TAG} setBackdatedAnchorTestOnly error`,
-            e?.message ?? e
+            e?.message ?? e,
           );
         }
       },
@@ -946,28 +1265,24 @@ export const useShareStore = create<StoreState>()(
         }
         // Store-wide inactive — also bail
         if (st.status !== "ACTIVE") {
-          if (__DEV__)
+          if (__DEV__) {
             console.log(
-              `${TAG} simulateNextDay → store not ACTIVE (status=${st.status})`
+              `${TAG} simulateNextDay → store not ACTIVE (status=${st.status})`,
             );
+          }
           return;
         }
-        // If engine already finished/cancelled, bail out (keeps union for later checks)
+
+        // If engine already finished/cancelled, bail out
         if (st.engine.status !== "ACTIVE") {
-          if (__DEV__)
+          if (__DEV__) {
             console.log(
-              `${TAG} simulateNextDay → nothing to do (engineStatus=${st.engine.status})`
+              `${TAG} simulateNextDay → nothing to do (engineStatus=${st.engine.status})`,
             );
+          }
           return;
         }
-        // Store-wide inactive — also bail
-        if (st.status !== "ACTIVE") {
-          if (__DEV__)
-            console.log(
-              `${TAG} simulateNextDay → store not ACTIVE (status=${st.status})`
-            );
-          return;
-        }
+
         if (!st.sessionId || !st.postingId || !st.userId || !st.cycleAnchorUtc)
           return;
 
@@ -979,17 +1294,17 @@ export const useShareStore = create<StoreState>()(
         }
 
         const segmentsExpected = st.segmentsExpected ?? 0;
-        const nextIdx = (st.engine.lastSentDayIndex ?? -1) + 1;
+        const nextIdx = (st.engine.lastSentDayIndex ?? 0) + 1;
 
         //  extra safety: stop when all segments are sent or nextIdx exceeds expected
         if (
-          (segmentsExpected > 0 &&
-            (st.engine.segmentsSent ?? 0) >= segmentsExpected) ||
-          nextIdx > segmentsExpected
+          segmentsExpected > 0 &&
+          ((st.engine.segmentsSent ?? 0) >= segmentsExpected ||
+            nextIdx > segmentsExpected)
         ) {
           if (__DEV__)
             console.log(
-              `${TAG} simulateNextDay → nothing to do (all segments sent)`
+              `${TAG} simulateNextDay → nothing to do (all segments sent)`,
             );
           return;
         }
@@ -998,7 +1313,7 @@ export const useShareStore = create<StoreState>()(
         const baseIso = st.originalCycleAnchorUtc ?? st.cycleAnchorUtc;
         if (!baseIso) {
           console.warn(
-            `${TAG} simulateNextDay → no baseIso available (missing originalCycleAnchorUtc/cycleAnchorUtc)`
+            `${TAG} simulateNextDay → no baseIso available (missing originalCycleAnchorUtc/cycleAnchorUtc)`,
           );
           return;
         }
@@ -1062,7 +1377,7 @@ export const useShareStore = create<StoreState>()(
         if (!st.postingId || !st.userId) {
           if (__DEV__)
             console.log(
-              `${TAG} cancelCurrentSession → missing postingId/userId`
+              `${TAG} cancelCurrentSession → missing postingId/userId`,
             );
           notifyInfo("Nothing to cancel.");
           return;
@@ -1084,7 +1399,7 @@ export const useShareStore = create<StoreState>()(
             if (__DEV__)
               console.warn(
                 `${TAG} cancelCurrentSession resolver error`,
-                e?.message ?? e
+                e?.message ?? e,
               );
             notifyInfo("Unable to resolve session to cancel.");
             return;
@@ -1136,7 +1451,7 @@ export const useShareStore = create<StoreState>()(
             if (__DEV__)
               console.warn(
                 `${TAG} cancelCurrentSession → api error`,
-                res.error
+                res.error,
               );
             notifyInfo("Could not cancel the session. Please try again.");
           }
@@ -1166,44 +1481,190 @@ export const useShareStore = create<StoreState>()(
         }
       },
 
+      hydrateFromSessionSnapshot: (snap) => {
+        // Keep SIM mode untouched (do not override simulation state)
+        const st = get();
+        const isSim = st.engine?.mode === "SIM";
+
+        // Map backend status into ShareStatus when possible
+        const serverStatus =
+          snap.statusCode === "ACTIVE" ||
+          snap.statusCode === "PAUSED" ||
+          snap.statusCode === "CANCELLED" ||
+          snap.statusCode === "COMPLETE"
+            ? (snap.statusCode as ShareStatus)
+            : null;
+
+        set((s) => {
+          const nextEngine: ShareSessionState = {
+            ...s.engine,
+
+            // IMPORTANT: anchor is server authoritative
+            cycleAnchorUtc: new Date(snap.cycleAnchorUtc).getTime(),
+
+            segmentsExpected: Number(snap.segmentsExpected ?? 0),
+            segmentsSent: Number(snap.segmentsSent ?? 0),
+            lastSentDayIndex:
+              snap.lastSentDayIndex == null
+                ? null
+                : Number(snap.lastSentDayIndex),
+          };
+
+          // Do not override SIM flags
+          if (isSim) {
+            nextEngine.mode = s.engine.mode;
+            nextEngine.simulationLock = s.engine.simulationLock;
+          } else {
+            // Always normalize to NORMAL on server hydration (unless you want to preserve other modes)
+            nextEngine.mode = s.engine.mode ?? "NORMAL";
+            nextEngine.simulationLock =
+              typeof s.engine.simulationLock === "boolean"
+                ? s.engine.simulationLock
+                : false;
+          }
+
+          const nextStoreStatus = serverStatus ?? s.status;
+
+          const shouldClearPending =
+            nextStoreStatus === "CANCELLED" || nextStoreStatus === "COMPLETE";
+
+          // return {
+          //   // planner/meta fields (authoritative)
+          //   cycleAnchorUtc: snap.cycleAnchorUtc,
+          //   joinTimeLocalISO: snap.joinTimeLocalISO,
+          //   joinTimezone: snap.joinTimezone,
+          //   segmentsExpected: Number(snap.segmentsExpected ?? 0),
+
+          //   // engine mirror
+          //   engine: nextEngine,
+
+          //   // align top-level status if server provides it
+          //   ...(s.status !== nextStoreStatus
+          //     ? { status: nextStoreStatus }
+          //     : {}),
+
+          //   // terminal server state should stop local work
+          //   ...(shouldClearPending ? { pendingWindow: undefined } : {}),
+          // };
+          const nextState = {
+            // planner/meta fields (authoritative)
+            cycleAnchorUtc: snap.cycleAnchorUtc,
+            joinTimeLocalISO: snap.joinTimeLocalISO,
+            joinTimezone: snap.joinTimezone,
+            segmentsExpected: Number(snap.segmentsExpected ?? 0),
+
+            // engine mirror
+            engine: nextEngine,
+
+            // align top-level status if server provides it
+            ...(s.status !== nextStoreStatus
+              ? { status: nextStoreStatus }
+              : {}),
+
+            // terminal server state should stop local work
+            ...(shouldClearPending ? { pendingWindow: undefined } : {}),
+          } as Partial<StoreState>;
+
+          const mergedForCatchUp = {
+            ...s,
+            ...nextState,
+            status: (nextState.status ?? s.status) as ShareStatus,
+            engine: (nextState.engine ?? s.engine) as ShareSessionState,
+          };
+
+          return {
+            ...nextState,
+            catchUpStatus: computeCatchUpStatusFromState(mergedForCatchUp),
+          };
+        });
+      },
+
+      // async fetchSessionSnapshot(userId, postingId) {
+      //   try {
+      //     const res = await getSessionSnapshot(userId, postingId);
+      //     const r = res.session;
+      //     if (!r) {
+      //       set({ snapshot: null });
+      //       return;
+      //     }
+      //     set({
+      //       snapshot: {
+      //         sessionId: r.session_id,
+      //         postingId: r.posting_id,
+      //         userId: r.user_id,
+      //         statusCode: r.status_code,
+      //         statusName: r.status_name,
+      //         segmentsExpected: r.segments_expected,
+      //         segmentsSent: r.segments_sent,
+      //         lastSentDayIndex: r.last_sent_day_index,
+      //         cycleAnchorUtc: r.cycle_anchor_utc,
+      //         joinTimeLocalISO: r.join_time_local_iso,
+      //         joinTimezone: r.join_timezone,
+      //         lastUploadedAt: r.last_uploaded_at,
+      //         lastWindowFromUtc: r.last_window_from_utc,
+      //         lastWindowToUtc: r.last_window_to_utc,
+      //       },
+      //     });
+
+      //     if (__DEV__) {
+      //       console.log("[ShareStore] fetchSessionSnapshot →", {
+      //         sessionId: r.session_id,
+      //         status: r.status_name ?? r.status_code,
+      //         segments: `${r.segments_sent}/${r.segments_expected}`,
+      //         lastWindow: [r.last_window_from_utc, r.last_window_to_utc],
+      //         anchor: r.cycle_anchor_utc,
+      //         lastUploadedAt: r.last_uploaded_at,
+      //       });
+      //     }
+      //   } catch (e) {
+      //     if (__DEV__)
+      //       console.warn("[ShareStore] fetchSessionSnapshot error", e);
+      //     set({ snapshot: null });
+      //   }
+      // },
+
       async fetchSessionSnapshot(userId, postingId) {
         try {
-          const { getSessionSnapshot } = await import(
-            "@/src/services/sharing/api"
-          );
           const res = await getSessionSnapshot(userId, postingId);
           const r = res.session;
+
           if (!r) {
             set({ snapshot: null });
             return;
           }
-          set({
-            snapshot: {
-              sessionId: r.session_id,
-              postingId: r.posting_id,
-              userId: r.user_id,
-              statusCode: r.status_code,
-              statusName: r.status_name,
-              segmentsExpected: r.segments_expected,
-              segmentsSent: r.segments_sent,
-              lastSentDayIndex: r.last_sent_day_index,
-              cycleAnchorUtc: r.cycle_anchor_utc,
-              joinTimeLocalISO: r.join_time_local_iso,
-              joinTimezone: r.join_timezone,
-              lastUploadedAt: r.last_uploaded_at,
-              lastWindowFromUtc: r.last_window_from_utc,
-              lastWindowToUtc: r.last_window_to_utc,
-            },
-          });
+
+          const snap = {
+            sessionId: r.session_id,
+            postingId: r.posting_id,
+            userId: r.user_id,
+            statusCode: r.status_code,
+            statusName: r.status_name,
+            segmentsExpected: r.segments_expected,
+            segmentsSent: r.segments_sent,
+            lastSentDayIndex: r.last_sent_day_index,
+            cycleAnchorUtc: r.cycle_anchor_utc,
+            joinTimeLocalISO: r.join_time_local_iso,
+            joinTimezone: r.join_timezone,
+            lastUploadedAt: r.last_uploaded_at,
+            lastWindowFromUtc: r.last_window_from_utc,
+            lastWindowToUtc: r.last_window_to_utc,
+          } satisfies NonNullable<StoreState["snapshot"]>;
+
+          // 1) store snapshot for UI/debug
+          set({ snapshot: snap });
+
+          // 2) hydrate live timeline + engine (single source of truth)
+          get().hydrateFromSessionSnapshot(snap);
 
           if (__DEV__) {
             console.log("[ShareStore] fetchSessionSnapshot →", {
-              sessionId: r.session_id,
-              status: r.status_name ?? r.status_code,
-              segments: `${r.segments_sent}/${r.segments_expected}`,
-              lastWindow: [r.last_window_from_utc, r.last_window_to_utc],
-              anchor: r.cycle_anchor_utc,
-              lastUploadedAt: r.last_uploaded_at,
+              sessionId: snap.sessionId,
+              status: snap.statusName ?? snap.statusCode,
+              segments: `${snap.segmentsSent}/${snap.segmentsExpected}`,
+              lastWindow: [snap.lastWindowFromUtc, snap.lastWindowToUtc],
+              anchor: snap.cycleAnchorUtc,
+              lastSentDayIndex: snap.lastSentDayIndex,
+              lastUploadedAt: snap.lastUploadedAt,
             });
           }
         } catch (e) {
@@ -1300,7 +1761,7 @@ export const useShareStore = create<StoreState>()(
           // point the user to the centralized permissions flow.
           if (!inferredGranted || hkStatus === "shouldRequest") {
             notifyInfo(
-              "Please use the Health Permissions banner on the Home screen to grant Health access before sharing."
+              "Please use the Health Permissions banner on the Home screen to grant Health access before sharing.",
             );
           }
         } catch {
@@ -1528,8 +1989,8 @@ export const useShareStore = create<StoreState>()(
           console.warn(`${TAG} rehydrate → post-fix error`, e?.message ?? e);
         }
       },
-    }
-  )
+    },
+  ),
 );
 export const isShareReady = () =>
   useShareStore.getState().shareEnabled === true;
@@ -1562,7 +2023,7 @@ async function tryProcessWindow(win: WindowRef) {
     const { state: nextState, diag } = await processDueWindow(
       win,
       ctx,
-      st.engine
+      st.engine,
     );
 
     useShareStore.setState((s) => {
@@ -1650,19 +2111,19 @@ async function tryProcessWindow(win: WindowRef) {
                 sid = resolved.sessionId;
                 if (__DEV__) {
                   console.log(
-                    `${TAG} tryProcessWindow → auto cancel resolved sid=${sid}`
+                    `${TAG} tryProcessWindow → auto cancel resolved sid=${sid}`,
                   );
                 }
               } else if (__DEV__) {
                 console.warn(
-                  `${TAG} tryProcessWindow → auto cancel resolver returned null`
+                  `${TAG} tryProcessWindow → auto cancel resolver returned null`,
                 );
               }
             } catch (e: any) {
               if (__DEV__) {
                 console.warn(
                   `${TAG} tryProcessWindow → auto cancel resolver error`,
-                  e?.message ?? e
+                  e?.message ?? e,
                 );
               }
             }
@@ -1675,26 +2136,26 @@ async function tryProcessWindow(win: WindowRef) {
                 if (__DEV__) {
                   console.warn(
                     `${TAG} tryProcessWindow → auto cancel backend error`,
-                    res.error
+                    res.error,
                   );
                 }
               } else if (__DEV__) {
                 console.log(
                   `${TAG} tryProcessWindow → auto cancel synced to backend`,
-                  { sessionId: sid, backendStatus: res.status }
+                  { sessionId: sid, backendStatus: res.status },
                 );
               }
             } catch (e: any) {
               if (__DEV__) {
                 console.warn(
                   `${TAG} tryProcessWindow → auto cancel backend exception`,
-                  e?.message ?? e
+                  e?.message ?? e,
                 );
               }
             }
           } else if (__DEV__) {
             console.warn(
-              `${TAG} tryProcessWindow → auto cancel missing sessionId; backend not called`
+              `${TAG} tryProcessWindow → auto cancel missing sessionId; backend not called`,
             );
           }
         } finally {
@@ -1730,7 +2191,7 @@ async function tryProcessWindow(win: WindowRef) {
       if (unavailable.length > 0) {
         const list = unavailable.map(labelOfMetric).join(", ");
         notifyInfo(
-          `Not allowed to read: ${list}. Please grant Health permissions.`
+          `Not allowed to read: ${list}. Please grant Health permissions.`,
         );
       }
 

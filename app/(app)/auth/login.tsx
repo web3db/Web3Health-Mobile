@@ -9,7 +9,14 @@ import { useAuthStore } from "@/src/store/useAuthStore";
 import { useProfileStore } from "@/src/store/useProfileStore";
 import { useShareStore } from "@/src/store/useShareStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
-import { SignedIn, SignedOut, useSignIn, useSignUp } from "@clerk/clerk-expo";
+import {
+  SignedIn,
+  SignedOut,
+  useSession,
+  useSignIn,
+  useSignUp,
+} from "@clerk/clerk-expo";
+
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { Redirect, useRouter } from "expo-router";
 import React, { useCallback, useRef, useState } from "react";
@@ -23,7 +30,6 @@ import {
   Text,
   TextInput,
   View,
-  useColorScheme,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -33,7 +39,7 @@ export default function LoginScreen() {
   const c = useThemeColors();
   const router = useRouter();
   const passwordRef = useRef<TextInput | null>(null);
-  const colorScheme = useColorScheme();
+  const confirmPasswordRef = useRef<TextInput | null>(null);
   const logoSource =
     c.bg === "#0B0B0B"
       ? require("../../../assets/images/Web3Health-dark.png")
@@ -49,25 +55,210 @@ export default function LoginScreen() {
     setActive: setActiveSignUp,
   } = useSignUp();
 
+  const { session, isLoaded: sessionLoaded } = useSession();
+
+  // Used to avoid calling goAfterAuth until we’ve checked session tasks.
+  const [postAuthPending, setPostAuthPending] = useState(false);
+  const postAuthEmailRef = useRef<string | null>(null);
+
+  const isResetPasswordTask = useCallback((s: any) => {
+    // We can’t guarantee the exact shape across versions here.
+    // Common: session.currentTask = { key: "reset-password" }
+    // Fallback: session.currentTask = "reset-password"
+    const task = s?.currentTask;
+    const key = task?.key ?? task?.name ?? task;
+    return key === "reset-password";
+  }, []);
+
+  const finishAuthGate = useCallback(
+    async (
+      createdSessionId: string,
+      rawEmail: string,
+      kind: "signIn" | "signUp",
+    ) => {
+      // Store email so the effect can call goAfterAuth after task check.
+      postAuthEmailRef.current = rawEmail;
+      setPostAuthPending(true);
+
+      // Activate the session
+      if (kind === "signIn") {
+        await setActiveSignIn!({ session: createdSessionId });
+      } else {
+        await setActiveSignUp!({ session: createdSessionId });
+      }
+      // Do not call goAfterAuth here. We’ll do it in the session effect below
+      // once we’ve checked for reset-password task.
+    },
+    [setActiveSignIn, setActiveSignUp],
+  );
+
+  const goAfterAuth = useCallback(
+    async (rawEmail: string) => {
+      try {
+        const normEmail = rawEmail.trim().toLowerCase();
+        console.log("[Login] goAfterAuth → begin", { normEmail });
+
+        // 1) Lightweight lookup
+        const found = await lookupUserByEmail(normEmail);
+        console.log("[Login] lookupUserByEmail → result", {
+          found: !!found,
+          userId: found?.userId,
+        });
+
+        if (!found) {
+          console.log(
+            "[Login] lookupUserByEmail → not found, redirecting to /auth/register",
+          );
+          router.replace("/auth/register");
+          return;
+        }
+
+        const { userId, name: nameFromLookup } = found;
+
+        // 2) Kick off full profile fetch in parallel
+        const profilePromise = getUserProfile(userId);
+
+        // 3) Seed auth immediately so Header shows name right away
+        const authApi = useAuthStore.getState() as any;
+        if (typeof authApi.setAuth === "function") {
+          authApi.setAuth({
+            userId,
+            email: normEmail,
+            name: nameFromLookup ?? null,
+          });
+        } else if (typeof authApi.setUser === "function") {
+          // older API compatibility
+          authApi.setUser({
+            UserId: userId,
+            Email: normEmail,
+            Name: nameFromLookup ?? null,
+          });
+        }
+
+        // 4) Login-time share hydration (user_login_share_hydration)
+        try {
+          console.log("[Login] userLoginShareHydration → start", { userId });
+          const payload = await fetchUserLoginShareHydration(userId);
+          console.log("[Login] userLoginShareHydration → payload", {
+            userId,
+            sessionCount: payload.sessions.length,
+          });
+
+          const shareApi = useShareStore.getState() as any;
+          if (typeof shareApi.hydrateFromServer === "function") {
+            shareApi.hydrateFromServer(payload);
+            console.log(
+              "[Login] userLoginShareHydration → hydrateFromServer done",
+              { userId },
+            );
+          } else {
+            console.warn(
+              "[Login] userLoginShareHydration → hydrateFromServer missing on share store",
+            );
+          }
+        } catch (e: any) {
+          console.warn(
+            "[Login] userLoginShareHydration → failed",
+            e?.message ?? e,
+          );
+          // Do not block login on share hydration failure.
+        }
+
+        // 5) Clear stale profile, then hydrate with the fetched one
+        useProfileStore.getState().setProfile(null);
+        const user = await profilePromise;
+
+        // If lookup didn't have a name, also backfill auth.name from profile.Name
+        if (!nameFromLookup && typeof authApi.setAuth === "function") {
+          authApi.setAuth({
+            userId,
+            email: normEmail,
+            name: user?.Name ?? null,
+          });
+        }
+
+        useProfileStore.getState().setProfile(user);
+
+        console.log("[Login] goAfterAuth → navigate home", { userId });
+        router.replace("/");
+      } catch (err: any) {
+        console.error("[Login] goAfterAuth → error", err);
+        Alert.alert(
+          "Login error",
+          err?.message ?? "Something went wrong. Please try again.",
+        );
+      }
+    },
+    [router, lookupUserByEmail, getUserProfile, fetchUserLoginShareHydration],
+  );
+
+  // Once Clerk session is active, decide whether to force reset-password or continue normal flow.
+  React.useEffect(() => {
+    if (!sessionLoaded) return;
+    if (!postAuthPending) return;
+    if (!session) return;
+
+    console.log(
+      "[Login] postAuth gate → session.currentTask =",
+      (session as any)?.currentTask,
+    );
+
+    const emailForGoAfterAuth = postAuthEmailRef.current;
+    if (!emailForGoAfterAuth) {
+      setPostAuthPending(false);
+      return;
+    }
+
+    if (isResetPasswordTask(session)) {
+      // Force user to reset password before proceeding into the app.
+      setPostAuthPending(false);
+      router.replace("/auth/reset-required");
+      return;
+    }
+
+    // No task: continue your normal backend hydration + home navigation.
+    (async () => {
+      try {
+        await goAfterAuth(emailForGoAfterAuth);
+      } finally {
+        setPostAuthPending(false);
+      }
+    })();
+  }, [
+    sessionLoaded,
+    session,
+    postAuthPending,
+    isResetPasswordTask,
+    router,
+    goAfterAuth,
+  ]);
+
   const [mode, setMode] = useState<Mode>("signIn");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
   const [submitting, setSubmitting] = useState(false);
   // Email verification (sign-up) state
   const [pendingVerification, setPendingVerification] = useState(false);
   const [code, setCode] = useState("");
   // Password reset (sign-in) state
   const [resetStep, setResetStep] = useState<"none" | "request" | "verify">(
-    "none"
+    "none",
   );
   const [resetCode, setResetCode] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [showNewPassword, setShowNewPassword] = useState(false);
 
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
+  const [showConfirmNewPassword, setShowConfirmNewPassword] = useState(false);
+
   // Second factor (Client Trust) state for sign-in
   const [secondFactorStep, setSecondFactorStep] = useState<"none" | "verify">(
-    "none"
+    "none",
   );
   const [secondFactorCode, setSecondFactorCode] = useState("");
   const [secondFactorEmailAddressId, setSecondFactorEmailAddressId] = useState<
@@ -166,128 +357,34 @@ export default function LoginScreen() {
   //   [router]
   // );
   // After Clerk session is active, resolve userId+name, hydrate stores, and navigate
-  const goAfterAuth = useCallback(
-    async (rawEmail: string) => {
-      try {
-        const normEmail = rawEmail.trim().toLowerCase();
-        console.log("[Login] goAfterAuth → begin", { normEmail });
-
-        // 1) Lightweight lookup
-        const found = await lookupUserByEmail(normEmail);
-        console.log("[Login] lookupUserByEmail → result", {
-          found: !!found,
-          userId: found?.userId,
-        });
-
-        if (!found) {
-          console.log(
-            "[Login] lookupUserByEmail → not found, redirecting to /auth/register"
-          );
-          router.replace("/auth/register");
-          return;
-        }
-
-        const { userId, name: nameFromLookup } = found;
-
-        // 2) Kick off full profile fetch in parallel
-        const profilePromise = getUserProfile(userId);
-
-        // 3) Seed auth immediately so Header shows name right away
-        const authApi = useAuthStore.getState() as any;
-        if (typeof authApi.setAuth === "function") {
-          authApi.setAuth({
-            userId,
-            email: normEmail,
-            name: nameFromLookup ?? null,
-          });
-        } else if (typeof authApi.setUser === "function") {
-          // older API compatibility
-          authApi.setUser({
-            UserId: userId,
-            Email: normEmail,
-            Name: nameFromLookup ?? null,
-          });
-        }
-
-        // 4) Login-time share hydration (user_login_share_hydration)
-        try {
-          console.log("[Login] userLoginShareHydration → start", { userId });
-          const payload = await fetchUserLoginShareHydration(userId);
-          console.log("[Login] userLoginShareHydration → payload", {
-            userId,
-            sessionCount: payload.sessions.length,
-          });
-
-          const shareApi = useShareStore.getState() as any;
-          if (typeof shareApi.hydrateFromServer === "function") {
-            shareApi.hydrateFromServer(payload);
-            console.log(
-              "[Login] userLoginShareHydration → hydrateFromServer done",
-              { userId }
-            );
-          } else {
-            console.warn(
-              "[Login] userLoginShareHydration → hydrateFromServer missing on share store"
-            );
-          }
-        } catch (e: any) {
-          console.warn(
-            "[Login] userLoginShareHydration → failed",
-            e?.message ?? e
-          );
-          // Do not block login on share hydration failure.
-        }
-
-        // 5) Clear stale profile, then hydrate with the fetched one
-        useProfileStore.getState().setProfile(null);
-        const user = await profilePromise;
-
-        // If lookup didn't have a name, also backfill auth.name from profile.Name
-        if (!nameFromLookup && typeof authApi.setAuth === "function") {
-          authApi.setAuth({
-            userId,
-            email: normEmail,
-            name: user?.Name ?? null,
-          });
-        }
-
-        useProfileStore.getState().setProfile(user);
-
-        console.log("[Login] goAfterAuth → navigate home", { userId });
-        router.replace("/");
-      } catch (err: any) {
-        console.error("[Login] goAfterAuth → error", err);
-        Alert.alert(
-          "Login error",
-          err?.message ?? "Something went wrong. Please try again."
-        );
-      }
-    },
-    [router]
-  );
 
   const switchMode = useCallback(() => {
-    if (submitting) return;
+    if (submitting || postAuthPending) return;
     setMode((m) => (m === "signIn" ? "signUp" : "signIn"));
     setEmail("");
     setPassword("");
     setShowPassword(false);
+    setConfirmPassword("");
+    setShowConfirmPassword(false);
+
     setPendingVerification(false);
     setCode("");
     setResetStep("none");
     setResetCode("");
     setNewPassword("");
+    setConfirmNewPassword("");
     setShowNewPassword(false);
+    setShowConfirmNewPassword(false);
 
     // Clear second-factor state
     setSecondFactorStep("none");
     setSecondFactorCode("");
     setSecondFactorEmailAddressId(null);
-  }, [submitting]);
+  }, [submitting, postAuthPending]);
 
   const beginEmailSecondFactor = useCallback(
     async (attempt: any) => {
-      if (!signInLoaded || !signIn) return;
+      if (!signInLoaded || !signIn || postAuthPending) return;
 
       // Pick the email_code factor (Client Trust usually provides this) :contentReference[oaicite:2]{index=2}
       const factors = attempt?.supportedSecondFactors;
@@ -298,7 +395,7 @@ export default function LoginScreen() {
       if (!emailFactor?.emailAddressId) {
         Alert.alert(
           "Verification required",
-          "This sign-in requires a verification step, but no email second factor is available for this account."
+          "This sign-in requires a verification step, but no email second factor is available for this account.",
         );
         return;
       }
@@ -313,11 +410,11 @@ export default function LoginScreen() {
         emailAddressId: emailFactor.emailAddressId,
       });
     },
-    [signIn, signInLoaded]
+    [signIn, signInLoaded],
   );
 
   const verifyEmailSecondFactor = useCallback(async () => {
-    if (!signInLoaded || !signIn || submitting) return;
+    if (!signInLoaded || !signIn || submitting || postAuthPending) return;
 
     if (!secondFactorCode) {
       Alert.alert("Missing code", "Please enter the verification code.");
@@ -332,14 +429,11 @@ export default function LoginScreen() {
       });
 
       if (result.status === "complete" && result.createdSessionId) {
-        await setActiveSignIn!({ session: result.createdSessionId });
-
-        // Exit second-factor UI and continue normal login flow
         setSecondFactorStep("none");
         setSecondFactorCode("");
         setSecondFactorEmailAddressId(null);
 
-        await goAfterAuth(email);
+        await finishAuthGate(result.createdSessionId, email, "signIn");
         return;
       }
 
@@ -347,16 +441,15 @@ export default function LoginScreen() {
     } catch (e: any) {
       Alert.alert(
         "Verification failed",
-        e?.errors?.[0]?.longMessage ?? e?.message ?? "Unknown error"
+        e?.errors?.[0]?.longMessage ?? e?.message ?? "Unknown error",
       );
     } finally {
       setSubmitting(false);
     }
   }, [
     email,
-    goAfterAuth,
+    finishAuthGate,
     secondFactorCode,
-    setActiveSignIn,
     signIn,
     signInLoaded,
     submitting,
@@ -364,7 +457,7 @@ export default function LoginScreen() {
 
   const resendEmailSecondFactor = useCallback(async () => {
     if (!secondFactorEmailAddressId) return;
-    if (!signInLoaded || !signIn || submitting) return;
+    if (!signInLoaded || !signIn || submitting || postAuthPending) return;
 
     setSubmitting(true);
     try {
@@ -374,12 +467,12 @@ export default function LoginScreen() {
       });
       Alert.alert(
         "Code sent",
-        "We sent a new verification code to your email."
+        "We sent a new verification code to your email.",
       );
     } catch (e: any) {
       Alert.alert(
         "Could not resend",
-        e?.errors?.[0]?.longMessage ?? e?.message ?? "Unknown error"
+        e?.errors?.[0]?.longMessage ?? e?.message ?? "Unknown error",
       );
     } finally {
       setSubmitting(false);
@@ -411,8 +504,7 @@ export default function LoginScreen() {
       console.log("[Clerk] supportedSecondFactors (strategies):", strategies);
 
       if (attempt.status === "complete" && attempt.createdSessionId) {
-        await setActiveSignIn!({ session: attempt.createdSessionId });
-        await goAfterAuth(email);
+        await finishAuthGate(attempt.createdSessionId, email, "signIn");
         return;
       }
 
@@ -425,7 +517,7 @@ export default function LoginScreen() {
     } catch (e: any) {
       Alert.alert(
         "Sign in failed",
-        e?.errors?.[0]?.longMessage ?? e?.message ?? "Unknown error"
+        e?.errors?.[0]?.longMessage ?? e?.message ?? "Unknown error",
       );
     } finally {
       setSubmitting(false);
@@ -435,9 +527,9 @@ export default function LoginScreen() {
     password,
     signInLoaded,
     signIn,
-    setActiveSignIn,
-    goAfterAuth,
     submitting,
+    finishAuthGate,
+    beginEmailSecondFactor,
   ]);
 
   const onSignUp = useCallback(async () => {
@@ -445,6 +537,17 @@ export default function LoginScreen() {
       if (!signUpLoaded || submitting) return;
       if (!email || !password) {
         Alert.alert("Missing info", "Please enter email and password.");
+        return;
+      }
+      if (!confirmPassword) {
+        Alert.alert("Missing info", "Please confirm your password.");
+        return;
+      }
+      if (password !== confirmPassword) {
+        Alert.alert(
+          "Passwords do not match",
+          "Please make sure both passwords match.",
+        );
         return;
       }
       setSubmitting(true);
@@ -457,8 +560,7 @@ export default function LoginScreen() {
 
       // Case 1: sign-up completed immediately (e.g., email verification disabled in this instance)
       if (result.status === "complete" && result.createdSessionId) {
-        await setActiveSignUp!({ session: result.createdSessionId });
-        await goAfterAuth(email);
+        await finishAuthGate(result.createdSessionId, email, "signUp");
         return;
       }
 
@@ -478,11 +580,11 @@ export default function LoginScreen() {
   }, [
     email,
     password,
+    confirmPassword,
     signUpLoaded,
     signUp,
-    setActiveSignUp,
-    goAfterAuth,
     submitting,
+    finishAuthGate,
   ]);
 
   const onVerify = useCallback(async () => {
@@ -491,7 +593,7 @@ export default function LoginScreen() {
       if (!code) {
         Alert.alert(
           "Missing code",
-          "Please enter the verification code sent to your email."
+          "Please enter the verification code sent to your email.",
         );
         return;
       }
@@ -502,10 +604,8 @@ export default function LoginScreen() {
       const attempt = await signUp.attemptEmailAddressVerification({ code });
 
       if (attempt.status === "complete" && attempt.createdSessionId) {
-        await setActiveSignUp!({ session: attempt.createdSessionId });
-        await goAfterAuth(email);
+        await finishAuthGate(attempt.createdSessionId, email, "signUp");
 
-        // Reset verification state for future sign-ups
         setPendingVerification(false);
         setCode("");
         return;
@@ -513,7 +613,7 @@ export default function LoginScreen() {
 
       Alert.alert(
         "Verification not complete",
-        `We could not complete verification. Status: ${attempt.status}. Please check the code and try again.`
+        `We could not complete verification. Status: ${attempt.status}. Please check the code and try again.`,
       );
     } catch (e: any) {
       const msg =
@@ -524,15 +624,7 @@ export default function LoginScreen() {
     } finally {
       setSubmitting(false);
     }
-  }, [
-    signUpLoaded,
-    signUp,
-    setActiveSignUp,
-    goAfterAuth,
-    email,
-    code,
-    submitting,
-  ]);
+  }, [signUpLoaded, signUp, submitting, code, email, finishAuthGate]);
 
   const onStartPasswordReset = useCallback(async () => {
     try {
@@ -540,7 +632,7 @@ export default function LoginScreen() {
       if (!email) {
         Alert.alert(
           "Missing email",
-          "Please enter your email to reset your password."
+          "Please enter your email to reset your password.",
         );
         return;
       }
@@ -556,6 +648,9 @@ export default function LoginScreen() {
       setResetStep("verify");
       setResetCode("");
       setNewPassword("");
+      setConfirmNewPassword("");
+      setShowNewPassword(false);
+      setShowConfirmNewPassword(false);
     } catch (e: any) {
       const msg =
         e?.errors?.[0]?.longMessage ??
@@ -574,12 +669,23 @@ export default function LoginScreen() {
       if (!resetCode) {
         Alert.alert(
           "Missing code",
-          "Please enter the reset code sent to your email."
+          "Please enter the reset code sent to your email.",
         );
         return;
       }
       if (!newPassword) {
         Alert.alert("Missing password", "Please enter a new password.");
+        return;
+      }
+      if (!confirmNewPassword) {
+        Alert.alert("Missing password", "Please confirm your new password.");
+        return;
+      }
+      if (newPassword !== confirmNewPassword) {
+        Alert.alert(
+          "Passwords do not match",
+          "Please make sure both passwords match.",
+        );
         return;
       }
 
@@ -593,28 +699,27 @@ export default function LoginScreen() {
       });
 
       if (attempt.status === "complete" && attempt.createdSessionId) {
-        // Clerk has accepted the reset; activate the new session
-        await setActiveSignIn!({ session: attempt.createdSessionId });
+        await finishAuthGate(attempt.createdSessionId, email, "signIn");
 
-        // Load backend user/profile and navigate home, same as normal sign-in
         Alert.alert(
           "Password reset successful",
-          "You are now signed in with your new password."
+          "You are now signed in with your new password.",
         );
-        await goAfterAuth(email);
 
         // Clear local reset state
         setResetStep("none");
         setResetCode("");
         setNewPassword("");
+        setConfirmNewPassword("");
+        setShowNewPassword(false);
+        setShowConfirmNewPassword(false);
         setPassword("");
-
         return;
       }
 
       Alert.alert(
         "Reset not complete",
-        `We could not complete the password reset. Status: ${attempt.status}. Please check the code and try again.`
+        `We could not complete the password reset. Status: ${attempt.status}. Please check the code and try again.`,
       );
     } catch (e: any) {
       const msg =
@@ -628,34 +733,44 @@ export default function LoginScreen() {
   }, [
     signInLoaded,
     signIn,
-    setActiveSignIn,
-    goAfterAuth,
-    email,
+    submitting,
     resetCode,
     newPassword,
-    submitting,
+    confirmNewPassword,
+    email,
+    finishAuthGate,
   ]);
 
   return (
     <>
       <SignedIn>
-        <Redirect href="/" />
+        {/* If the active session has a reset-password task, route there instead of home. */}
+        <Redirect
+          href={
+            sessionLoaded && session && isResetPasswordTask(session)
+              ? "/auth/reset-required"
+              : "/"
+          }
+        />
       </SignedIn>
+
       <SignedOut>
         <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>
           <KeyboardAvoidingView
             style={{ flex: 1 }}
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-            keyboardVerticalOffset={16}
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            keyboardVerticalOffset={Platform.OS === "ios" ? 16 : 0}
           >
             <ScrollView
               contentContainerStyle={{
                 flexGrow: 1,
                 paddingHorizontal: 20,
                 paddingVertical: 24,
+                paddingBottom: 180,
               }}
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode={Platform.OS === "ios" ? "on-drag" : "none"}
+              automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
             >
               <View style={{ flex: 1, justifyContent: "space-between" }}>
                 {/* Top content: logo, header, form */}
@@ -780,7 +895,7 @@ export default function LoginScreen() {
                         textContentType="emailAddress"
                         returnKeyType="next"
                         onSubmitEditing={() => passwordRef.current?.focus()}
-                        editable={!submitting}
+                        editable={!(submitting || postAuthPending)}
                         style={{
                           flex: 1,
                           color: c.text.primary,
@@ -823,8 +938,17 @@ export default function LoginScreen() {
                               placeholderTextColor={c.text.muted}
                               secureTextEntry={!showPassword}
                               textContentType="password"
-                              returnKeyType="done"
-                              editable={!submitting}
+                              returnKeyType={
+                                mode === "signUp" && !pendingVerification
+                                  ? "next"
+                                  : "done"
+                              }
+                              onSubmitEditing={() => {
+                                if (mode === "signUp" && !pendingVerification) {
+                                  confirmPasswordRef.current?.focus();
+                                }
+                              }}
+                              editable={!(submitting || postAuthPending)}
                               style={{
                                 flex: 1,
                                 color: c.text.primary,
@@ -835,7 +959,7 @@ export default function LoginScreen() {
                             <Pressable
                               onPress={() => setShowPassword((prev) => !prev)}
                               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                              disabled={submitting}
+                              disabled={submitting || postAuthPending}
                               style={{ marginLeft: 8 }}
                               accessibilityRole="button"
                               accessibilityLabel={
@@ -853,6 +977,77 @@ export default function LoginScreen() {
                             </Pressable>
                           </View>
 
+                          {mode === "signUp" && !pendingVerification && (
+                            <View
+                              style={{
+                                flexDirection: "row",
+                                alignItems: "center",
+                                backgroundColor: c.elevated,
+                                borderColor: c.muted,
+                                borderWidth: 1.5,
+                                borderRadius: 12,
+                                paddingHorizontal: 12,
+                                height: 56,
+                                marginTop: 12,
+                              }}
+                            >
+                              <Ionicons
+                                name="lock-closed-outline"
+                                size={20}
+                                color={c.text.secondary}
+                                style={{ marginRight: 8 }}
+                                accessible={false}
+                                importantForAccessibility="no"
+                              />
+
+                              <TextInput
+                                ref={confirmPasswordRef}
+                                value={confirmPassword}
+                                onChangeText={setConfirmPassword}
+                                placeholder="Confirm password"
+                                placeholderTextColor={c.text.muted}
+                                secureTextEntry={!showConfirmPassword}
+                                textContentType="password"
+                                returnKeyType="done"
+                                editable={!(submitting || postAuthPending)}
+                                style={{
+                                  flex: 1,
+                                  color: c.text.primary,
+                                  fontSize: 16,
+                                }}
+                              />
+
+                              <Pressable
+                                onPress={() =>
+                                  setShowConfirmPassword((prev) => !prev)
+                                }
+                                hitSlop={{
+                                  top: 8,
+                                  bottom: 8,
+                                  left: 8,
+                                  right: 8,
+                                }}
+                                disabled={submitting || postAuthPending}
+                                style={{ marginLeft: 8 }}
+                                accessibilityRole="button"
+                                accessibilityLabel={
+                                  showConfirmPassword
+                                    ? "Hide confirm password"
+                                    : "Show confirm password"
+                                }
+                                accessibilityHint="Toggles confirm password visibility"
+                              >
+                                <Ionicons
+                                  name={showConfirmPassword ? "eye-off" : "eye"}
+                                  size={20}
+                                  color={c.text.secondary}
+                                  accessible={false}
+                                  importantForAccessibility="no"
+                                />
+                              </Pressable>
+                            </View>
+                          )}
+
                           {/* Forgot password link (sign-in default only) */}
                           {mode === "signIn" && resetStep === "none" && (
                             <View
@@ -862,10 +1057,13 @@ export default function LoginScreen() {
                             >
                               <Pressable
                                 onPress={() => {
-                                  if (submitting) return;
+                                  if (submitting || postAuthPending) return;
                                   setResetStep("request");
                                   setResetCode("");
                                   setNewPassword("");
+                                  setConfirmNewPassword("");
+                                  setShowNewPassword(false);
+                                  setShowConfirmNewPassword(false);
                                 }}
                                 hitSlop={{
                                   top: 8,
@@ -931,7 +1129,7 @@ export default function LoginScreen() {
                             placeholderTextColor={c.text.muted}
                             keyboardType="number-pad"
                             autoCapitalize="none"
-                            editable={!submitting}
+                            editable={!(submitting || postAuthPending)}
                             style={{
                               flex: 1,
                               color: c.text.primary,
@@ -943,12 +1141,12 @@ export default function LoginScreen() {
                         <Button
                           title={submitting ? "Verifying…" : "Verify"}
                           onPress={verifyEmailSecondFactor}
-                          disabled={submitting}
+                          disabled={submitting || postAuthPending}
                         />
 
                         <Pressable
                           onPress={resendEmailSecondFactor}
-                          disabled={submitting}
+                          disabled={submitting || postAuthPending}
                           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                           style={{ alignSelf: "flex-start" }}
                         >
@@ -961,7 +1159,7 @@ export default function LoginScreen() {
 
                         <Pressable
                           onPress={() => {
-                            if (submitting) return;
+                            if (submitting || postAuthPending) return;
                             setSecondFactorStep("none");
                             setSecondFactorCode("");
                             setSecondFactorEmailAddressId(null);
@@ -982,7 +1180,7 @@ export default function LoginScreen() {
                         <Button
                           title={submitting ? "Signing in…" : "Sign in"}
                           onPress={onSignIn}
-                          disabled={submitting}
+                          disabled={submitting || postAuthPending}
                         />
                       </View>
                     ) : resetStep === "request" ? (
@@ -1002,14 +1200,17 @@ export default function LoginScreen() {
                             submitting ? "Sending code…" : "Send reset code"
                           }
                           onPress={onStartPasswordReset}
-                          disabled={submitting}
+                          disabled={submitting || postAuthPending}
                         />
                         <Pressable
                           onPress={() => {
-                            if (submitting) return;
+                            if (submitting || postAuthPending) return;
                             setResetStep("none");
                             setResetCode("");
                             setNewPassword("");
+                            setConfirmNewPassword("");
+                            setShowNewPassword(false);
+                            setShowConfirmNewPassword(false);
                           }}
                           hitSlop={{
                             top: 8,
@@ -1071,7 +1272,7 @@ export default function LoginScreen() {
                             placeholderTextColor={c.text.muted}
                             keyboardType="number-pad"
                             autoCapitalize="none"
-                            editable={!submitting}
+                            editable={!(submitting || postAuthPending)}
                             style={{
                               flex: 1,
                               color: c.text.primary,
@@ -1079,7 +1280,6 @@ export default function LoginScreen() {
                             }}
                           />
                         </View>
-
                         {/* New password row */}
                         <View
                           style={{
@@ -1108,22 +1308,18 @@ export default function LoginScreen() {
                             placeholder="New password"
                             placeholderTextColor={c.text.muted}
                             secureTextEntry={!showNewPassword}
-                            editable={!submitting}
+                            editable={!(submitting || postAuthPending)}
                             style={{
                               flex: 1,
                               color: c.text.primary,
                               fontSize: 16,
                             }}
                           />
+
                           <Pressable
                             onPress={() => setShowNewPassword((prev) => !prev)}
-                            hitSlop={{
-                              top: 8,
-                              bottom: 8,
-                              left: 8,
-                              right: 8,
-                            }}
-                            disabled={submitting}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            disabled={submitting || postAuthPending}
                             style={{ marginLeft: 8 }}
                             accessibilityRole="button"
                             accessibilityLabel={
@@ -1143,17 +1339,81 @@ export default function LoginScreen() {
                           </Pressable>
                         </View>
 
+                        {/* Confirm new password row */}
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            backgroundColor: c.elevated,
+                            borderColor: c.muted,
+                            borderWidth: 1.5,
+                            borderRadius: 12,
+                            paddingHorizontal: 12,
+                            height: 56,
+                          }}
+                        >
+                          <Ionicons
+                            name="lock-closed-outline"
+                            size={20}
+                            color={c.text.secondary}
+                            style={{ marginRight: 8 }}
+                            accessible={false}
+                            importantForAccessibility="no"
+                          />
+
+                          <TextInput
+                            value={confirmNewPassword}
+                            onChangeText={setConfirmNewPassword}
+                            placeholder="Confirm new password"
+                            placeholderTextColor={c.text.muted}
+                            secureTextEntry={!showConfirmNewPassword}
+                            editable={!(submitting || postAuthPending)}
+                            style={{
+                              flex: 1,
+                              color: c.text.primary,
+                              fontSize: 16,
+                            }}
+                          />
+
+                          <Pressable
+                            onPress={() =>
+                              setShowConfirmNewPassword((prev) => !prev)
+                            }
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            disabled={submitting || postAuthPending}
+                            style={{ marginLeft: 8 }}
+                            accessibilityRole="button"
+                            accessibilityLabel={
+                              showConfirmNewPassword
+                                ? "Hide confirm new password"
+                                : "Show confirm new password"
+                            }
+                            accessibilityHint="Toggles confirm password visibility"
+                          >
+                            <Ionicons
+                              name={showConfirmNewPassword ? "eye-off" : "eye"}
+                              size={20}
+                              color={c.text.secondary}
+                              accessible={false}
+                              importantForAccessibility="no"
+                            />
+                          </Pressable>
+                        </View>
+
                         <Button
                           title={submitting ? "Resetting…" : "Reset password"}
                           onPress={onCompletePasswordReset}
-                          disabled={submitting}
+                          disabled={submitting || postAuthPending}
                         />
                         <Pressable
                           onPress={() => {
-                            if (submitting) return;
+                            if (submitting || postAuthPending) return;
                             setResetStep("none");
                             setResetCode("");
                             setNewPassword("");
+                            setConfirmNewPassword("");
+                            setShowNewPassword(false);
+                            setShowConfirmNewPassword(false);
                           }}
                           hitSlop={{
                             top: 8,
@@ -1180,7 +1440,7 @@ export default function LoginScreen() {
                       <Button
                         title={submitting ? "Creating…" : "Create account"}
                         onPress={onSignUp}
-                        disabled={submitting}
+                        disabled={submitting || postAuthPending}
                       />
                     </View>
                   ) : (
@@ -1225,7 +1485,7 @@ export default function LoginScreen() {
                           placeholderTextColor={c.text.muted}
                           keyboardType="number-pad"
                           autoCapitalize="none"
-                          editable={!submitting}
+                          editable={!(submitting || postAuthPending)}
                           style={{
                             flex: 1,
                             color: c.text.primary,
@@ -1237,11 +1497,11 @@ export default function LoginScreen() {
                       <Button
                         title={submitting ? "Verifying…" : "Verify email"}
                         onPress={onVerify}
-                        disabled={submitting}
+                        disabled={submitting || postAuthPending}
                       />
                       <Pressable
                         onPress={() => {
-                          if (submitting) return;
+                          if (submitting || postAuthPending) return;
                           setPendingVerification(false);
                           setCode("");
                         }}
@@ -1271,7 +1531,7 @@ export default function LoginScreen() {
                   {mode === "signIn" && resetStep === "none" && (
                     <Pressable
                       onPress={switchMode}
-                      disabled={submitting}
+                      disabled={submitting || postAuthPending}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     >
                       <Text
@@ -1297,7 +1557,7 @@ export default function LoginScreen() {
                   {mode === "signUp" && !pendingVerification && (
                     <Pressable
                       onPress={switchMode}
-                      disabled={submitting}
+                      disabled={submitting || postAuthPending}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       style={{ marginTop: 8 }}
                     >

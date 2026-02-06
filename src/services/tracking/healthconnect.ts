@@ -28,7 +28,7 @@ const log = (...a: any[]) => {
   console.log(TAG, ...a);
   try {
     pushLog(
-      a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ")
+      a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "),
     );
   } catch {}
 };
@@ -150,7 +150,7 @@ const METRICS: Record<MetricKey, MetricDef> = {
 };
 
 const ALL_READ_PERMS: Permission[] = Object.values(METRICS).map(
-  (m) => m.permission
+  (m) => m.permission,
 );
 
 // ── Init guards (module-level) ─────────────────────────
@@ -191,7 +191,7 @@ export async function requestAllReadPermissions(): Promise<void> {
   try {
     log(
       "requestPermission(all) →",
-      ALL_READ_PERMS.map((p) => (p as any).recordType)
+      ALL_READ_PERMS.map((p) => (p as any).recordType),
     );
     await requestPermission(ALL_READ_PERMS);
     log("requestPermission(all) → ok");
@@ -203,13 +203,13 @@ export async function requestAllReadPermissions(): Promise<void> {
 
 export async function hasReadPermission(metric: MetricKey): Promise<boolean> {
   if (Platform.OS !== "android") return false;
-  await ensureInitialized(); 
+  await ensureInitialized();
   try {
     const granted = await getGrantedPermissions();
     const ok = granted.some(
       (p) =>
         p.accessType === "read" &&
-        (p as any).recordType === METRICS[metric].recordType
+        (p as any).recordType === METRICS[metric].recordType,
     );
     log("hasReadPermission()", metric, "→", ok);
     return ok;
@@ -227,10 +227,10 @@ export async function listGrantedMetricKeys(): Promise<MetricKey[]> {
     const rtSet = new Set(
       (granted ?? [])
         .filter((p) => p.accessType === "read")
-        .map((p) => (p as any).recordType)
+        .map((p) => (p as any).recordType),
     );
     const keys = (Object.keys(METRICS) as MetricKey[]).filter((k) =>
-      rtSet.has(METRICS[k].recordType)
+      rtSet.has(METRICS[k].recordType),
     );
     log("listGrantedMetricKeys() →", keys);
     return keys;
@@ -257,7 +257,7 @@ function unwrapAggregateValue(metric: MetricKey, raw: any): number {
         raw?.inMeters ??
         (raw?.inKilometers ? raw.inKilometers * 1000 : undefined) ??
         raw?.value ??
-        0
+        0,
     );
     return Number.isFinite(n) ? n : 0;
   }
@@ -269,7 +269,7 @@ function unwrapAggregateValue(metric: MetricKey, raw: any): number {
         raw?.inKilocalories ??
         (raw?.inCalories ? raw.inCalories / 1000 : undefined) ??
         raw?.value ??
-        0
+        0,
     );
     return Number.isFinite(n) ? n : 0;
   }
@@ -288,7 +288,7 @@ async function sumStepsFromRecords(range: Between): Promise<number> {
     });
     const total = (out.records ?? []).reduce(
       (s, r: any) => s + (Number(r.count ?? 0) || 0),
-      0
+      0,
     );
     return total;
   } catch (e) {
@@ -308,7 +308,7 @@ async function sumFloorsFromRecords(range: Between): Promise<number> {
     log("[Floors] raw record count =", recs.length);
     const total = recs.reduce(
       (s, r: any) => s + (Number(r?.floors?.value ?? r?.floors ?? 0) || 0),
-      0
+      0,
     );
     log("[Floors] sum from raw =", total);
     return total;
@@ -387,7 +387,7 @@ async function sumTotalCalsFromRecords(range: Between): Promise<number> {
 /** Sleep → daily buckets in minutes (local days), newest last. */
 
 export async function readSleepDailyBuckets(
-  days: 7 | 30 | 90
+  days: 7 | 30 | 90,
 ): Promise<Bucket[]> {
   const range = lastNDays(days);
   const out = await readRecords("SleepSession", {
@@ -470,7 +470,7 @@ async function latestWeightKg(): Promise<number | null> {
 
 /** Sleep sessions list (start/end/minutes) for a window. */
 export async function readSleepSessions(
-  days: 7 | 30 | 90
+  days: 7 | 30 | 90,
 ): Promise<Array<{ start: string; end: string; minutes: number }>> {
   if (Platform.OS !== "android") return [];
   if (!(await hasReadPermission("sleep"))) return [];
@@ -490,7 +490,7 @@ export async function readSleepSessions(
       const end = new Date(r.endTime);
       const minutes = Math.max(
         0,
-        Math.round((end.getTime() - start.getTime()) / 60000)
+        Math.round((end.getTime() - start.getTime()) / 60000),
       );
       return { start: start.toISOString(), end: end.toISOString(), minutes };
     });
@@ -508,100 +508,145 @@ export async function readSleepSessions(
 }
 
 /** Sleep → 24 hourly buckets in minutes (local hourly edges), newest last. */
+// export async function readSleepHourlyBuckets24(): Promise<Bucket[]> {
+//   const end = new Date();
+//   const start = new Date(end);
+//   start.setHours(end.getHours() - 24);
+
+//   const out = await readRecords("SleepSession", {
+//     timeRangeFilter: {
+//       operator: "between",
+//       startTime: start.toISOString(),
+//       endTime: end.toISOString(),
+//     },
+//     pageSize: 2000,
+//     ascendingOrder: true,
+//   });
+
+//   const recs = (out.records ?? []) as Array<{
+//     startTime: string;
+//     endTime: string;
+//   }>;
+//   const edges = makeHourlyEdges24();
+//   const mins = new Array(edges.length).fill(0);
+
+//   for (const r of recs) {
+//     const s = new Date(r.startTime);
+//     const e = new Date(r.endTime);
+//     for (let i = 0; i < edges.length; i++) {
+//       const ms = overlappedMs(s, e, edges[i].start, edges[i].end);
+//       if (ms > 0) mins[i] += ms;
+//     }
+//   }
+
+//   return edges.map(({ start, end }, i) => ({
+//     start: start.toISOString(),
+//     end: end.toISOString(),
+//     value: Math.round(mins[i] / 60000),
+//   }));
+// }
+
 export async function readSleepHourlyBuckets24(): Promise<Bucket[]> {
   const end = new Date();
   const start = new Date(end);
   start.setHours(end.getHours() - 24);
 
-  const out = await readRecords("SleepSession", {
-    timeRangeFilter: {
-      operator: "between",
-      startTime: start.toISOString(),
-      endTime: end.toISOString(),
-    },
-    pageSize: 2000,
-    ascendingOrder: true,
-  });
+  const win: Window = {
+    fromUtc: start.toISOString(),
+    toUtc: end.toISOString(),
+  };
+  const rows = await hcReadSleepHourlyBucketsInWindow(win);
 
-  const recs = (out.records ?? []) as Array<{
-    startTime: string;
-    endTime: string;
-  }>;
-  const edges = makeHourlyEdges24();
-  const mins = new Array(edges.length).fill(0);
-
-  for (const r of recs) {
-    const s = new Date(r.startTime);
-    const e = new Date(r.endTime);
-    for (let i = 0; i < edges.length; i++) {
-      const ms = overlappedMs(s, e, edges[i].start, edges[i].end);
-      if (ms > 0) mins[i] += ms;
-    }
-  }
-
-  return edges.map(({ start, end }, i) => ({
-    start: start.toISOString(),
-    end: end.toISOString(),
-    value: Math.round(mins[i] / 60000),
+  return rows.map((b) => ({
+    start: b.start,
+    end: b.end,
+    value: b.value,
   }));
 }
 
 /** ───────────────────────── Heart Rate ───────────────────────── */
 
 /** Heart-rate → 24 hourly buckets of avg BPM, newest last. */
+// export async function readHeartRateHourly24(): Promise<Bucket[]> {
+//   const end = new Date();
+//   end.setSeconds(0, 0);
+//   const start = new Date(end);
+//   start.setHours(end.getHours() - 24);
+
+//   const tr: Between = {
+//     operator: "between",
+//     startTime: start.toISOString(),
+//     endTime: end.toISOString(),
+//   };
+
+//   const out = await readRecords("HeartRate", {
+//     timeRangeFilter: tr,
+//     pageSize: 2000,
+//     ascendingOrder: true,
+//   });
+
+//   const recs = (out.records ?? []) as any[];
+//   const edges = makeHourlyEdges24();
+//   const sums = new Array(edges.length).fill(0);
+//   const counts = new Array(edges.length).fill(0);
+
+//   for (const r of recs) {
+//     const samples = Array.isArray(r?.samples) ? r.samples : [];
+//     for (const s of samples) {
+//       const t = new Date(s.time).getTime();
+//       for (let i = 0; i < edges.length; i++) {
+//         const S = edges[i].start.getTime(),
+//           E = edges[i].end.getTime();
+//         if (t >= S && t < E) {
+//           const bpm = Number(s.beatsPerMinute);
+//           if (Number.isFinite(bpm)) {
+//             sums[i] += bpm;
+//             counts[i] += 1;
+//           }
+//           break;
+//         }
+//       }
+//     }
+//   }
+
+//   const buckets: Bucket[] = edges.map(({ start, end }, i) => ({
+//     start: start.toISOString(),
+//     end: end.toISOString(),
+//     value: counts[i] > 0 ? Math.round(sums[i] / counts[i]) : 0,
+//   }));
+
+//   log(
+//     "[HR][24h] buckets=",
+//     buckets.length,
+//     "nonZero=",
+//     buckets.filter((b) => b.value > 0).length
+//   );
+//   return buckets;
+// }
+
 export async function readHeartRateHourly24(): Promise<Bucket[]> {
   const end = new Date();
   end.setSeconds(0, 0);
   const start = new Date(end);
   start.setHours(end.getHours() - 24);
 
-  const tr: Between = {
-    operator: "between",
-    startTime: start.toISOString(),
-    endTime: end.toISOString(),
+  const win: Window = {
+    fromUtc: start.toISOString(),
+    toUtc: end.toISOString(),
   };
+  const rows = await hcReadHeartRateHourlyBucketsInWindow(win);
 
-  const out = await readRecords("HeartRate", {
-    timeRangeFilter: tr,
-    pageSize: 2000,
-    ascendingOrder: true,
-  });
-
-  const recs = (out.records ?? []) as any[];
-  const edges = makeHourlyEdges24();
-  const sums = new Array(edges.length).fill(0);
-  const counts = new Array(edges.length).fill(0);
-
-  for (const r of recs) {
-    const samples = Array.isArray(r?.samples) ? r.samples : [];
-    for (const s of samples) {
-      const t = new Date(s.time).getTime();
-      for (let i = 0; i < edges.length; i++) {
-        const S = edges[i].start.getTime(),
-          E = edges[i].end.getTime();
-        if (t >= S && t < E) {
-          const bpm = Number(s.beatsPerMinute);
-          if (Number.isFinite(bpm)) {
-            sums[i] += bpm;
-            counts[i] += 1;
-          }
-          break;
-        }
-      }
-    }
-  }
-
-  const buckets: Bucket[] = edges.map(({ start, end }, i) => ({
-    start: start.toISOString(),
-    end: end.toISOString(),
-    value: counts[i] > 0 ? Math.round(sums[i] / counts[i]) : 0,
+  const buckets: Bucket[] = rows.map((b) => ({
+    start: b.start,
+    end: b.end,
+    value: b.value,
   }));
 
   log(
     "[HR][24h] buckets=",
     buckets.length,
     "nonZero=",
-    buckets.filter((b) => b.value > 0).length
+    buckets.filter((b) => b.value > 0).length,
   );
   return buckets;
 }
@@ -631,7 +676,7 @@ async function latestHeartRateSample(): Promise<{
 
 /** Heart-rate → N daily buckets (avg BPM per local day), newest last. */
 export async function readHeartRateDailyBuckets(
-  days: 7 | 30 | 90
+  days: 7 | 30 | 90,
 ): Promise<Bucket[]> {
   const range = lastNDays(days);
   const out = await readRecords("HeartRate", {
@@ -678,7 +723,7 @@ export async function readHeartRateDailyBuckets(
     "bucketLen=",
     buckets.length,
     "nonZero=",
-    buckets.filter((b) => b.value > 0).length
+    buckets.filter((b) => b.value > 0).length,
   );
   return buckets;
 }
@@ -816,10 +861,8 @@ export async function readTodayDistanceMeters(): Promise<number> {
       timeRangeFilter: range,
     });
     log("[Distance] aggregate result =", (res as any)?.result);
-    const total = unwrapAggregateValue(
-      "distance",
-      (res as any)?.result?.DISTANCE_TOTAL
-    );
+    const total = extractAggValue("distance", (res as any)?.result);
+
     if (total > 0) {
       log("[Distance] aggregate meters =", total);
       return total;
@@ -871,7 +914,7 @@ async function rawDailyDistanceBuckets(days: number): Promise<Bucket[]> {
     "[Distance][rawDaily] bucketSum=",
     total,
     "nonZeroBuckets=",
-    sums.filter((x) => x > 0).length
+    sums.filter((x) => x > 0).length,
   );
   return buckets;
 }
@@ -914,7 +957,7 @@ async function rawHourlyDistanceBuckets24(): Promise<Bucket[]> {
     "[Distance][rawHourly] bucketSum=",
     total,
     "nonZeroBuckets=",
-    sums.filter((x) => x > 0).length
+    sums.filter((x) => x > 0).length,
   );
   return buckets;
 }
@@ -936,7 +979,7 @@ export async function readTodayActiveCaloriesKcal(): Promise<number> {
     log("[ActiveCals] aggregate result =", (res as any)?.result);
     const total = unwrapAggregateValue(
       "activeCalories",
-      (res as any)?.result?.ACTIVE_CALORIES_TOTAL
+      (res as any)?.result?.ACTIVE_CALORIES_TOTAL,
     );
     if (total > 0) {
       log("[ActiveCals] aggregate kcal =", total);
@@ -1065,7 +1108,7 @@ export async function read7dBuckets(
   metric: Exclude<
     MetricKey,
     "heartRate" | "weight" | "sleep" | "respiratoryRate"
-  >
+  >,
 ): Promise<Bucket[]> {
   if (Platform.OS !== "android") return [];
   if (!(await hasReadPermission(metric))) return [];
@@ -1142,7 +1185,7 @@ function startOfHour(d: Date) {
     d.getHours(),
     0,
     0,
-    0
+    0,
   );
 }
 function startOfDay(d: Date) {
@@ -1151,7 +1194,7 @@ function startOfDay(d: Date) {
 
 function makeEdgesForWindow(
   win: Window,
-  interval: "hour" | "day"
+  interval: "hour" | "day",
 ): Array<{ start: Date; end: Date }> {
   const s0 = parseIso(win.fromUtc);
   const e0 = parseIso(win.toUtc);
@@ -1249,7 +1292,7 @@ export async function read24hBuckets(
   metric: Exclude<
     MetricKey,
     "heartRate" | "weight" | "sleep" | "respiratoryRate"
-  >
+  >,
 ): Promise<Bucket[]> {
   try {
     const m = METRICS[metric];
@@ -1273,7 +1316,7 @@ export async function read24hBuckets(
       end: b.endTime,
       value: unwrapAggregateValue(
         metric as MetricKey,
-        (b as any)?.result?.[key]
+        (b as any)?.result?.[key],
       ),
     }));
 
@@ -1301,7 +1344,7 @@ export async function read30dBuckets(
   metric: Exclude<
     MetricKey,
     "heartRate" | "weight" | "sleep" | "respiratoryRate"
-  >
+  >,
 ): Promise<Bucket[]> {
   try {
     const m = METRICS[metric];
@@ -1322,7 +1365,7 @@ export async function read30dBuckets(
       end: b.endTime,
       value: unwrapAggregateValue(
         metric as MetricKey,
-        (b as any)?.result?.[key]
+        (b as any)?.result?.[key],
       ),
     }));
 
@@ -1346,7 +1389,7 @@ export async function read90dBuckets(
   metric: Exclude<
     MetricKey,
     "heartRate" | "weight" | "sleep" | "respiratoryRate"
-  >
+  >,
 ): Promise<Bucket[]> {
   try {
     const m = METRICS[metric];
@@ -1367,7 +1410,7 @@ export async function read90dBuckets(
       end: b.endTime,
       value: unwrapAggregateValue(
         metric as MetricKey,
-        (b as any)?.result?.[key]
+        (b as any)?.result?.[key],
       ),
     }));
 
@@ -1454,7 +1497,7 @@ export async function hcHasDataInRange(
     | "heartRate"
     | "sleep",
   fromIso: string,
-  toIso: string
+  toIso: string,
 ): Promise<{
   available: boolean;
   hasData: boolean;
@@ -1493,7 +1536,7 @@ export async function hcHasDataInRange(
           samples.some(
             (s: any) =>
               Number.isFinite(Number(s.beatsPerMinute)) &&
-              Number(s.beatsPerMinute) > 0
+              Number(s.beatsPerMinute) > 0,
           )
         ) {
           cnt++;
@@ -1513,6 +1556,7 @@ export async function hcHasDataInRange(
         recordType: "Distance" as const,
         key: "DISTANCE" as const,
       },
+
       activeCalories: {
         recordType: "ActiveCaloriesBurned" as const,
         key: "ACTIVE_CALORIES_TOTAL" as const,
@@ -1524,13 +1568,13 @@ export async function hcHasDataInRange(
       recordType: meta.recordType,
       timeRangeFilter: range,
     });
-    const rawSum = (res as any)?.result?.[meta.key];
+    const result = (res as any)?.result;
     let sum =
       metric === "distance"
-        ? unwrapAggregateValue("distance", rawSum)
+        ? extractAggValue("distance", result)
         : metric === "activeCalories"
-          ? unwrapAggregateValue("activeCalories", rawSum)
-          : Number(rawSum || 0);
+          ? extractAggValue("activeCalories", result)
+          : Number(result?.[meta.key] ?? 0);
 
     if (!Number.isFinite(sum) || sum <= 0) {
       // fallback to raw
@@ -1555,7 +1599,7 @@ export async function hcHasDataInRange(
 /** ───────────────────────── Window sum reader (steps/floors/distance/activeCalories) ───────────────────────── */
 export async function hcReadSumInWindow(
   metric: "steps" | "floors" | "distance" | "activeCalories",
-  win: Window
+  win: Window,
 ): Promise<{ sum: number }> {
   if (Platform.OS !== "android") return { sum: 0 };
   if (!(await hasReadPermission(metric as any))) return { sum: 0 };
@@ -1658,7 +1702,7 @@ export async function hcReadHeartRateInWindow(win: Window): Promise<{
 
 /** ───────────────────────── Window sleep-minutes reader ───────────────────────── */
 export async function hcReadSleepMinutesInWindow(
-  win: Window
+  win: Window,
 ): Promise<{ minutes: number }> {
   if (Platform.OS !== "android") return { minutes: 0 };
   if (!(await hasReadPermission("sleep"))) return { minutes: 0 };
@@ -1690,4 +1734,584 @@ export async function hcReadSleepMinutesInWindow(
     logErr("[HC] hcReadSleepMinutesInWindow failed", e);
     return { minutes: 0 };
   }
+}
+
+/** ───────────────────────── Window hourly bucket readers (Android parity with HK) ───────────────────────── */
+
+export type HourlyBucket = { start: string; end: string; value: number };
+export type MinuteBucket = { start: string; end: string; value: number };
+
+/** ───────────────────────── Bucket debug helpers ─────────────────────────
+ * We log:
+ * - metric + bucketMinutes
+ * - bucket count
+ * - first/last bucket range (so you can confirm time slicing)
+ * - nonZero count + sum (so you can confirm data presence)
+ */
+function summarizeBuckets(
+  label: string,
+  metric: string,
+  bucketMinutes: number,
+  buckets: Array<{ start: string; end: string; value: number }>,
+) {
+  const n = buckets.length;
+  const first = n > 0 ? buckets[0] : undefined;
+  const last = n > 0 ? buckets[n - 1] : undefined;
+  let nonZero = 0;
+  let sum = 0;
+
+  for (const b of buckets) {
+    const v = Number(b.value || 0);
+    if (v > 0) nonZero += 1;
+    sum += v;
+  }
+
+  log(
+    `${label} done →`,
+    "metric=",
+    metric,
+    "bucketMinutes=",
+    bucketMinutes,
+    "buckets=",
+    n,
+    "nonZero=",
+    nonZero,
+    "sum=",
+    Math.round(sum),
+    "first=",
+    first ? `${first.start}→${first.end}` : "n/a",
+    "last=",
+    last ? `${last.start}→${last.end}` : "n/a",
+  );
+}
+
+/** ───────────────────────── Bucket key helpers (avoid ISO string mismatch) ───────────────────────── */
+function bucketKeyMs(d: Date, bucketMinutes: number) {
+  const ms = d.getTime();
+  const bucketMs = bucketMinutes * 60_000;
+  return Math.floor(ms / bucketMs) * bucketMs;
+}
+function hourBucketKeyMs(d: Date) {
+  const ms = d.getTime();
+  const bucketMs = 60 * 60_000;
+  return Math.floor(ms / bucketMs) * bucketMs;
+}
+
+/** ───────────────────────── Aggregate key helpers (distance key varies across sources) ───────────────────────── */
+function aggKeyCandidates(
+  metric: "steps" | "floors" | "distance" | "activeCalories",
+): string[] {
+  switch (metric) {
+    case "steps":
+      return ["COUNT_TOTAL"];
+    case "floors":
+      return ["FLOORS_CLIMBED_TOTAL"];
+    case "activeCalories":
+      return ["ACTIVE_CALORIES_TOTAL"];
+    case "distance":
+      return ["DISTANCE_TOTAL", "DISTANCE"];
+  }
+}
+
+function extractAggValue(
+  metric: "steps" | "floors" | "distance" | "activeCalories",
+  result: any,
+): number {
+  if (!result) return 0;
+  for (const k of aggKeyCandidates(metric)) {
+    if (result?.[k] != null)
+      return unwrapAggregateValue(metric as any, result[k]);
+  }
+  return 0;
+}
+
+/** Build 1h slicer boundaries aligned to local clock hours but clipped to the window. */
+function makeHourlyEdgesForWindow(
+  win: Window,
+): Array<{ start: Date; end: Date }> {
+  // Reuse existing edge builder; force interval="hour"
+  return makeEdgesForWindow(win, "hour");
+}
+
+/**
+ * Build N-minute slicer boundaries aligned to local clock time but clipped to the window.
+ * Default to 5-minute buckets to match the “granularity” plan.
+ *
+ * Note: react-native-health-connect aggregateGroupByDuration supports duration='MINUTES'. :contentReference[oaicite:1]{index=1}
+ */
+function startOfMinuteBucket(d: Date, bucketMinutes: number) {
+  const m = d.getMinutes();
+  const floored = m - (m % bucketMinutes);
+  return new Date(
+    d.getFullYear(),
+    d.getMonth(),
+    d.getDate(),
+    d.getHours(),
+    floored,
+    0,
+    0,
+  );
+}
+
+function makeMinuteEdgesForWindow(
+  win: Window,
+  bucketMinutes: number = 5,
+): Array<{ start: Date; end: Date }> {
+  const s0 = parseIso(win.fromUtc);
+  const e0 = parseIso(win.toUtc);
+
+  let cur = startOfMinuteBucket(s0, bucketMinutes);
+
+  const edges: Array<{ start: Date; end: Date }> = [];
+  while (cur < e0) {
+    const next = new Date(cur);
+    next.setMinutes(cur.getMinutes() + bucketMinutes, 0, 0);
+
+    const start = cur < s0 ? s0 : cur;
+    const end = next > e0 ? e0 : next;
+
+    if (end > start) edges.push({ start, end });
+    cur = next;
+  }
+  return edges;
+}
+
+/**
+ * Sum-style metrics → 5-minute buckets in a window.
+ * Uses Health Connect aggregateGroupByDuration with duration='MINUTES'. :contentReference[oaicite:2]{index=2}
+ */
+export async function hcReadQuantityMinuteBucketsInWindow(
+  metric: "steps" | "floors" | "distance" | "activeCalories",
+  win: Window,
+  bucketMinutes: number = 5,
+): Promise<MinuteBucket[]> {
+  if (Platform.OS !== "android") return [];
+  if (!(await hasReadPermission(metric as any))) return [];
+
+  const edges = makeMinuteEdgesForWindow(win, bucketMinutes);
+  if (edges.length === 0) return [];
+
+  try {
+    const mRecordType = toHCRecordType(metric);
+
+    const rows = await aggregateGroupByDuration({
+      recordType: mRecordType,
+      timeRangeFilter: toBetween(win),
+      timeRangeSlicer: { duration: "MINUTES", length: bucketMinutes },
+    });
+
+    log(
+      "[Quantity][minuteBuckets] aggRows=",
+      (rows ?? []).length,
+      "metric=",
+      metric,
+      "bucketMinutes=",
+      bucketMinutes,
+    );
+
+    // index by bucket-start epoch ms (not by ISO string)
+    const byBucket = new Map<number, any>();
+    for (const r of rows ?? []) {
+      const t0 = new Date(r.startTime);
+      byBucket.set(bucketKeyMs(t0, bucketMinutes), r);
+    }
+
+    return edges.map(({ start, end }) => {
+      const row = byBucket.get(bucketKeyMs(start, bucketMinutes));
+      const value = extractAggValue(metric, (row as any)?.result);
+      return {
+        start: start.toISOString(),
+        end: end.toISOString(),
+        value: Math.max(0, value || 0),
+      };
+    });
+  } catch (e) {
+    logErr(`[HC] hcReadQuantityMinuteBucketsInWindow(${metric}) failed`, e);
+    return [];
+  }
+}
+
+function toHCRecordType(
+  metric: "steps" | "floors" | "distance" | "activeCalories",
+) {
+  const m = METRICS[metric];
+  return m.recordType;
+}
+
+function toHCAggregateKey(
+  metric: "steps" | "floors" | "distance" | "activeCalories",
+) {
+  const m = METRICS[metric];
+  return m.aggregateKey!;
+}
+
+/**
+ * Sum-style metrics → hourly buckets in a window.
+ * Uses Health Connect aggregateGroupByDuration (hour slices).
+ */
+export async function hcReadQuantityHourlyBucketsInWindow(
+  metric: "steps" | "floors" | "distance" | "activeCalories",
+  win: Window,
+): Promise<HourlyBucket[]> {
+  if (Platform.OS !== "android") return [];
+  if (!(await hasReadPermission(metric as any))) return [];
+
+  const edges = makeHourlyEdgesForWindow(win);
+  if (edges.length === 0) return [];
+
+  try {
+    const mRecordType = toHCRecordType(metric);
+
+    const rows = await aggregateGroupByDuration({
+      recordType: mRecordType,
+      timeRangeFilter: toBetween(win),
+      timeRangeSlicer: { duration: "HOURS", length: 1 },
+    });
+
+    const byBucket = new Map<number, any>();
+    for (const r of rows ?? []) {
+      const t0 = new Date(r.startTime);
+      byBucket.set(hourBucketKeyMs(t0), r);
+    }
+
+    return edges.map(({ start, end }) => {
+      const row = byBucket.get(hourBucketKeyMs(start));
+      const value = extractAggValue(metric, (row as any)?.result);
+      return {
+        start: start.toISOString(),
+        end: end.toISOString(),
+        value: Math.max(0, value || 0),
+      };
+    });
+  } catch (e) {
+    logErr(`[HC] hcReadQuantityHourlyBucketsInWindow(${metric}) failed`, e);
+    return [];
+  }
+}
+
+/**
+ * Heart rate → hourly buckets (avg BPM) in a window.
+ *
+ * NOTE: Unlike sum-style records, Health Connect (via this RN library) does not
+ * reliably expose a stats-collection API for HeartRate equivalent to HealthKit’s
+ * statistics queries. So we bin HeartRate samples here (still keeping the summarizer clean).
+ */
+export async function hcReadHeartRateHourlyBucketsInWindow(
+  win: Window,
+): Promise<HourlyBucket[]> {
+  if (Platform.OS !== "android") return [];
+  if (!(await hasReadPermission("heartRate"))) return [];
+
+  const edges = makeHourlyEdgesForWindow(win);
+  if (edges.length === 0) return [];
+
+  try {
+    const out = await readRecords("HeartRate", {
+      timeRangeFilter: toBetween(win),
+      pageSize: 2000,
+      ascendingOrder: true,
+    });
+
+    const sums = new Array(edges.length).fill(0);
+    const counts = new Array(edges.length).fill(0);
+
+    const recs = (out.records ?? []) as any[];
+    for (const r of recs) {
+      const samples = Array.isArray(r?.samples) ? r.samples : [];
+      for (const s of samples) {
+        const t = new Date(s.time).getTime();
+        const bpm = Number(s.beatsPerMinute);
+        if (!Number.isFinite(bpm) || bpm <= 0) continue;
+
+        for (let i = 0; i < edges.length; i++) {
+          const S = edges[i].start.getTime();
+          const E = edges[i].end.getTime();
+          if (t >= S && t < E) {
+            sums[i] += bpm;
+            counts[i] += 1;
+            break;
+          }
+        }
+      }
+    }
+
+    return edges.map(({ start, end }, i) => ({
+      start: start.toISOString(),
+      end: end.toISOString(),
+      value: counts[i] > 0 ? Math.round(sums[i] / counts[i]) : 0,
+    }));
+  } catch (e) {
+    logErr("[HC] hcReadHeartRateHourlyBucketsInWindow failed", e);
+    return [];
+  }
+}
+
+/**
+ * Heart rate → 5-minute buckets (avg BPM) in a window (granularity plan).
+ * This bins samples; does not rely on aggregateGroupByDuration for HeartRate.
+ */
+export async function hcReadHeartRateMinuteBucketsInWindow(
+  win: Window,
+  bucketMinutes: number = 5,
+): Promise<MinuteBucket[]> {
+  if (Platform.OS !== "android") return [];
+  if (!(await hasReadPermission("heartRate"))) return [];
+
+  const edges = makeMinuteEdgesForWindow(win, bucketMinutes);
+  if (edges.length === 0) return [];
+
+  try {
+    const out = await readRecords("HeartRate", {
+      timeRangeFilter: toBetween(win),
+      pageSize: 2000,
+      ascendingOrder: true,
+    });
+
+    const sums = new Array(edges.length).fill(0);
+    const counts = new Array(edges.length).fill(0);
+
+    const recs = (out.records ?? []) as any[];
+    for (const r of recs) {
+      const samples = Array.isArray(r?.samples) ? r.samples : [];
+      for (const s of samples) {
+        const t = new Date(s.time).getTime();
+        const bpm = Number(s.beatsPerMinute);
+        if (!Number.isFinite(bpm) || bpm <= 0) continue;
+
+        for (let i = 0; i < edges.length; i++) {
+          const S = edges[i].start.getTime();
+          const E = edges[i].end.getTime();
+          if (t >= S && t < E) {
+            sums[i] += bpm;
+            counts[i] += 1;
+            break;
+          }
+        }
+      }
+    }
+
+    return edges.map(({ start, end }, i) => ({
+      start: start.toISOString(),
+      end: end.toISOString(),
+      value: counts[i] > 0 ? Math.round(sums[i] / counts[i]) : 0,
+    }));
+  } catch (e) {
+    logErr("[HC] hcReadHeartRateMinuteBucketsInWindow failed", e);
+    return [];
+  }
+}
+
+/**
+ * Sleep → hourly buckets (minutes) in a window.
+ * We clip SleepSession intervals against each hour edge.
+ */
+export async function hcReadSleepHourlyBucketsInWindow(
+  win: Window,
+): Promise<HourlyBucket[]> {
+  if (Platform.OS !== "android") return [];
+  if (!(await hasReadPermission("sleep"))) return [];
+
+  const edges = makeHourlyEdgesForWindow(win);
+  if (edges.length === 0) return [];
+
+  try {
+    const out = await readRecords("SleepSession", {
+      timeRangeFilter: toBetween(win),
+      pageSize: 2000,
+      ascendingOrder: true,
+    });
+
+    const recs = (out.records ?? []) as Array<{
+      startTime: string;
+      endTime: string;
+    }>;
+    const mins = new Array(edges.length).fill(0);
+
+    for (const r of recs) {
+      const s = new Date(r.startTime);
+      const e = new Date(r.endTime);
+      for (let i = 0; i < edges.length; i++) {
+        const ms = overlappedMs(s, e, edges[i].start, edges[i].end);
+        if (ms > 0) mins[i] += ms;
+      }
+    }
+
+    return edges.map(({ start, end }, i) => ({
+      start: start.toISOString(),
+      end: end.toISOString(),
+      value: Math.round(mins[i] / 60000),
+    }));
+  } catch (e) {
+    logErr("[HC] hcReadSleepHourlyBucketsInWindow failed", e);
+    return [];
+  }
+}
+
+/**
+ * Sleep → N-minute buckets (minutes) in a window.
+ * This enables true 5-minute granularity parity with HK.
+ *
+ * We clip SleepSession intervals against each minute edge bucket.
+ * Output value is MINUTES per bucket (rounded).
+ */
+export async function hcReadSleepMinuteBucketsInWindow(
+  win: Window,
+  bucketMinutes: number = 5,
+): Promise<MinuteBucket[]> {
+  if (Platform.OS !== "android") return [];
+  if (!(await hasReadPermission("sleep"))) return [];
+
+  const edges = makeMinuteEdgesForWindow(win, bucketMinutes);
+  if (edges.length === 0) return [];
+
+  try {
+    log(
+      "[Sleep][minuteBuckets] start →",
+      "bucketMinutes=",
+      bucketMinutes,
+      "edges=",
+      edges.length,
+    );
+
+    const out = await readRecords("SleepSession", {
+      timeRangeFilter: toBetween(win),
+      pageSize: 2000,
+      ascendingOrder: true,
+    });
+
+    const recs = (out.records ?? []) as Array<{
+      startTime: string;
+      endTime: string;
+    }>;
+
+    const msByBucket = new Array(edges.length).fill(0);
+
+    for (const r of recs) {
+      const s = new Date(r.startTime);
+      const e = new Date(r.endTime);
+      for (let i = 0; i < edges.length; i++) {
+        const ms = overlappedMs(s, e, edges[i].start, edges[i].end);
+        if (ms > 0) msByBucket[i] += ms;
+      }
+    }
+
+    const buckets: MinuteBucket[] = edges.map(({ start, end }, i) => ({
+      start: start.toISOString(),
+      end: end.toISOString(),
+      value: Math.round(msByBucket[i] / 60000),
+    }));
+
+    summarizeBuckets("[Sleep][minuteBuckets]", "sleep", bucketMinutes, buckets);
+    return buckets;
+  } catch (e) {
+    logErr("[HC] hcReadSleepMinuteBucketsInWindow failed", e, {
+      bucketMinutes,
+    });
+    return [];
+  }
+}
+
+/**
+ * Dispatcher used by summarizer.
+ * - bucketMinutes defaults to 60 (hourly).
+ * - If bucketMinutes != 60, we return N-minute buckets (e.g., 5-minute).
+ *
+ * NOTE: Return type remains HourlyBucket[] for backward compatibility with callers,
+ * but the actual bucket width is controlled by bucketMinutes.
+ */
+export async function hcReadHourlyBucketsInWindow(
+  metric:
+    | "steps"
+    | "floors"
+    | "distance"
+    | "activeCalories"
+    | "heartRate"
+    | "sleep",
+  win: Window,
+  bucketMinutes: number = 60,
+): Promise<HourlyBucket[]> {
+  const bm = Number(bucketMinutes);
+  const safeBm = Number.isFinite(bm) && bm > 0 ? Math.round(bm) : 60;
+
+  log(
+    "[Buckets][dispatcher] start →",
+    "metric=",
+    metric,
+    "bucketMinutes=",
+    safeBm,
+    "win=",
+    { fromUtc: win.fromUtc, toUtc: win.toUtc },
+  );
+
+  // Hourly path (existing behavior)
+  if (safeBm === 60) {
+    const rows =
+      metric === "heartRate"
+        ? await hcReadHeartRateHourlyBucketsInWindow(win)
+        : metric === "sleep"
+          ? await hcReadSleepHourlyBucketsInWindow(win)
+          : await hcReadQuantityHourlyBucketsInWindow(metric, win);
+
+    summarizeBuckets("[Buckets][hourly]", metric, 60, rows);
+    return rows;
+  }
+
+  // Minute path (granular behavior)
+  if (metric === "heartRate") {
+    const rows = await hcReadHeartRateMinuteBucketsInWindow(win, safeBm);
+    summarizeBuckets("[Buckets][minute]", metric, safeBm, rows);
+    return rows;
+  }
+
+  if (metric === "sleep") {
+    const rows = await hcReadSleepMinuteBucketsInWindow(win, safeBm);
+    summarizeBuckets("[Buckets][minute]", metric, safeBm, rows);
+    return rows;
+  }
+
+  const rows = await hcReadQuantityMinuteBucketsInWindow(
+    metric as "steps" | "floors" | "distance" | "activeCalories",
+    win,
+    safeBm,
+  );
+  summarizeBuckets("[Buckets][minute]", metric, safeBm, rows);
+  return rows;
+}
+
+/**
+ * Granular buckets dispatcher (hourly or 5-minute).
+ * - sum metrics: use aggregateGroupByDuration (HOURS or MINUTES) :contentReference[oaicite:3]{index=3}
+ * - heartRate: bin samples into buckets
+ * - sleep: currently hourly only (minute-bucketing sleep is possible but usually noisy)
+ */
+export async function hcReadBucketsInWindow(
+  metric:
+    | "steps"
+    | "floors"
+    | "distance"
+    | "activeCalories"
+    | "heartRate"
+    | "sleep",
+  win: Window,
+  granularity: "hour" | "minute5" = "hour",
+): Promise<Array<{ start: string; end: string; value: number }>> {
+  if (granularity === "hour") {
+    return hcReadHourlyBucketsInWindow(metric, win);
+  }
+
+  // minute5
+  if (metric === "heartRate") {
+    return hcReadHeartRateMinuteBucketsInWindow(win, 5);
+  }
+
+  if (metric === "sleep") {
+    // keep hourly for sleep for now
+    return hcReadSleepHourlyBucketsInWindow(win);
+  }
+
+  return hcReadQuantityMinuteBucketsInWindow(
+    metric as "steps" | "floors" | "distance" | "activeCalories",
+    win,
+    5,
+  );
 }

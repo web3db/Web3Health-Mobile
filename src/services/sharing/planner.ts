@@ -2,25 +2,28 @@
 // Plans Day-0 and subsequent windows anchored to the join instant.
 // All returned boundaries are UTC ISO strings. Window semantics: [fromUtc, toUtc)
 
-import { DAY_LENGTH_MS as DAY_MS, GRACE_WAIT_MS } from './constants';
+import { DAY_LENGTH_MS as DAY_MS, GRACE_WAIT_MS } from "./constants";
 
-const TAG = '[SHARE][Planner]';
+const TAG = "[SHARE][Planner]";
 
 export type Window = { fromUtc: string; toUtc: string; dayIndex: number };
 
 export type PlannerContext = {
-  joinTimeLocalISO: string;          // e.g. '2025-10-15T15:12:00-04:00' (has offset)
-  joinTimezone: string;              // e.g. 'America/New_York' (for logs / future use)
-  cycleAnchorUtc: string;            // e.g. '2025-10-15T19:12:00Z' (join instant, UTC)
-  segmentsExpected: number;          // N days required
-  alreadySentDayIndices: number[];   // e.g. [0,1]
+  joinTimeLocalISO: string; // e.g. '2025-10-15T15:12:00-04:00' (has offset)
+  joinTimezone: string; // e.g. 'America/New_York' (for logs / future use)
+  cycleAnchorUtc: string; // e.g. '2025-10-15T19:12:00Z' (join instant, UTC)
+  segmentsExpected: number; // N days required
+  alreadySentDayIndices: number[]; // e.g. [0,1]
 
   // NEW (optional) — lets planner cooperate with engine mode/locks without breaking callers
-  mode?: 'NORMAL' | 'SIM';
-  simulationLock?: boolean;          // when true, tick/planner should be passive (SIM step owns progression)
-  lastSentDayIndex?: number | null;  // authoritative progression index if present
+  mode?: "NORMAL" | "SIM";
+  simulationLock?: boolean; // when true, tick/planner should be passive (SIM step owns progression)
+  lastSentDayIndex?: number | null; // authoritative progression index if present
 };
-export type Day0ProbeFn = (range: { fromUtc: string; toUtc: string }) => Promise<boolean>;
+export type Day0ProbeFn = (range: {
+  fromUtc: string;
+  toUtc: string;
+}) => Promise<boolean>;
 
 // ANCHOR: day0-window-async
 /**
@@ -30,7 +33,7 @@ export type Day0ProbeFn = (range: { fromUtc: string; toUtc: string }) => Promise
  */
 export async function planDay0WindowAsync(
   ctx: PlannerContext,
-  probe: Day0ProbeFn
+  probe: Day0ProbeFn,
 ): Promise<Window | null> {
   const already = new Set(ctx.alreadySentDayIndices);
 
@@ -42,14 +45,14 @@ export async function planDay0WindowAsync(
 
   if (hasData) {
     if (already.has(0)) return null;
-    console.log(TAG, 'Day0 (async) → hasData=true', { fromUtc, toUtc });
+    console.log(TAG, "Day0 (async) → hasData=true", { fromUtc, toUtc });
     return { fromUtc, toUtc, dayIndex: 0 };
   }
 
   // no Day-0 segment; first due is a full day
   if (already.has(1)) return null;
   const w1 = computeWindowForDayIndex(ctx.cycleAnchorUtc, 1);
-  console.log(TAG, 'Day0 (async) → hasData=false; first=DayIndex 1', w1);
+  console.log(TAG, "Day0 (async) → hasData=false; first=DayIndex 1", w1);
   return { ...w1, dayIndex: 1 };
 }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,10 +68,10 @@ export async function planDay0WindowAsync(
  */
 function localMidnightISOOf(joinLocalISO: string): string {
   const datePart = joinLocalISO.slice(0, 10); // 'YYYY-MM-DD'
-  const plus = joinLocalISO.lastIndexOf('+');
-  const minus = joinLocalISO.lastIndexOf('-');
+  const plus = joinLocalISO.lastIndexOf("+");
+  const minus = joinLocalISO.lastIndexOf("-");
   const offIdx = Math.max(plus, minus);
-  const offset = offIdx > 10 ? joinLocalISO.slice(offIdx) : 'Z'; // default to UTC if missing
+  const offset = offIdx > 10 ? joinLocalISO.slice(offIdx) : "Z"; // default to UTC if missing
   const midnightWithOffset = `${datePart}T00:00:00${offset}`;
   return new Date(midnightWithOffset).toISOString();
 }
@@ -81,7 +84,10 @@ function tickUtcAtDayIndex(anchorUtcISO: string, dayIdx: number): string {
 }
 
 /** Current day index (floor) relative to anchor, where 0 means the join day (tick at anchor). */
-export function currentDayIndexFrom(anchorUtcISO: string, nowUtcISO: string): number {
+export function currentDayIndexFrom(
+  anchorUtcISO: string,
+  nowUtcISO: string,
+): number {
   const now = new Date(nowUtcISO).getTime();
   const anchor = new Date(anchorUtcISO).getTime();
   if (!Number.isFinite(now) || !Number.isFinite(anchor)) return 0;
@@ -109,11 +115,16 @@ export function computeWindowForDayIndex(
   dayIdx: number,
 ): { fromUtc: string; toUtc: string } {
   if (dayIdx === 0) {
-    throw new Error(`${TAG} computeWindowForDayIndex(0) invalid; use planDay0Window()`);
+    throw new Error(
+      `${TAG} computeWindowForDayIndex(0) invalid; use planDay0Window()`,
+    );
   }
   const anchorMs = new Date(anchorUtcISO).getTime();
   const { fromMs, toMs } = computeWindowMs(anchorMs, dayIdx, DAY_MS);
-  return { fromUtc: new Date(fromMs).toISOString(), toUtc: new Date(toMs).toISOString() };
+  return {
+    fromUtc: new Date(fromMs).toISOString(),
+    toUtc: new Date(toMs).toISOString(),
+  };
 }
 
 /** Given sent info, choose the next monotonic day index to process. */
@@ -123,7 +134,9 @@ export function nextDayIndex(
 ): number {
   if (lastSentDayIndex != null) return lastSentDayIndex + 1;
   // Fallback: derive from the set (handles older callers)
-  const max = alreadySentDayIndices.length ? Math.max(...alreadySentDayIndices) : -1;
+  const max = alreadySentDayIndices.length
+    ? Math.max(...alreadySentDayIndices)
+    : -1;
   return max + 1;
 }
 
@@ -142,23 +155,28 @@ export function planDay0Window(
     if (already.has(0)) return null;
     const fromUtc = localMidnightISOOf(ctx.joinTimeLocalISO); // local midnight (same offset) → UTC ISO
     const toUtc = new Date(ctx.cycleAnchorUtc).toISOString(); // join instant UTC
-    console.log(TAG, 'Day0 → hasData=true', { fromUtc, toUtc });
+    console.log(TAG, "Day0 → hasData=true", { fromUtc, toUtc });
     return { fromUtc, toUtc, dayIndex: 0 };
   } else {
     // no Day-0 segment; first due is DayIndex 1 (full day)
     if (already.has(1)) return null;
     const { fromUtc, toUtc } = computeWindowForDayIndex(ctx.cycleAnchorUtc, 1);
-    console.log(TAG, 'Day0 → hasData=false; first=DayIndex 1', { fromUtc, toUtc });
+    console.log(TAG, "Day0 → hasData=false; first=DayIndex 1", {
+      fromUtc,
+      toUtc,
+    });
     return { fromUtc, toUtc, dayIndex: 1 };
   }
 }
 
 /** Is the end of this window (toUtc) past grace? */
-export function isWindowPastGrace(toUtcISO: string, nowUtcISO: string): boolean {
+export function isWindowPastGrace(
+  toUtcISO: string,
+  nowUtcISO: string,
+): boolean {
   const dueAt = new Date(toUtcISO).getTime() + GRACE_WAIT_MS;
   return new Date(nowUtcISO).getTime() >= dueAt;
 }
-
 
 /** Compute the due-at timestamp (end+grace) for a window. */
 export function dueAtMs(toUtcISO: string): number {
@@ -166,7 +184,10 @@ export function dueAtMs(toUtcISO: string): number {
 }
 
 /** Earliest next wake-up (ISO) when *any* unsent window becomes due (end+grace) */
-export function computeEarliestNextDueAtISO(ctx: PlannerContext, nowUtcISO: string): string | null {
+export function computeEarliestNextDueAtISO(
+  ctx: PlannerContext,
+  nowUtcISO: string,
+): string | null {
   const now = new Date(nowUtcISO).getTime();
   const anchor = new Date(ctx.cycleAnchorUtc).getTime();
   if (Number.isNaN(now) || Number.isNaN(anchor)) return null;
@@ -178,7 +199,7 @@ export function computeEarliestNextDueAtISO(ctx: PlannerContext, nowUtcISO: stri
     if (sent.has(dayIdx)) continue;
     const { toUtc } = computeWindowForDayIndex(ctx.cycleAnchorUtc, dayIdx);
     const d = dueAtMs(toUtc);
-    if (d > now) earliest = (earliest == null) ? d : Math.min(earliest, d);
+    if (d > now) earliest = earliest == null ? d : Math.min(earliest, d);
   }
 
   return earliest != null ? new Date(earliest).toISOString() : null;
@@ -193,8 +214,8 @@ export function planNextDueWindowWithGrace(
   nowUtcISO: string,
 ): Window | { nextDueAtISO: string } | null {
   // In SIM mode, planner is passive; a simulate step owns the exact index/window.
-  if (ctx.mode === 'SIM') {
-    console.log(TAG, 'Passive in SIM (withGrace)');
+  if (ctx.mode === "SIM") {
+    console.log(TAG, "Passive in SIM (withGrace)");
     return null;
   }
 
@@ -208,24 +229,35 @@ export function planNextDueWindowWithGrace(
   // Day-0 is decided by probe; start from 1.
   for (let dayIdx = 1; dayIdx <= ctx.segmentsExpected; dayIdx++) {
     if (sent.has(dayIdx)) continue;
-    const { fromUtc, toUtc } = computeWindowForDayIndex(ctx.cycleAnchorUtc, dayIdx);
+    const { fromUtc, toUtc } = computeWindowForDayIndex(
+      ctx.cycleAnchorUtc,
+      dayIdx,
+    );
     const dueAt = new Date(toUtc).getTime() + GRACE_WAIT_MS;
 
     if (now >= dueAt) {
-      console.log(TAG, 'Next due window (grace passed)', { dayIdx, fromUtc, toUtc, now: nowUtcISO });
+      console.log(TAG, "Next due window (grace passed)", {
+        dayIdx,
+        fromUtc,
+        toUtc,
+        now: nowUtcISO,
+      });
       return { fromUtc, toUtc, dayIndex: dayIdx };
     } else {
-      earliestNextDueAt = earliestNextDueAt == null ? dueAt : Math.min(earliestNextDueAt, dueAt);
+      earliestNextDueAt =
+        earliestNextDueAt == null ? dueAt : Math.min(earliestNextDueAt, dueAt);
     }
   }
 
   if (earliestNextDueAt != null) {
     const nextDueAtISO = new Date(earliestNextDueAt).toISOString();
-    console.log(TAG, 'No window due yet; next due at (end+grace)', { nextDueAtISO });
+    console.log(TAG, "No window due yet; next due at (end+grace)", {
+      nextDueAtISO,
+    });
     return { nextDueAtISO };
   }
 
-  console.log(TAG, 'No window due at this time.');
+  console.log(TAG, "No window due at this time.");
   return null;
 }
 
@@ -233,10 +265,13 @@ export function planNextDueWindowWithGrace(
  * NORMAL mode: Returns the next single due window at/after now, skipping ones already sent (excludes Day-0 decision).
  * NOTE: Only returns windows whose tick has already passed (i.e., not future).
  */
-export function planNextDueWindow(ctx: PlannerContext, nowUtcISO: string): Window | null {
+export function planNextDueWindow(
+  ctx: PlannerContext,
+  nowUtcISO: string,
+): Window | null {
   // In SIM mode, planner is passive; simulate step provides exact index/window.
-  if (ctx.mode === 'SIM') {
-    console.log(TAG, 'Passive in SIM (planNextDueWindow)');
+  if (ctx.mode === "SIM") {
+    console.log(TAG, "Passive in SIM (planNextDueWindow)");
     return null;
   }
 
@@ -248,18 +283,29 @@ export function planNextDueWindow(ctx: PlannerContext, nowUtcISO: string): Windo
   const lastTickIdx = Math.max(0, Math.floor((now - anchor) / DAY_MS));
 
   const sent = new Set(ctx.alreadySentDayIndices);
-  const startIdx = Math.max(1, nextDayIndex(ctx.lastSentDayIndex ?? null, ctx.alreadySentDayIndices));
+  const startIdx = Math.max(
+    1,
+    nextDayIndex(ctx.lastSentDayIndex ?? null, ctx.alreadySentDayIndices),
+  );
 
   for (let dayIdx = startIdx; dayIdx <= ctx.segmentsExpected; dayIdx++) {
     if (sent.has(dayIdx)) continue;
     if (dayIdx <= lastTickIdx) {
-      const { fromUtc, toUtc } = computeWindowForDayIndex(ctx.cycleAnchorUtc, dayIdx);
-      console.log(TAG, 'Next due window', { dayIdx, fromUtc, toUtc, now: nowUtcISO });
+      const { fromUtc, toUtc } = computeWindowForDayIndex(
+        ctx.cycleAnchorUtc,
+        dayIdx,
+      );
+      console.log(TAG, "Next due window", {
+        dayIdx,
+        fromUtc,
+        toUtc,
+        now: nowUtcISO,
+      });
       return { fromUtc, toUtc, dayIndex: dayIdx };
     }
   }
 
-  console.log(TAG, 'No window due at this time.');
+  console.log(TAG, "No window due at this time.");
   return null;
 }
 
@@ -270,13 +316,15 @@ export function planNextDueWindow(ctx: PlannerContext, nowUtcISO: string): Windo
  */
 export function planSimulatedWindow(
   ctx: PlannerContext,
-  targetDayIndex: number
+  targetDayIndex: number,
 ): Window {
   if (!Number.isFinite(targetDayIndex) || targetDayIndex < 1) {
     throw new Error(`${TAG} planSimulatedWindow: targetDayIndex must be ≥ 1`);
   }
   if (ctx.segmentsExpected > 0 && targetDayIndex > ctx.segmentsExpected) {
-    throw new Error(`${TAG} planSimulatedWindow: targetDayIndex > segmentsExpected`);
+    throw new Error(
+      `${TAG} planSimulatedWindow: targetDayIndex > segmentsExpected`,
+    );
   }
 
   const t0 = new Date(ctx.cycleAnchorUtc).getTime(); // ORIGINAL join instant (UTC)
@@ -291,7 +339,7 @@ export function planSimulatedWindow(
   const fromUtc = new Date(startMs).toISOString();
   const toUtc = new Date(endMs).toISOString();
 
-  console.log(TAG, 'Sim window', {
+  console.log(TAG, "Sim window", {
     dayIndex: targetDayIndex,
     fromUtc,
     toUtc,
@@ -308,8 +356,8 @@ export function planCatchUpWindows(
   nowUtcISO: string,
 ): Window[] {
   // Catch-up is meaningful in NORMAL mode only.
-  if (ctx.mode === 'SIM') {
-    console.log(TAG, 'Passive in SIM (catch-up)');
+  if (ctx.mode === "SIM") {
+    console.log(TAG, "Passive in SIM (catch-up)");
     return [];
   }
 
@@ -328,10 +376,83 @@ export function planCatchUpWindows(
     dayIdx <= Math.min(lastTickIdxPastGrace, ctx.segmentsExpected);
     dayIdx++
   ) {
-    const { fromUtc, toUtc } = computeWindowForDayIndex(ctx.cycleAnchorUtc, dayIdx);
+    const { fromUtc, toUtc } = computeWindowForDayIndex(
+      ctx.cycleAnchorUtc,
+      dayIdx,
+    );
     out.push({ dayIndex: dayIdx, fromUtc, toUtc });
   }
-  if (out.length) console.log(TAG, 'Catch-up windows', out.map((w) => w.dayIndex));
-  else console.log(TAG, 'Catch-up windows: none');
+  if (out.length)
+    console.log(
+      TAG,
+      "Catch-up windows",
+      out.map((w) => w.dayIndex),
+    );
+  else console.log(TAG, "Catch-up windows: none");
   return out;
+}
+
+/**
+ * One-at-a-time catch-up: returns ONLY the next eligible catch-up window,
+ * or null if there is nothing to catch up right now.
+ *
+ * Eligibility rule: window end + grace must already be in the past.
+ * Excludes Day-0 by design (starts from dayIndex 1).
+ */
+export function planNextCatchUpWindow(
+  ctx: PlannerContext,
+  lastSentDayIndex: number,
+  nowUtcISO: string,
+): Window | null {
+  if (ctx.mode === "SIM") return null;
+
+  const now = new Date(nowUtcISO).getTime();
+  const anchor = new Date(ctx.cycleAnchorUtc).getTime();
+  if (Number.isNaN(now) || Number.isNaN(anchor)) return null;
+
+  const lastTickIdxPastGrace = Math.max(
+    0,
+    Math.floor((now - anchor - GRACE_WAIT_MS) / DAY_MS),
+  );
+
+  const nextIdx = Math.max(1, lastSentDayIndex + 1);
+  const maxIdx = Math.min(lastTickIdxPastGrace, ctx.segmentsExpected);
+
+  if (nextIdx > maxIdx) return null;
+
+  const { fromUtc, toUtc } = computeWindowForDayIndex(
+    ctx.cycleAnchorUtc,
+    nextIdx,
+  );
+  return { dayIndex: nextIdx, fromUtc, toUtc };
+}
+
+/**
+ * Catch-up summary for UI: how many days are eligible to catch up right now,
+ * and what the next one is (for labeling the button).
+ */
+export function getCatchUpStatus(
+  ctx: PlannerContext,
+  lastSentDayIndex: number,
+  nowUtcISO: string,
+): { count: number; next: Window | null } {
+  const next = planNextCatchUpWindow(ctx, lastSentDayIndex, nowUtcISO);
+  if (ctx.mode === "SIM") return { count: 0, next: null };
+  if (!next) return { count: 0, next: null };
+
+  const now = new Date(nowUtcISO).getTime();
+  const anchor = new Date(ctx.cycleAnchorUtc).getTime();
+  if (Number.isNaN(now) || Number.isNaN(anchor))
+    return { count: 0, next: null };
+
+  const lastTickIdxPastGrace = Math.max(
+    0,
+    Math.floor((now - anchor - GRACE_WAIT_MS) / DAY_MS),
+  );
+
+  const nextIdx = Math.max(1, lastSentDayIndex + 1);
+  const maxIdx = Math.min(lastTickIdxPastGrace, ctx.segmentsExpected);
+
+  const count = maxIdx >= nextIdx ? maxIdx - nextIdx + 1 : 0;
+  return { count, next };
 }
