@@ -24,11 +24,6 @@ import {
 } from "@/src/services/sharing/api";
 
 import {
-  computeWindowForDayIndex,
-  isWindowPastGrace,
-  planCatchUpWindows,
-  planDay0Window,
-  planNextDueWindow,
   planSimulatedWindow,
   type PlannerContext,
 } from "@/src/services/sharing/planner";
@@ -45,10 +40,7 @@ import {
 
 import { testFlags } from "@/src/config/featureFlags";
 import type { UserLoginShareHydrationResponse } from "@/src/services/auth/api";
-import {
-  GRACE_WAIT_MS,
-  getShareRuntimeConfig,
-} from "@/src/services/sharing/constants";
+import { getShareRuntimeConfig } from "@/src/services/sharing/constants";
 import type { TRewardsSummaryRes } from "@/src/services/sharing/schema";
 import type {
   ActiveShareSessionDto,
@@ -115,7 +107,42 @@ type StoreState = {
     cycleAnchorUtc: string;
     joinTimeLocalISO: string;
     joinTimezone: string;
+
+    // NEW (calendar day model)
+    joinLocalDate: string | null;
+    graceMinutes?: number;
+    // nextDue?: {
+    //   dayIndex: number;
+    //   fromUtc: string;
+    //   toUtc: string;
+    //   eligibleAtUtc: string;
+    //   isEligible: boolean;
+    // } | null;
+
+    // lastUploadedAt: string | null;
+    nextDue?: {
+      dayIndex: number;
+      fromUtc: string;
+      toUtc: string;
+      eligibleAtUtc: string;
+      isEligible: boolean;
+    } | null;
+
+    catchUp?: {
+      countEligibleNow: number;
+      next: {
+        dayIndex: number;
+        fromUtc: string;
+        toUtc: string;
+        eligibleAtUtc: string;
+        isEligible: boolean;
+      } | null;
+    } | null;
+
+    wakeAtUtc?: string | null;
+
     lastUploadedAt: string | null;
+
     lastWindowFromUtc: string | null;
     lastWindowToUtc: string | null;
   } | null;
@@ -244,18 +271,29 @@ export function formatTimeLeftLabel(
 }
 
 /** Build UTC ISO for local midnight using the offset embedded in joinLocalISO. */
+// function localMidnightUTCFromJoinLocalISO(joinLocalISO: string): string {
+//   const datePart = joinLocalISO.slice(0, 10); // 'YYYY-MM-DD'
+//   const plus = joinLocalISO.lastIndexOf("+");
+//   const minus = joinLocalISO.lastIndexOf("-", 19);
+//   const offIdx = Math.max(plus, minus);
+
+//   const offset = joinLocalISO.endsWith("Z")
+//     ? "Z"
+//     : offIdx >= 19
+//       ? joinLocalISO.slice(offIdx)
+//       : "Z";
+
+//   return new Date(`${datePart}T00:00:00${offset}`).toISOString();
+// }
+
 function localMidnightUTCFromJoinLocalISO(joinLocalISO: string): string {
   const datePart = joinLocalISO.slice(0, 10); // 'YYYY-MM-DD'
-  const plus = joinLocalISO.lastIndexOf("+");
-  const minus = joinLocalISO.lastIndexOf("-", 19);
-  const offIdx = Math.max(plus, minus);
-
-  const offset = joinLocalISO.endsWith("Z")
-    ? "Z"
-    : offIdx >= 19
-      ? joinLocalISO.slice(offIdx)
-      : "Z";
-
+  if (!/[+-]\d{2}:\d{2}$/.test(joinLocalISO)) {
+    throw new Error(
+      `${TAG} localMidnightUTCFromJoinLocalISO: joinLocalISO must include offset (±HH:MM). Got: ${joinLocalISO}`,
+    );
+  }
+  const offset = joinLocalISO.slice(-6);
   return new Date(`${datePart}T00:00:00${offset}`).toISOString();
 }
 
@@ -296,13 +334,57 @@ function formatCatchUpLabel(fromUtcISO: string): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+// function computeCatchUpStatusFromState(st: {
+//   status: ShareStatus;
+//   engine: ShareSessionState;
+//   cycleAnchorUtc?: string;
+//   joinTimeLocalISO?: string;
+//   joinTimezone?: string;
+//   segmentsExpected?: number;
+// }): {
+//   missedCount: number;
+//   nextWindow: WindowRef | null;
+//   nextLabel: string | null;
+// } {
+//   // Only meaningful while ACTIVE and not SIM
+//   if (st.status !== "ACTIVE") {
+//     return { missedCount: 0, nextWindow: null, nextLabel: null };
+//   }
+//   if (st.engine?.mode === "SIM") {
+//     return { missedCount: 0, nextWindow: null, nextLabel: null };
+//   }
+//   if (!st.cycleAnchorUtc || !st.joinTimeLocalISO) {
+//     return { missedCount: 0, nextWindow: null, nextLabel: null };
+//   }
+
+//   const last = st.engine.lastSentDayIndex ?? 0;
+
+//   const ctx: PlannerContext = {
+//     joinTimeLocalISO: st.joinTimeLocalISO,
+//     joinTimezone: st.joinTimezone || "Local",
+//     cycleAnchorUtc: st.cycleAnchorUtc,
+//     segmentsExpected: st.segmentsExpected ?? 0,
+//     alreadySentDayIndices: [last],
+//     lastSentDayIndex: last,
+//     mode: "NORMAL",
+//   };
+
+//   const windows = planCatchUpWindows(ctx, last, nowISO());
+//   const next = windows.length ? windows[0] : null;
+
+//   return {
+//     missedCount: windows.length,
+//     nextWindow: next
+//       ? { dayIndex: next.dayIndex, fromUtc: next.fromUtc, toUtc: next.toUtc }
+//       : null,
+//     nextLabel: next ? formatCatchUpLabel(next.fromUtc) : null,
+//   };
+// }
+
 function computeCatchUpStatusFromState(st: {
   status: ShareStatus;
   engine: ShareSessionState;
-  cycleAnchorUtc?: string;
-  joinTimeLocalISO?: string;
-  joinTimezone?: string;
-  segmentsExpected?: number;
+  snapshot?: StoreState["snapshot"] | null;
 }): {
   missedCount: number;
   nextWindow: WindowRef | null;
@@ -315,27 +397,13 @@ function computeCatchUpStatusFromState(st: {
   if (st.engine?.mode === "SIM") {
     return { missedCount: 0, nextWindow: null, nextLabel: null };
   }
-  if (!st.cycleAnchorUtc || !st.joinTimeLocalISO) {
-    return { missedCount: 0, nextWindow: null, nextLabel: null };
-  }
 
-  const last = st.engine.lastSentDayIndex ?? 0;
-
-  const ctx: PlannerContext = {
-    joinTimeLocalISO: st.joinTimeLocalISO,
-    joinTimezone: st.joinTimezone || "Local",
-    cycleAnchorUtc: st.cycleAnchorUtc,
-    segmentsExpected: st.segmentsExpected ?? 0,
-    alreadySentDayIndices: [last],
-    lastSentDayIndex: last,
-    mode: "NORMAL",
-  };
-
-  const windows = planCatchUpWindows(ctx, last, nowISO());
-  const next = windows.length ? windows[0] : null;
+  const cu = st.snapshot?.catchUp ?? null;
+  const next = cu?.next ?? null;
 
   return {
-    missedCount: windows.length,
+    // Per contract: server returns how many are eligible now (not total missing).
+    missedCount: cu?.countEligibleNow ?? 0,
     nextWindow: next
       ? { dayIndex: next.dayIndex, fromUtc: next.fromUtc, toUtc: next.toUtc }
       : null,
@@ -517,14 +585,38 @@ export const useShareStore = create<StoreState>()(
             }
           }
 
-          // Build local ISO with device offset (used by Day-0 logic)
+          // Build joinTimeLocalISO as ISO *with numeric offset* (±HH:MM).
+          // IMPORTANT: must not be missing offset, otherwise planner SIM will hard-fail.
           const tz = getLocalTimezoneInfo();
           const now = new Date();
-          const localIso = new Date(
-            now.getTime() - now.getTimezoneOffset() * 60000,
-          )
-            .toISOString()
-            .replace("Z", tz.offsetStr.replace("UTC", ""));
+
+          const pad2 = (n: number) =>
+            String(Math.trunc(Math.abs(n))).padStart(2, "0");
+
+          // JS: getTimezoneOffset() is minutes *behind* UTC (NY winter: 300). We want "-05:00".
+          const offsetMinutes = -now.getTimezoneOffset();
+          const sign = offsetMinutes >= 0 ? "+" : "-";
+          const hh = pad2(Math.floor(Math.abs(offsetMinutes) / 60));
+          const mm = pad2(Math.abs(offsetMinutes) % 60);
+          const offset = `${sign}${hh}:${mm}`;
+
+          // Local wall-clock components (no UTC conversion)
+          const y = now.getFullYear();
+          const mo = pad2(now.getMonth() + 1);
+          const d = pad2(now.getDate());
+          const h = pad2(now.getHours());
+          const mi = pad2(now.getMinutes());
+          const s = pad2(now.getSeconds());
+          const ms = String(now.getMilliseconds()).padStart(3, "0");
+
+          const localIso = `${y}-${mo}-${d}T${h}:${mi}:${s}.${ms}${offset}`;
+
+          // Guard: must end in ±HH:MM
+          if (!/[+-]\d{2}:\d{2}$/.test(localIso)) {
+            throw new Error(
+              `${TAG} startSession: joinTimeLocalISO missing numeric offset: ${localIso}`,
+            );
+          }
 
           // // Try to reuse an existing ACTIVE session for (postingId, userId) before creating a new one
           // try {
@@ -634,7 +726,20 @@ export const useShareStore = create<StoreState>()(
                 cycleAnchorUtc: r.cycle_anchor_utc,
                 originalCycleAnchorUtc: r.cycle_anchor_utc,
                 joinTimezone: r.join_timezone,
-                joinTimeLocalISO: r.join_time_local_iso,
+                joinTimeLocalISO: (() => {
+                  const j = r.join_time_local_iso;
+                  if (typeof j !== "string" || j.length < 10) {
+                    throw new Error(
+                      `${TAG} reuse ACTIVE: invalid join_time_local_iso from server`,
+                    );
+                  }
+                  if (!/[+-]\d{2}:\d{2}$/.test(j)) {
+                    throw new Error(
+                      `${TAG} reuse ACTIVE: join_time_local_iso missing numeric offset (±HH:MM): ${j}`,
+                    );
+                  }
+                  return j;
+                })(),
 
                 engine: eng,
 
@@ -649,8 +754,54 @@ export const useShareStore = create<StoreState>()(
                   segmentsSent: r.segments_sent,
                   lastSentDayIndex: r.last_sent_day_index,
                   cycleAnchorUtc: r.cycle_anchor_utc,
-                  joinTimeLocalISO: r.join_time_local_iso,
                   joinTimezone: r.join_timezone,
+                  joinTimeLocalISO: (() => {
+                    const j = r.join_time_local_iso;
+                    if (typeof j !== "string" || j.length < 10) {
+                      throw new Error(
+                        `${TAG} reuse ACTIVE: invalid join_time_local_iso from server`,
+                      );
+                    }
+                    if (!/[+-]\d{2}:\d{2}$/.test(j)) {
+                      throw new Error(
+                        `${TAG} reuse ACTIVE: join_time_local_iso missing numeric offset (±HH:MM): ${j}`,
+                      );
+                    }
+                    return j;
+                  })(),
+
+                  // NEW (calendar day model)
+                  joinLocalDate: (r as any).join_local_date ?? null,
+                  graceMinutes: (r as any).grace_minutes ?? undefined,
+                  nextDue: (r as any).next_due
+                    ? {
+                        dayIndex: (r as any).next_due.day_index,
+                        fromUtc: (r as any).next_due.from_utc,
+                        toUtc: (r as any).next_due.to_utc,
+                        eligibleAtUtc: (r as any).next_due.eligible_at_utc,
+                        isEligible: (r as any).next_due.is_eligible,
+                      }
+                    : null,
+                  catchUp: (r as any).catch_up
+                    ? {
+                        countEligibleNow: Number(
+                          (r as any).catch_up.count_eligible_now ?? 0,
+                        ),
+                        next: (r as any).catch_up.next
+                          ? {
+                              dayIndex: (r as any).catch_up.next.day_index,
+                              fromUtc: (r as any).catch_up.next.from_utc,
+                              toUtc: (r as any).catch_up.next.to_utc,
+                              eligibleAtUtc: (r as any).catch_up.next
+                                .eligible_at_utc,
+                              isEligible: (r as any).catch_up.next.is_eligible,
+                            }
+                          : null,
+                      }
+                    : null,
+
+                  wakeAtUtc: (r as any).wake_at_utc ?? null,
+
                   lastUploadedAt: r.last_uploaded_at,
                   lastWindowFromUtc: r.last_window_from_utc,
                   lastWindowToUtc: r.last_window_to_utc,
@@ -756,186 +907,217 @@ export const useShareStore = create<StoreState>()(
         }
       },
 
+      // async sendFirstSegment() {
+      //   if (!isShareReady()) {
+      //     if (SHARE_DEBUG)
+      //       console.log(`${TAG} sendFirstSegment → not ready; skipping`);
+      //     return;
+      //   }
+      //   const st = get();
+      //   if (
+      //     !st.sessionId ||
+      //     !st.postingId ||
+      //     !st.userId ||
+      //     !st.cycleAnchorUtc ||
+      //     !st.joinTimeLocalISO
+      //   )
+      //     return;
+
+      //   // In SIM mode: Day-0 is driven by simulateNextDay; do nothing here.
+      //   if (st.engine.mode === "SIM") {
+      //     if (__DEV__)
+      //       console.log(`${TAG} sendFirstSegment → passive (SIM mode)`);
+      //     return;
+      //   }
+
+      //   //  Test Mode Day-0 controls
+      //   if (testFlags.TEST_MODE && testFlags.TEST_FORCE_SKIP_DAY0) {
+      //     if (__DEV__)
+      //       console.log(`${TAG} sendFirstSegment → TEST: skipping Day-0`);
+      //     return;
+      //   }
+
+      //   const ctx: PlannerContext = {
+      //     joinTimeLocalISO: st.joinTimeLocalISO,
+      //     joinTimezone: st.joinTimezone || "Local",
+      //     cycleAnchorUtc: st.cycleAnchorUtc,
+      //     segmentsExpected: st.segmentsExpected ?? 0,
+      //     alreadySentDayIndices: [],
+      //     mode: "NORMAL",
+      //   };
+
+      //   // Day-0 probe using a “fast” metric if available (real data only)
+      //   const want = st.metricMap as Partial<Record<MetricCode, number>>;
+      //   const probeMetric: MetricCode | undefined = want.STEPS
+      //     ? "STEPS"
+      //     : want.KCAL
+      //       ? "KCAL"
+      //       : want.DISTANCE
+      //         ? "DISTANCE"
+      //         : want.FLOORS
+      //           ? "FLOORS"
+      //           : want.HR
+      //             ? "HR"
+      //             : want.SLEEP
+      //               ? "SLEEP"
+      //               : undefined;
+
+      //   let hasDay0Data = false;
+      //   try {
+      //     if (probeMetric) {
+      //       const midnightLocalUtcISO = localMidnightUTCFromJoinLocalISO(
+      //         st.joinTimeLocalISO!,
+      //       );
+      //       const mod = await import("@/src/services/sharing/summarizer");
+      //       const probe = await mod.summarizeWindow(
+      //         probeMetric,
+      //         midnightLocalUtcISO,
+      //         st.cycleAnchorUtc!,
+      //         { probeOnly: true },
+      //       );
+
+      //       hasDay0Data = !!probe;
+
+      //       if (__DEV__) {
+      //         console.log("[SHARE][Store] Day0 probe", {
+      //           probeMetric,
+      //           midnightLocalUtcISO,
+      //           joinUtc: st.cycleAnchorUtc,
+      //           hasDay0Data,
+      //         });
+      //       }
+      //     }
+      //   } catch (e: any) {
+      //     console.warn(
+      //       `${TAG} sendFirstSegment → probe error`,
+      //       e?.message ?? e,
+      //     );
+      //   }
+
+      //   // === [ANCHOR: DAY0-ALWAYS-QUEUE]
+      //   let day0 = planDay0Window(
+      //     ctx,
+      //     hasDay0Data || (testFlags.TEST_MODE && testFlags.TEST_FORCE_DAY0),
+      //   );
+
+      //   // If planner declines Day-0 (likely no data yet), fall back to an explicit Day-0 window
+      //   if (!day0) {
+      //     day0 = buildDay0Window(st.joinTimeLocalISO!, st.cycleAnchorUtc!);
+      //     if (__DEV__) {
+      //       console.log(
+      //         "[SHARE][Store] Day0 planner declined; using fallback window",
+      //         day0,
+      //       );
+      //     }
+      //   }
+
+      //   // Mark engine so tick()/producer can apply grace/retries for Day-0 if needed
+      //   set((s) => ({
+      //     pendingWindow: day0!,
+      //     engine: {
+      //       ...s.engine,
+      //       currentDueDayIndex: day0!.dayIndex,
+      //       // keep grace bookkeeping aligned with the actual due window
+      //       graceAppliedForDay: day0!.dayIndex,
+      //     },
+      //   }));
+
+      //   await tryProcessWindow(day0!);
+      // },
+      // new code for the day logic revamp (no special Day-0 handling in planner/producer; just "send if due")
       async sendFirstSegment() {
         if (!isShareReady()) {
           if (SHARE_DEBUG)
             console.log(`${TAG} sendFirstSegment → not ready; skipping`);
           return;
         }
-        const st = get();
-        if (
-          !st.sessionId ||
-          !st.postingId ||
-          !st.userId ||
-          !st.cycleAnchorUtc ||
-          !st.joinTimeLocalISO
-        )
-          return;
 
-        // In SIM mode: Day-0 is driven by simulateNextDay; do nothing here.
+        const st = get();
+        if (!st.sessionId || !st.postingId || !st.userId) return;
+
+        // In SIM mode: Day progression is driven by simulateNextDay(); do nothing here.
         if (st.engine.mode === "SIM") {
           if (__DEV__)
             console.log(`${TAG} sendFirstSegment → passive (SIM mode)`);
           return;
         }
 
-        //  Test Mode Day-0 controls
+        // Test Mode control remains: if you explicitly skip "first send", respect it.
         if (testFlags.TEST_MODE && testFlags.TEST_FORCE_SKIP_DAY0) {
           if (__DEV__)
-            console.log(`${TAG} sendFirstSegment → TEST: skipping Day-0`);
-          return;
-        }
-
-        const ctx: PlannerContext = {
-          joinTimeLocalISO: st.joinTimeLocalISO,
-          joinTimezone: st.joinTimezone || "Local",
-          cycleAnchorUtc: st.cycleAnchorUtc,
-          segmentsExpected: st.segmentsExpected ?? 0,
-          alreadySentDayIndices: [],
-          mode: "NORMAL",
-        };
-
-        // Day-0 probe using a “fast” metric if available (real data only)
-        const want = st.metricMap as Partial<Record<MetricCode, number>>;
-        const probeMetric: MetricCode | undefined = want.STEPS
-          ? "STEPS"
-          : want.KCAL
-            ? "KCAL"
-            : want.DISTANCE
-              ? "DISTANCE"
-              : want.FLOORS
-                ? "FLOORS"
-                : want.HR
-                  ? "HR"
-                  : want.SLEEP
-                    ? "SLEEP"
-                    : undefined;
-
-        let hasDay0Data = false;
-        try {
-          if (probeMetric) {
-            const midnightLocalUtcISO = localMidnightUTCFromJoinLocalISO(
-              st.joinTimeLocalISO!,
-            );
-            const mod = await import("@/src/services/sharing/summarizer");
-            const probe = await mod.summarizeWindow(
-              probeMetric,
-              midnightLocalUtcISO,
-              st.cycleAnchorUtc!,
-              { probeOnly: true },
-            );
-
-            hasDay0Data = !!probe;
-
-            if (__DEV__) {
-              console.log("[SHARE][Store] Day0 probe", {
-                probeMetric,
-                midnightLocalUtcISO,
-                joinUtc: st.cycleAnchorUtc,
-                hasDay0Data,
-              });
-            }
-          }
-        } catch (e: any) {
-          console.warn(
-            `${TAG} sendFirstSegment → probe error`,
-            e?.message ?? e,
-          );
-        }
-
-        // === [ANCHOR: DAY0-ALWAYS-QUEUE]
-        let day0 = planDay0Window(
-          ctx,
-          hasDay0Data || (testFlags.TEST_MODE && testFlags.TEST_FORCE_DAY0),
-        );
-
-        // If planner declines Day-0 (likely no data yet), fall back to an explicit Day-0 window
-        if (!day0) {
-          day0 = buildDay0Window(st.joinTimeLocalISO!, st.cycleAnchorUtc!);
-          if (__DEV__) {
             console.log(
-              "[SHARE][Store] Day0 planner declined; using fallback window",
-              day0,
+              `${TAG} sendFirstSegment → TEST: skipping initial send`,
             );
-          }
-        }
-
-        // Mark engine so tick()/producer can apply grace/retries for Day-0 if needed
-        set((s) => ({
-          pendingWindow: day0!,
-          engine: {
-            ...s.engine,
-            currentDueDayIndex: day0!.dayIndex,
-            // keep grace bookkeeping aligned with the actual due window
-            graceAppliedForDay: day0!.dayIndex,
-          },
-        }));
-
-        await tryProcessWindow(day0!);
-      },
-
-      async sendNextIfDue() {
-        if (!isShareReady()) {
-          if (SHARE_DEBUG)
-            console.log(`${TAG} sendNextIfDue → not ready; skipping`);
           return;
         }
 
-        const st = get();
-        if (!st.sessionId || st.status !== "ACTIVE") return;
-
-        // In SIM mode we are passive.
-        if (st.engine.mode === "SIM") {
-          if (__DEV__) console.log(`${TAG} sendNextIfDue → passive (SIM mode)`);
-          return;
-        }
-
-        const ctx: PlannerContext = {
-          joinTimeLocalISO: st.joinTimeLocalISO!,
-          joinTimezone: st.joinTimezone || "Local",
-          cycleAnchorUtc: st.cycleAnchorUtc!,
-          segmentsExpected: st.segmentsExpected ?? 0,
-          alreadySentDayIndices:
-            st.engine.lastSentDayIndex != null
-              ? [st.engine.lastSentDayIndex]
-              : [],
-          mode: "NORMAL",
-        };
-
-        const win = planNextDueWindow(ctx, nowISO());
-        if (!win) return;
-
-        // Grace on first see of a new day (only if not already applied)
-        const alreadyAppliedFor = get().engine.graceAppliedForDay;
-        const pastGrace = isWindowPastGrace(win.toUtc, nowISO());
-
-        if (
-          !pastGrace &&
-          GRACE_WAIT_MS > 0 &&
-          alreadyAppliedFor !== win.dayIndex
-        ) {
-          set((s) => ({
-            pendingWindow: win, // stash exact window
-            engine: {
-              ...s.engine,
-              currentDueDayIndex: win.dayIndex,
-              nextRetryAtUtc: nowMs() + GRACE_WAIT_MS,
-              graceAppliedForDay: win.dayIndex,
-            },
-          }));
-          return; // wait for grace before processing
-        }
-
-        // If grace already passed (e.g., after backdating), process immediately.
-        set((s) => ({
-          pendingWindow: win,
-          engine: {
-            ...s.engine,
-            currentDueDayIndex: win.dayIndex,
-          },
-        }));
-        await tryProcessWindow(win);
+        // New model: Day 0 is a full calendar day and is not sent until eligible.
+        // So "first segment" is simply "send next if due".
+        await get().sendNextIfDue();
       },
+
+      // async sendNextIfDue() {
+      //   if (!isShareReady()) {
+      //     if (SHARE_DEBUG)
+      //       console.log(`${TAG} sendNextIfDue → not ready; skipping`);
+      //     return;
+      //   }
+
+      //   const st = get();
+      //   if (!st.sessionId || st.status !== "ACTIVE") return;
+
+      //   // In SIM mode we are passive.
+      //   if (st.engine.mode === "SIM") {
+      //     if (__DEV__) console.log(`${TAG} sendNextIfDue → passive (SIM mode)`);
+      //     return;
+      //   }
+
+      //   const ctx: PlannerContext = {
+      //     joinTimeLocalISO: st.joinTimeLocalISO!,
+      //     joinTimezone: st.joinTimezone || "Local",
+      //     cycleAnchorUtc: st.cycleAnchorUtc!,
+      //     segmentsExpected: st.segmentsExpected ?? 0,
+      //     alreadySentDayIndices:
+      //       st.engine.lastSentDayIndex != null
+      //         ? [st.engine.lastSentDayIndex]
+      //         : [],
+      //     mode: "NORMAL",
+      //   };
+
+      //   const win = planNextDueWindow(ctx, nowISO());
+      //   if (!win) return;
+
+      //   // Grace on first see of a new day (only if not already applied)
+      //   const alreadyAppliedFor = get().engine.graceAppliedForDay;
+      //   const pastGrace = isWindowPastGrace(win.toUtc, nowISO());
+
+      //   if (
+      //     !pastGrace &&
+      //     GRACE_WAIT_MS > 0 &&
+      //     alreadyAppliedFor !== win.dayIndex
+      //   ) {
+      //     set((s) => ({
+      //       pendingWindow: win, // stash exact window
+      //       engine: {
+      //         ...s.engine,
+      //         currentDueDayIndex: win.dayIndex,
+      //         nextRetryAtUtc: nowMs() + GRACE_WAIT_MS,
+      //         graceAppliedForDay: win.dayIndex,
+      //       },
+      //     }));
+      //     return; // wait for grace before processing
+      //   }
+
+      //   // If grace already passed (e.g., after backdating), process immediately.
+      //   set((s) => ({
+      //     pendingWindow: win,
+      //     engine: {
+      //       ...s.engine,
+      //       currentDueDayIndex: win.dayIndex,
+      //     },
+      //   }));
+      //   await tryProcessWindow(win);
+      // },
 
       // async catchUpIfNeeded() {
       //   if (!isShareReady()) {
@@ -973,6 +1155,168 @@ export const useShareStore = create<StoreState>()(
       //   }
       // },
 
+      async sendNextIfDue() {
+        if (!isShareReady()) {
+          if (SHARE_DEBUG)
+            console.log(`${TAG} sendNextIfDue → not ready; skipping`);
+          return;
+        }
+
+        const st = get();
+        if (!st.sessionId || !st.postingId || !st.userId) return;
+        if (st.status !== "ACTIVE") return;
+
+        // In SIM mode we are passive.
+        if (st.engine.mode === "SIM") {
+          if (__DEV__) console.log(`${TAG} sendNextIfDue → passive (SIM mode)`);
+          return;
+        }
+
+        // Ensure we have a fresh snapshot (source of truth for next_due).
+        // Avoid calling this every tick unless we truly need it (tick calls sendNextIfDue only when no currentDueDayIndex).
+        // Ensure we have a fresh snapshot (source of truth for next_due + catch_up + wake_at_utc).
+        const snap0 = st.snapshot;
+        const missingServerFields =
+          !snap0 ||
+          snap0.catchUp === undefined ||
+          snap0.wakeAtUtc === undefined ||
+          snap0.nextDue === undefined;
+
+        if (missingServerFields) {
+          await get().fetchSessionSnapshot(st.userId, st.postingId);
+        }
+
+        // const snap = get().snapshot;
+        // const nd = snap?.nextDue ?? null;
+
+        // if (!nd) {
+        //   if (__DEV__)
+        //     console.log(`${TAG} sendNextIfDue → no nextDue in snapshot`);
+        //   return;
+        // }
+
+        // if (!nd.isEligible) {
+        //   if (__DEV__)
+        //     console.log(`${TAG} sendNextIfDue → not eligible yet`, {
+        //       dayIndex: nd.dayIndex,
+        //       eligibleAtUtc: nd.eligibleAtUtc,
+        //     });
+        //   return;
+        // }
+
+        // const win: WindowRef = {
+        //   dayIndex: nd.dayIndex,
+        //   fromUtc: nd.fromUtc,
+        //   toUtc: nd.toUtc,
+        // };
+
+        const snap = get().snapshot;
+
+        const cuNext = snap?.catchUp?.next ?? null;
+        const nd = snap?.nextDue ?? null;
+
+        const chosen =
+          cuNext && cuNext.isEligible
+            ? { kind: "catch_up" as const, w: cuNext }
+            : nd && nd.isEligible
+              ? { kind: "next_due" as const, w: nd }
+              : null;
+
+        if (!chosen) {
+          // Not eligible yet. Use server wake hint to reduce unnecessary polling.
+          const wakeIso = snap?.wakeAtUtc ?? null;
+          const wakeMs = wakeIso ? Date.parse(wakeIso) : NaN;
+
+          if (Number.isFinite(wakeMs)) {
+            set((s) => ({
+              engine: {
+                ...s.engine,
+                nextRetryAtUtc: wakeMs,
+              },
+            }));
+          }
+
+          if (__DEV__) {
+            console.log(`${TAG} sendNextIfDue → nothing eligible`, {
+              catchUpNext: cuNext
+                ? {
+                    dayIndex: cuNext.dayIndex,
+                    eligibleAtUtc: cuNext.eligibleAtUtc,
+                    isEligible: cuNext.isEligible,
+                  }
+                : null,
+              nextDue: nd
+                ? {
+                    dayIndex: nd.dayIndex,
+                    eligibleAtUtc: nd.eligibleAtUtc,
+                    isEligible: nd.isEligible,
+                  }
+                : null,
+              wakeAtUtc: wakeIso,
+            });
+          }
+          return;
+        }
+
+        const win: WindowRef = {
+          dayIndex: chosen.w.dayIndex,
+          fromUtc: chosen.w.fromUtc,
+          toUtc: chosen.w.toUtc,
+        };
+
+        // Stash exact window and mark engine as working this day.
+        set((s) => ({
+          pendingWindow: win,
+          engine: {
+            ...s.engine,
+            currentDueDayIndex: win.dayIndex,
+            nextRetryAtUtc: null, // server grace already applied via eligibility
+            graceAppliedForDay: win.dayIndex,
+          },
+        }));
+
+        await tryProcessWindow(win);
+      },
+
+      // async catchUpIfNeeded() {
+      //   if (!isShareReady()) {
+      //     if (SHARE_DEBUG)
+      //       console.log(`${TAG} catchUpIfNeeded → not ready; skipping`);
+      //     return;
+      //   }
+
+      //   const st = get();
+      //   if (!st.sessionId || st.status !== "ACTIVE") return;
+
+      //   if (st.engine.mode === "SIM") {
+      //     if (__DEV__)
+      //       console.log(`${TAG} catchUpIfNeeded → passive (SIM mode)`);
+      //     return;
+      //   }
+
+      //   const last = st.engine.lastSentDayIndex ?? 0;
+
+      //   const ctx: PlannerContext = {
+      //     joinTimeLocalISO: st.joinTimeLocalISO!,
+      //     joinTimezone: st.joinTimezone || "Local",
+      //     cycleAnchorUtc: st.cycleAnchorUtc!,
+      //     segmentsExpected: st.segmentsExpected ?? 0,
+      //     alreadySentDayIndices: [last],
+      //     lastSentDayIndex: last,
+      //     mode: "NORMAL",
+      //   };
+
+      //   const windows = planCatchUpWindows(ctx, last, nowISO());
+      //   const win = windows.length ? windows[0] : null;
+      //   if (!win) {
+      //     get().refreshCatchUpStatus();
+      //     return;
+      //   }
+
+      //   await tryProcessWindow(win);
+      //   get().refreshCatchUpStatus();
+      // },
+
       async catchUpIfNeeded() {
         if (!isShareReady()) {
           if (SHARE_DEBUG)
@@ -989,32 +1333,19 @@ export const useShareStore = create<StoreState>()(
           return;
         }
 
-        const last = st.engine.lastSentDayIndex ?? 0;
-
-        const ctx: PlannerContext = {
-          joinTimeLocalISO: st.joinTimeLocalISO!,
-          joinTimezone: st.joinTimezone || "Local",
-          cycleAnchorUtc: st.cycleAnchorUtc!,
-          segmentsExpected: st.segmentsExpected ?? 0,
-          alreadySentDayIndices: [last],
-          lastSentDayIndex: last,
-          mode: "NORMAL",
-        };
-
-        const windows = planCatchUpWindows(ctx, last, nowISO());
-        const win = windows.length ? windows[0] : null;
-        if (!win) {
-          get().refreshCatchUpStatus();
-          return;
-        }
-
-        await tryProcessWindow(win);
+        // Server is authoritative. One call processes at most one day.
+        await get().sendNextIfDue();
         get().refreshCatchUpStatus();
       },
 
       refreshCatchUpStatus() {
         const st = get();
-        const s = computeCatchUpStatusFromState(st);
+        // const s = computeCatchUpStatusFromState(st);
+        const s = computeCatchUpStatusFromState({
+          status: st.status,
+          engine: st.engine,
+          snapshot: st.snapshot,
+        });
         set({ catchUpStatus: s });
       },
 
@@ -1026,13 +1357,26 @@ export const useShareStore = create<StoreState>()(
         if (st.engine.mode === "SIM") return;
 
         // Recompute status right before acting (keeps UI + action consistent)
-        const s = computeCatchUpStatusFromState(st);
+        // const s = computeCatchUpStatusFromState(st);
+        const s = computeCatchUpStatusFromState({
+          status: st.status,
+          engine: st.engine,
+          snapshot: st.snapshot,
+        });
         set({ catchUpStatus: s });
 
+        // const next = s.nextWindow;
+        // if (!next) return;
+
+        // await tryProcessWindow(next);
+
+        // // Refresh again after processing (so button advances or disappears)
+        // get().refreshCatchUpStatus();
         const next = s.nextWindow;
         if (!next) return;
 
-        await tryProcessWindow(next);
+        // Server decides which window is valid/eligible; this processes one day.
+        await get().sendNextIfDue();
 
         // Refresh again after processing (so button advances or disappears)
         get().refreshCatchUpStatus();
@@ -1115,56 +1459,90 @@ export const useShareStore = create<StoreState>()(
           // await tryProcessWindow(win);
           // return;
 
+          // const pw = st.pendingWindow;
+          // const dueIdx = eng.currentDueDayIndex;
+
+          // // If we already have the exact window stashed, always reuse it.
+          // if (pw && pw.dayIndex === dueIdx) {
+          //   const win: WindowRef = pw;
+
+          //   set((s) => ({
+          //     pendingWindow: win,
+          //     engine: { ...s.engine, currentDueDayIndex: win.dayIndex },
+          //   }));
+
+          //   await tryProcessWindow(win);
+          //   return;
+          // }
+
+          // // Otherwise, rebuild the window safely.
+          // // Day-0 must not call computeWindowForDayIndex().
+          // const win: WindowRef = (() => {
+          //   if (dueIdx === 0) {
+          //     if (st.joinTimeLocalISO && st.cycleAnchorUtc) {
+          //       const w = buildDay0Window(
+          //         st.joinTimeLocalISO,
+          //         st.cycleAnchorUtc,
+          //       );
+          //       if (__DEV__)
+          //         console.log(`${TAG} tick → rebuilt Day-0 window`, {
+          //           dayIndex: 0,
+          //           fromUtc: w.fromUtc,
+          //           toUtc: w.toUtc,
+          //         });
+          //       return w;
+          //     }
+          //     throw new Error(
+          //       `${TAG} tick → cannot rebuild Day-0 (missing joinTimeLocalISO/cycleAnchorUtc)`,
+          //     );
+          //   }
+
+          //   const { fromUtc, toUtc } = computeWindowForDayIndex(
+          //     st.cycleAnchorUtc!,
+          //     dueIdx,
+          //   );
+          //   if (__DEV__)
+          //     console.log(`${TAG} tick → new window`, {
+          //       dayIndex: dueIdx,
+          //       fromUtc,
+          //       toUtc,
+          //     });
+          //   return { dayIndex: dueIdx, fromUtc, toUtc };
+          // })();
+
+          // set((s) => ({
+          //   pendingWindow: win,
+          //   engine: { ...s.engine, currentDueDayIndex: win.dayIndex },
+          // }));
+
+          // await tryProcessWindow(win);
+          // return;
+
           const pw = st.pendingWindow;
           const dueIdx = eng.currentDueDayIndex;
 
-          // If we already have the exact window stashed, always reuse it.
-          if (pw && pw.dayIndex === dueIdx) {
-            const win: WindowRef = pw;
+          // We must never rebuild windows locally in the new model.
+          // Retry must reuse the exact window that was stashed when the day became due.
+          if (!pw || pw.dayIndex !== dueIdx) {
+            if (__DEV__)
+              console.warn(`${TAG} tick → missing stashed pendingWindow`, {
+                dueIdx,
+                pendingWindowDayIndex: pw?.dayIndex ?? null,
+              });
 
+            // Safety reset: drop the in-flight due index so we re-check snapshot next tick/focus.
             set((s) => ({
-              pendingWindow: win,
-              engine: { ...s.engine, currentDueDayIndex: win.dayIndex },
+              pendingWindow: undefined,
+              engine: {
+                ...s.engine,
+                currentDueDayIndex: null,
+                nextRetryAtUtc: null,
+              },
             }));
-
-            await tryProcessWindow(win);
             return;
           }
 
-          // Otherwise, rebuild the window safely.
-          // Day-0 must not call computeWindowForDayIndex().
-          const win: WindowRef = (() => {
-            if (dueIdx === 0) {
-              if (st.joinTimeLocalISO && st.cycleAnchorUtc) {
-                const w = buildDay0Window(
-                  st.joinTimeLocalISO,
-                  st.cycleAnchorUtc,
-                );
-                if (__DEV__)
-                  console.log(`${TAG} tick → rebuilt Day-0 window`, {
-                    dayIndex: 0,
-                    fromUtc: w.fromUtc,
-                    toUtc: w.toUtc,
-                  });
-                return w;
-              }
-              throw new Error(
-                `${TAG} tick → cannot rebuild Day-0 (missing joinTimeLocalISO/cycleAnchorUtc)`,
-              );
-            }
-
-            const { fromUtc, toUtc } = computeWindowForDayIndex(
-              st.cycleAnchorUtc!,
-              dueIdx,
-            );
-            if (__DEV__)
-              console.log(`${TAG} tick → new window`, {
-                dayIndex: dueIdx,
-                fromUtc,
-                toUtc,
-              });
-            return { dayIndex: dueIdx, fromUtc, toUtc };
-          })();
+          const win: WindowRef = pw;
 
           set((s) => ({
             pendingWindow: win,
@@ -1175,9 +1553,23 @@ export const useShareStore = create<StoreState>()(
           return;
         }
 
+        // if (__DEV__) console.log(`${TAG} tick → checking if new window due`);
+
+        // // 2) Otherwise, see if a NEW window is due
+        // await get().sendNextIfDue();
         if (__DEV__) console.log(`${TAG} tick → checking if new window due`);
 
-        // 2) Otherwise, see if a NEW window is due
+        // If server told us when to wake, honor it to avoid polling and client-side time math.
+        if (eng.nextRetryAtUtc && now < eng.nextRetryAtUtc) {
+          if (__DEV__)
+            console.log(`${TAG} tick → sleeping until wake`, {
+              wakeAtMs: eng.nextRetryAtUtc,
+              msLeft: eng.nextRetryAtUtc - now,
+            });
+          return;
+        }
+
+        // 2) Otherwise, see if a NEW window is due (server snapshot decides)
         await get().sendNextIfDue();
       },
 
@@ -1293,8 +1685,29 @@ export const useShareStore = create<StoreState>()(
           return;
         }
 
+        // const segmentsExpected = st.segmentsExpected ?? 0;
+        // const nextIdx = (st.engine.lastSentDayIndex ?? 0) + 1;
+
         const segmentsExpected = st.segmentsExpected ?? 0;
-        const nextIdx = (st.engine.lastSentDayIndex ?? 0) + 1;
+
+        // SIM uses calendar-midnight windows anchored to joinTimeLocalISO.
+        // First SIM step must always be "yesterday" => targetDayIndex=1.
+        const nextIdxRaw = (st.engine.lastSentDayIndex ?? 0) + 1;
+        const nextIdx = Math.max(1, nextIdxRaw);
+
+        if (!st.joinTimeLocalISO) {
+          console.warn(`${TAG} simulateNextDay → missing joinTimeLocalISO`);
+          return;
+        }
+        if (!/[+-]\d{2}:\d{2}$/.test(st.joinTimeLocalISO)) {
+          console.warn(
+            `${TAG} simulateNextDay → joinTimeLocalISO missing numeric offset (±HH:MM)`,
+            {
+              joinTimeLocalISO: st.joinTimeLocalISO,
+            },
+          );
+          return;
+        }
 
         //  extra safety: stop when all segments are sent or nextIdx exceeds expected
         if (
@@ -1309,8 +1722,12 @@ export const useShareStore = create<StoreState>()(
           return;
         }
 
-        // Use the immutable anchor captured at startSession (fallback to current if missing)
+        // // Use the immutable anchor captured at startSession (fallback to current if missing)
+        // const baseIso = st.originalCycleAnchorUtc ?? st.cycleAnchorUtc;
+        // Keep a stable ISO in ctx for compatibility/logging.
+        // (SIM window math is anchored to joinTimeLocalISO midnight in planner.ts.)
         const baseIso = st.originalCycleAnchorUtc ?? st.cycleAnchorUtc;
+
         if (!baseIso) {
           console.warn(
             `${TAG} simulateNextDay → no baseIso available (missing originalCycleAnchorUtc/cycleAnchorUtc)`,
@@ -1319,18 +1736,31 @@ export const useShareStore = create<StoreState>()(
         }
 
         // Compute exact simulated window from immutable base (passive w.r.t. "now")
+        // const ctx: PlannerContext = {
+        //   joinTimeLocalISO: st.joinTimeLocalISO!,
+        //   joinTimezone: st.joinTimezone || "Local",
+        //   cycleAnchorUtc: baseIso, // <— CHANGED: pass immutable T₀
+        //   segmentsExpected,
+        //   alreadySentDayIndices:
+        //     st.engine.lastSentDayIndex != null
+        //       ? [st.engine.lastSentDayIndex]
+        //       : [],
+        //   lastSentDayIndex: st.engine.lastSentDayIndex ?? null, //
+        //   mode: "SIM",
+        // };
         const ctx: PlannerContext = {
-          joinTimeLocalISO: st.joinTimeLocalISO!,
+          joinTimeLocalISO: st.joinTimeLocalISO,
           joinTimezone: st.joinTimezone || "Local",
-          cycleAnchorUtc: baseIso, // <— CHANGED: pass immutable T₀
+          cycleAnchorUtc: baseIso, // kept for compatibility/logging; planner SIM ignores it
           segmentsExpected,
           alreadySentDayIndices:
             st.engine.lastSentDayIndex != null
               ? [st.engine.lastSentDayIndex]
               : [],
-          lastSentDayIndex: st.engine.lastSentDayIndex ?? null, //
+          lastSentDayIndex: st.engine.lastSentDayIndex ?? null,
           mode: "SIM",
         };
+
         const win = planSimulatedWindow(ctx, nextIdx);
 
         // In SIM we bypass grace for that day (process immediately)
@@ -1549,8 +1979,17 @@ export const useShareStore = create<StoreState>()(
           const nextState = {
             // planner/meta fields (authoritative)
             cycleAnchorUtc: snap.cycleAnchorUtc,
-            joinTimeLocalISO: snap.joinTimeLocalISO,
+            joinTimeLocalISO: (() => {
+              const j = snap.joinTimeLocalISO;
+              if (!/[+-]\d{2}:\d{2}$/.test(j)) {
+                throw new Error(
+                  `${TAG} hydrateFromSessionSnapshot: joinTimeLocalISO missing numeric offset (±HH:MM): ${j}`,
+                );
+              }
+              return j;
+            })(),
             joinTimezone: snap.joinTimezone,
+
             segmentsExpected: Number(snap.segmentsExpected ?? 0),
 
             // engine mirror
@@ -1574,7 +2013,12 @@ export const useShareStore = create<StoreState>()(
 
           return {
             ...nextState,
-            catchUpStatus: computeCatchUpStatusFromState(mergedForCatchUp),
+            // catchUpStatus: computeCatchUpStatusFromState(mergedForCatchUp),
+            catchUpStatus: computeCatchUpStatusFromState({
+              status: (mergedForCatchUp as any).status,
+              engine: (mergedForCatchUp as any).engine,
+              snapshot: (mergedForCatchUp as any).snapshot,
+            }),
           };
         });
       },
@@ -1643,9 +2087,67 @@ export const useShareStore = create<StoreState>()(
             segmentsSent: r.segments_sent,
             lastSentDayIndex: r.last_sent_day_index,
             cycleAnchorUtc: r.cycle_anchor_utc,
-            joinTimeLocalISO: r.join_time_local_iso,
             joinTimezone: r.join_timezone,
+            joinTimeLocalISO: (() => {
+              const j = r.join_time_local_iso;
+              if (typeof j !== "string" || j.length < 10) {
+                throw new Error(
+                  `${TAG} reuse ACTIVE: invalid join_time_local_iso from server`,
+                );
+              }
+              if (!/[+-]\d{2}:\d{2}$/.test(j)) {
+                throw new Error(
+                  `${TAG} reuse ACTIVE: join_time_local_iso missing numeric offset (±HH:MM): ${j}`,
+                );
+              }
+              return j;
+            })(),
+
+            // NEW (calendar day model)
+            joinLocalDate: (r as any).join_local_date ?? null,
+            graceMinutes: (r as any).grace_minutes ?? undefined,
+            // nextDue: (r as any).next_due
+            //   ? {
+            //       dayIndex: (r as any).next_due.day_index,
+            //       fromUtc: (r as any).next_due.from_utc,
+            //       toUtc: (r as any).next_due.to_utc,
+            //       eligibleAtUtc: (r as any).next_due.eligible_at_utc,
+            //       isEligible: (r as any).next_due.is_eligible,
+            //     }
+            //   : null,
+
+            // lastUploadedAt: r.last_uploaded_at,
+            nextDue: (r as any).next_due
+              ? {
+                  dayIndex: (r as any).next_due.day_index,
+                  fromUtc: (r as any).next_due.from_utc,
+                  toUtc: (r as any).next_due.to_utc,
+                  eligibleAtUtc: (r as any).next_due.eligible_at_utc,
+                  isEligible: (r as any).next_due.is_eligible,
+                }
+              : null,
+
+            catchUp: (r as any).catch_up
+              ? {
+                  countEligibleNow: Number(
+                    (r as any).catch_up.count_eligible_now ?? 0,
+                  ),
+                  next: (r as any).catch_up.next
+                    ? {
+                        dayIndex: (r as any).catch_up.next.day_index,
+                        fromUtc: (r as any).catch_up.next.from_utc,
+                        toUtc: (r as any).catch_up.next.to_utc,
+                        eligibleAtUtc: (r as any).catch_up.next.eligible_at_utc,
+                        isEligible: (r as any).catch_up.next.is_eligible,
+                      }
+                    : null,
+                }
+              : null,
+
+            wakeAtUtc: (r as any).wake_at_utc ?? null,
+
             lastUploadedAt: r.last_uploaded_at,
+
             lastWindowFromUtc: r.last_window_from_utc,
             lastWindowToUtc: r.last_window_to_utc,
           } satisfies NonNullable<StoreState["snapshot"]>;
@@ -1908,6 +2410,13 @@ export const useShareStore = create<StoreState>()(
             cycleAnchorUtc: primary.cycleAnchorUtc,
             joinTimeLocalISO: primary.joinTimeLocalISO,
             joinTimezone: primary.joinTimezone,
+
+            // NEW (calendar day model)
+            // If login hydration doesn’t include these yet, keep them null/undefined safely.
+            joinLocalDate: (primary as any).joinLocalDate ?? null,
+            graceMinutes: (primary as any).graceMinutes ?? undefined,
+            nextDue: (primary as any).nextDue ?? null,
+
             lastUploadedAt: primary.lastUploadedAt,
             lastWindowFromUtc: primary.lastWindowFromUtc,
             lastWindowToUtc: primary.lastWindowToUtc,

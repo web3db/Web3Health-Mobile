@@ -16,10 +16,9 @@
 import { uploadSegment } from "./api";
 import {
   getShareRuntimeConfig,
-  GRACE_WAIT_MS,
   MAX_RETRIES,
   RETRY_INTERVAL_MS,
-  SHARE_BUCKET_MINUTES,
+  SHARE_BUCKET_MINUTES
 } from "./constants";
 import { summarizeWindow, type MetricCode } from "./summarizer";
 import type { ShareSessionState, UploadSegmentResult } from "./types";
@@ -208,12 +207,30 @@ function iso(t: number | null | undefined) {
 }
 
 /** Normalize whatever the API returns into an internal UploadSegmentResult shape. */
+// function normalizeUploadResult(raw: any): UploadSegmentResult {
+//   const hasOk = typeof raw?.ok === "boolean";
+//   const ok = hasOk
+//     ? !!raw.ok
+//     : !!raw?.status && !raw?.error && raw?.status !== "ERROR";
+//   const status = typeof raw?.status === "string" ? raw.status : undefined;
+//   const error = raw?.error ? String(raw.error) : undefined;
+//   return { ok, status, error };
+// }
+
 function normalizeUploadResult(raw: any): UploadSegmentResult {
   const hasOk = typeof raw?.ok === "boolean";
   const ok = hasOk
     ? !!raw.ok
     : !!raw?.status && !raw?.error && raw?.status !== "ERROR";
-  const status = typeof raw?.status === "string" ? raw.status : undefined;
+
+  let status = typeof raw?.status === "string" ? raw.status : undefined;
+  if (status) {
+    const s = status.toUpperCase();
+    // Normalize variants to a single spelling used across the app.
+    if (s === "COMPLETED") status = "COMPLETE";
+    if (s === "COMPLETE") status = "COMPLETE";
+  }
+
   const error = raw?.error ? String(raw.error) : undefined;
   return { ok, status, error };
 }
@@ -270,13 +287,23 @@ export async function processDueWindow(
     return { state };
   }
 
+  // if (state.currentDueDayIndex !== window.dayIndex) {
+  //   state = {
+  //     ...state,
+  //     currentDueDayIndex: window.dayIndex,
+  //     noDataRetryCount: 0,
+  //     nextRetryAtUtc: null, // clear any pending retry from prior day
+  //     graceAppliedForDay: null, // allow grace to apply once for this new day
+  //   };
+  // }
+
   if (state.currentDueDayIndex !== window.dayIndex) {
     state = {
       ...state,
       currentDueDayIndex: window.dayIndex,
       noDataRetryCount: 0,
       nextRetryAtUtc: null, // clear any pending retry from prior day
-      graceAppliedForDay: null, // allow grace to apply once for this new day
+      graceAppliedForDay: null, // retained for backward compatibility; no longer used here
     };
   }
 
@@ -294,52 +321,52 @@ export async function processDueWindow(
     });
     return { state };
   }
-  // ★ Day-0: fast probe-first path (avoid heavy compute when clearly no data yet)
-  if (window.dayIndex === 0) {
-    const { payload: probePayload, diag: probeDiag } =
-      await buildSegmentPayload(window, {
-        ...ctx,
-        probeOnly: true,
-        bucketMinutes: SHARE_BUCKET_MINUTES,
-      });
-    if (!probePayload.hasData) {
-      const baseWait = GRACE_WAIT_MS > 0 ? GRACE_WAIT_MS : RETRY_INTERVAL_MS;
-      const nextRetryAtUtc = nowUtc + Math.max(1000, withJitter(baseWait)); // enforce at least 1s
-      console.log(TAG, "day0-probe no-data → short-wait", {
-        dayIdx: window.dayIndex,
-        nextRetryAtISO: new Date(nextRetryAtUtc).toISOString(),
-        diag: probeDiag,
-      });
-      return {
-        state: {
-          ...state,
-          currentDueDayIndex: window.dayIndex,
-          noDataRetryCount: (state.noDataRetryCount ?? 0) + 1, // count toward retries, but still gentle on day-0
-          nextRetryAtUtc,
-        },
-        diag: probeDiag,
-      };
-    }
-    // If probe found data, continue to full build below.
-  }
+  // // ★ Day-0: fast probe-first path (avoid heavy compute when clearly no data yet)
+  // if (window.dayIndex === 0) {
+  //   const { payload: probePayload, diag: probeDiag } =
+  //     await buildSegmentPayload(window, {
+  //       ...ctx,
+  //       probeOnly: true,
+  //       bucketMinutes: SHARE_BUCKET_MINUTES,
+  //     });
+  //   if (!probePayload.hasData) {
+  //     const baseWait = GRACE_WAIT_MS > 0 ? GRACE_WAIT_MS : RETRY_INTERVAL_MS;
+  //     const nextRetryAtUtc = nowUtc + Math.max(1000, withJitter(baseWait)); // enforce at least 1s
+  //     console.log(TAG, "day0-probe no-data → short-wait", {
+  //       dayIdx: window.dayIndex,
+  //       nextRetryAtISO: new Date(nextRetryAtUtc).toISOString(),
+  //       diag: probeDiag,
+  //     });
+  //     return {
+  //       state: {
+  //         ...state,
+  //         currentDueDayIndex: window.dayIndex,
+  //         noDataRetryCount: (state.noDataRetryCount ?? 0) + 1, // count toward retries, but still gentle on day-0
+  //         nextRetryAtUtc,
+  //       },
+  //       diag: probeDiag,
+  //     };
+  //   }
+  //   // If probe found data, continue to full build below.
+  // }
 
-  // One-time grace per new due day to absorb provider write latency (not for Day-0)
-  if (
-    window.dayIndex !== 0 &&
-    GRACE_WAIT_MS > 0 &&
-    state.graceAppliedForDay !== window.dayIndex
-  ) {
-    const waitMs = withJitter(GRACE_WAIT_MS);
-    console.log(TAG, "grace-wait", { dayIdx: window.dayIndex, ms: waitMs });
-    return {
-      state: {
-        ...state,
-        currentDueDayIndex: window.dayIndex,
-        nextRetryAtUtc: nowUtc + waitMs,
-        graceAppliedForDay: window.dayIndex,
-      },
-    };
-  }
+  // // One-time grace per new due day to absorb provider write latency (not for Day-0)
+  // if (
+  //   window.dayIndex !== 0 &&
+  //   GRACE_WAIT_MS > 0 &&
+  //   state.graceAppliedForDay !== window.dayIndex
+  // ) {
+  //   const waitMs = withJitter(GRACE_WAIT_MS);
+  //   console.log(TAG, "grace-wait", { dayIdx: window.dayIndex, ms: waitMs });
+  //   return {
+  //     state: {
+  //       ...state,
+  //       currentDueDayIndex: window.dayIndex,
+  //       nextRetryAtUtc: nowUtc + waitMs,
+  //       graceAppliedForDay: window.dayIndex,
+  //     },
+  //   };
+  // }
 
   // Build payload from REAL data (now returns { payload, diag })
   const { payload, diag } = await buildSegmentPayload(window, {
@@ -351,7 +378,11 @@ export async function processDueWindow(
   });
 
   if (!payload.hasData) {
-    const newCount = state.noDataRetryCount + 1;
+    const prevCount = Number.isFinite(state.noDataRetryCount)
+      ? (state.noDataRetryCount as number)
+      : 0;
+
+    const newCount = prevCount + 1;
 
     // When we exceed MAX_RETRIES for a given day, we mark the engine status as
     // "CANCELLED". This is an engine-level decision only: the Share store

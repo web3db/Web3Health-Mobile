@@ -11,11 +11,7 @@ import {
   type MetricCode,
 } from "@/src/services/sharing/summarizer";
 import { useMarketStore as useMarketplaceStore } from "@/src/store/useMarketStore";
-import {
-  computeNextWindowFromSnapshot,
-  formatTimeLeftLabel,
-  useShareStore,
-} from "@/src/store/useShareStore";
+import { formatTimeLeftLabel, useShareStore } from "@/src/store/useShareStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import { useFocusEffect } from "@react-navigation/native";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -29,6 +25,10 @@ import React, {
 import { Alert, Linking, Platform, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import {
+  planSimulatedWindow,
+  type PlannerContext,
+} from "@/src/services/sharing/planner";
 import { useApplyGateStore } from "@/src/store/useApplyGateStore";
 
 // --- tiny helpers (local to this file to keep it self-contained) ---
@@ -198,11 +198,38 @@ function buildMetricMapStrict(
 // ─────────────────────────────────────────────────────────────────────────────
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
+function hasNumericOffset(iso: string) {
+  return /[+-]\d{2}:\d{2}$/.test(iso);
+}
+
+// Build an ISO string with a numeric offset (±HH:MM) using local wall-clock time.
+function buildLocalIsoWithOffset(d: Date) {
+  const pad2 = (n: number) => String(Math.trunc(Math.abs(n))).padStart(2, "0");
+
+  // JS getTimezoneOffset() is minutes behind UTC (NY winter: 300). Offset should be "-05:00".
+  const offsetMinutes = -d.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const hh = pad2(Math.floor(Math.abs(offsetMinutes) / 60));
+  const mm = pad2(Math.abs(offsetMinutes) % 60);
+  const offset = `${sign}${hh}:${mm}`;
+
+  const y = d.getFullYear();
+  const mo = pad2(d.getMonth() + 1);
+  const day = pad2(d.getDate());
+  const h = pad2(d.getHours());
+  const mi = pad2(d.getMinutes());
+  const s = pad2(d.getSeconds());
+  const ms = String(d.getMilliseconds()).padStart(3, "0");
+
+  return `${y}-${mo}-${day}T${h}:${mi}:${s}.${ms}${offset}`;
+}
+
 function fmtUTC(iso: string) {
   return new Date(iso).toISOString().replace(".000Z", "Z");
 }
 
-function fmtLocal(iso: string) {
+function fmtLocal(iso?: string | null) {
+  if (!iso) return "—";
   // 24h local for clarity in QA; shows date + time
   return new Date(iso).toLocaleString(undefined, {
     year: "numeric",
@@ -305,6 +332,7 @@ export default function OpportunityDetails() {
   const tick = useShareStore((s) => s.tick);
   const catchUpIfNeeded = useShareStore((s) => s.catchUpIfNeeded);
   const catchUpNextOne = useShareStore((s) => s.catchUpNextOne);
+  const catchUpStatus = useShareStore((s) => s.catchUpStatus);
   const sessionId = useShareStore((s) => s.sessionId);
   const isProcessing = engine?.currentDueDayIndex != null;
   const completed = (engine?.segmentsSent ?? 0) >= (segmentsExpected ?? 0);
@@ -781,11 +809,17 @@ export default function OpportunityDetails() {
               if (userId != null && pid) {
                 void useShareStore.getState().fetchSessionSnapshot(userId, pid);
               }
+              // Alert.alert(
+              //   "Sharing started",
+              //   __DEV__
+              //     ? "First segment will send now.\nDay progression is accelerated for testing."
+              //     : "We’ll send your first segment now and continue every 24 hours.",
+              // );
               Alert.alert(
                 "Sharing started",
                 __DEV__
-                  ? "First segment will send now.\nDay progression is accelerated for testing."
-                  : "We’ll send your first segment now and continue every 24 hours.",
+                  ? "Sharing is active. Sync will run when the next window is eligible.\nUse the Test Panel to simulate days."
+                  : "Sharing is active. Sync will run when your next window becomes eligible.",
               );
             } catch (e) {
               console.log("[OppDetails] startSession error", e);
@@ -874,34 +908,41 @@ export default function OpportunityDetails() {
   // ─────────────────────────────────────────────────────────────────────────────
   // NEW: Sim helpers (use ORIGINAL anchor; always 24h blocks)
   // nextTargetIdx = next unsent day (1..segmentsExpected)
+  const devJoinLocalFallback = useMemo(() => {
+    // DEV-only: allow preview/sim UI to function before snapshot arrives.
+    // Do NOT use this for real session creation; store/api are the source of truth.
+    const iso = buildLocalIsoWithOffset(new Date());
+    return hasNumericOffset(iso) ? iso : null;
+  }, []);
+
   const nextTargetIdx = Math.min(
     Math.max(1, (engine?.lastSentDayIndex ?? 0) + 1),
     Number(segmentsExpected ?? 0) || 0,
   );
 
-  const nextWindowPreview = (() => {
-    const baseIso = originalCycleAnchorUtc ?? cycleAnchorUtc;
-    if (
-      !testFlags.TEST_MODE ||
-      !sessionId ||
-      status !== "ACTIVE" ||
-      !baseIso ||
-      nextTargetIdx <= 0 ||
-      completed
-    ) {
-      return null;
-    }
-    const t0 = Date.parse(baseIso);
-    const fromUtc = new Date(t0 - nextTargetIdx * ONE_DAY_MS).toISOString();
-    const toUtc = new Date(t0 - (nextTargetIdx - 1) * ONE_DAY_MS).toISOString();
-    return {
-      idx: nextTargetIdx,
-      fromUtc,
-      toUtc,
-      fromLocal: fmtLocal(fromUtc),
-      toLocal: fmtLocal(toUtc),
-    };
-  })();
+  // const nextWindowPreview = (() => {
+  //   const baseIso = originalCycleAnchorUtc ?? cycleAnchorUtc;
+  //   if (
+  //     !testFlags.TEST_MODE ||
+  //     !sessionId ||
+  //     status !== "ACTIVE" ||
+  //     !baseIso ||
+  //     nextTargetIdx <= 0 ||
+  //     completed
+  //   ) {
+  //     return null;
+  //   }
+  //   const t0 = Date.parse(baseIso);
+  //   const fromUtc = new Date(t0 - nextTargetIdx * ONE_DAY_MS).toISOString();
+  //   const toUtc = new Date(t0 - (nextTargetIdx - 1) * ONE_DAY_MS).toISOString();
+  //   return {
+  //     idx: nextTargetIdx,
+  //     fromUtc,
+  //     toUtc,
+  //     fromLocal: fmtLocal(fromUtc),
+  //     toLocal: fmtLocal(toUtc),
+  //   };
+  // })();
 
   // const backdateToDayIndexAndTick = useCallback((targetDayIdx: number) => {
   //   if (!testFlags.TEST_MODE) return;
@@ -935,6 +976,66 @@ export default function OpportunityDetails() {
   //   // Sweep all past windows in order
   //   catchUpIfNeeded();
   // }, [segmentsExpected, cycleAnchorUtc, setBackdatedAnchorTestOnly, catchUpIfNeeded]);
+
+  const nextWindowPreview = (() => {
+    const baseIso = originalCycleAnchorUtc ?? cycleAnchorUtc;
+
+    if (
+      !testFlags.TEST_MODE ||
+      !sessionId ||
+      status !== "ACTIVE" ||
+      !baseIso ||
+      nextTargetIdx <= 0 ||
+      completed
+    ) {
+      return null;
+    }
+
+    // Mirror store simulation exactly: 24h blocks from immutable baseIso.
+    const joinLocal = snapshot?.joinTimeLocalISO;
+    const joinTz = snapshot?.joinTimezone;
+
+    // If we don’t have a valid local ISO with offset yet, do NOT call planner.
+    // (Using baseIso here is wrong because it’s UTC "Z".)
+    const effectiveJoinLocal =
+      joinLocal && hasNumericOffset(joinLocal)
+        ? joinLocal
+        : devJoinLocalFallback;
+
+    if (!effectiveJoinLocal) {
+      if (__DEV__) {
+        console.warn(
+          "[OppDetails] nextWindowPreview skipped: missing/invalid joinTimeLocalISO",
+          {
+            joinTimeLocalISO: joinLocal ?? null,
+            cycleAnchorUtc: baseIso,
+          },
+        );
+      }
+      return null;
+    }
+
+    const ctx: PlannerContext = {
+      joinTimeLocalISO: effectiveJoinLocal,
+      joinTimezone: joinTz ?? "Local",
+      cycleAnchorUtc: baseIso,
+      segmentsExpected: Number(segmentsExpected ?? 0) || 0,
+      alreadySentDayIndices:
+        engine?.lastSentDayIndex != null ? [engine.lastSentDayIndex] : [],
+      lastSentDayIndex: engine?.lastSentDayIndex ?? null,
+      mode: "SIM",
+    };
+
+    const win = planSimulatedWindow(ctx, nextTargetIdx);
+
+    return {
+      idx: nextTargetIdx,
+      fromUtc: win.fromUtc,
+      toUtc: win.toUtc,
+      fromLocal: fmtLocal(win.fromUtc),
+      toLocal: fmtLocal(win.toUtc),
+    };
+  })();
 
   const simNextDay = useCallback(async () => {
     if (!testFlags.TEST_MODE) return;
@@ -1353,77 +1454,37 @@ export default function OpportunityDetails() {
               }
 
               const completed = s.segmentsSent >= s.segmentsExpected;
-              const nextWin = completed
-                ? null
-                : computeNextWindowFromSnapshot(
-                    s.cycleAnchorUtc,
-                    s.lastSentDayIndex,
-                    s.segmentsExpected,
-                  );
 
-              if (__DEV__ && nextWin) {
-                console.log(
-                  "[OppDetails] Next share window (server-anchored) =",
-                  nextWin,
-                );
+              const nd = completed ? null : (s.nextDue ?? null);
+
+              if (__DEV__) {
+                console.log("[OppDetails] snapshot.nextDue =", nd);
               }
-
-              const nowIso = new Date(nowTick).toISOString();
-              const within =
-                nextWin && nextWin.fromUtc <= nowIso && nowIso < nextWin.toUtc;
-
-              const nextLabel = !nextWin
-                ? "—"
-                : within
-                  ? `closes ${formatTimeLeftLabel(nextWin.toUtc, nowTick)}`
-                  : `opens ${formatTimeLeftLabel(nextWin.fromUtc, nowTick)}`;
-
-              const fmtLocal = (iso?: string | null) =>
-                iso
-                  ? new Date(iso).toLocaleString(undefined, {
-                      year: "numeric",
-                      month: "short",
-                      day: "2-digit",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                      hour12: false,
-                    })
-                  : "—";
-
-              const rc = getShareRuntimeConfig();
-              const dayMs = Number(rc.DAY_LENGTH_MS ?? ONE_DAY_MS);
-              const graceMs = Number(rc.GRACE_WAIT_MS ?? 0);
-
-              const catchUpInfo = completed
-                ? {
-                    missedCount: 0,
-                    nextMissedDayIndex: null,
-                    nextFromUtc: null,
-                  }
-                : computeMissedCatchUp(
-                    {
-                      cycleAnchorUtc: s.cycleAnchorUtc,
-                      segmentsExpected: s.segmentsExpected,
-                      lastSentDayIndex: s.lastSentDayIndex,
-                    },
-                    nowTick,
-                    dayMs,
-                    graceMs,
-                  );
 
               const snapStatusUpper = String(
                 s.statusName ?? s.statusCode ?? "",
               ).toUpperCase();
 
+              const isEligible = !!nd?.isEligible;
+              const eligibleAtUtc = nd?.eligibleAtUtc ?? null;
+
+              const eligibilityLabel = completed
+                ? "—"
+                : isEligible
+                  ? "Ready to sync"
+                  : eligibleAtUtc
+                    ? `eligible ${formatTimeLeftLabel(eligibleAtUtc, nowTick)}`
+                    : "—";
+
               const showCatchUp =
                 snapStatusUpper === "ACTIVE" &&
-                catchUpInfo.missedCount > 0 &&
+                (catchUpStatus?.missedCount ?? 0) > 0 &&
                 engine?.mode !== "SIM" &&
                 engine?.currentDueDayIndex == null;
 
               return (
                 <View style={{ gap: 4 }}>
-                  {showCatchUp ? (
+                  {/* {showCatchUp ? (
                     <View style={{ marginTop: 6, gap: 6 }}>
                       <Text style={{ color: c.text.secondary }}>
                         You missed {catchUpInfo.missedCount} day
@@ -1435,6 +1496,30 @@ export default function OpportunityDetails() {
                         title={
                           catchUpInfo.nextFromUtc
                             ? `Catch up ${fmtMonthDay(catchUpInfo.nextFromUtc)}`
+                            : "Catch up"
+                        }
+                        onPress={doCatchUpOne}
+                        disabled={
+                          status !== "ACTIVE" ||
+                          engine?.currentDueDayIndex != null ||
+                          engine?.mode === "SIM"
+                        }
+                      />
+                    </View>
+                  ) : null} */}
+
+                  {showCatchUp ? (
+                    <View style={{ marginTop: 6, gap: 6 }}>
+                      <Text style={{ color: c.text.secondary }}>
+                        You missed {catchUpStatus?.missedCount ?? 0} day
+                        {(catchUpStatus?.missedCount ?? 0) === 1 ? "" : "s"}.
+                        Catch them up one at a time.
+                      </Text>
+
+                      <Button
+                        title={
+                          catchUpStatus?.nextLabel
+                            ? `Catch up ${catchUpStatus.nextLabel}`
                             : "Catch up"
                         }
                         onPress={doCatchUpOne}
@@ -1476,7 +1561,7 @@ export default function OpportunityDetails() {
                     → {s.lastWindowToUtc ? fmtLocal(s.lastWindowToUtc) : "—"}
                   </Text>
 
-                  <Text style={{ color: c.text.secondary }}>
+                  {/* <Text style={{ color: c.text.secondary }}>
                     <Text style={{ fontWeight: "700", color: c.text.primary }}>
                       Next share:
                     </Text>{" "}
@@ -1492,6 +1577,34 @@ export default function OpportunityDetails() {
                       Time left:
                     </Text>{" "}
                     {completed ? "—" : nextLabel}
+                  </Text> */}
+                  <Text style={{ color: c.text.secondary }}>
+                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
+                      Next share window:
+                    </Text>{" "}
+                    {completed
+                      ? "Completed"
+                      : nd
+                        ? `${fmtLocal(nd.fromUtc)} → ${fmtLocal(nd.toUtc)}`
+                        : "—"}
+                  </Text>
+
+                  <Text style={{ color: c.text.secondary }}>
+                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
+                      Eligibility:
+                    </Text>{" "}
+                    {eligibilityLabel}
+                  </Text>
+
+                  <Text style={{ color: c.text.secondary }}>
+                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
+                      Eligible at:
+                    </Text>{" "}
+                    {completed
+                      ? "—"
+                      : eligibleAtUtc
+                        ? fmtLocal(eligibleAtUtc)
+                        : "—"}
                   </Text>
 
                   <View style={{ marginTop: 4 }}>
@@ -1627,7 +1740,9 @@ export default function OpportunityDetails() {
                   status !== "ACTIVE" ||
                   !segmentsExpected ||
                   (engine?.lastSentDayIndex ?? 0) >= (segmentsExpected ?? 0) ||
-                  completed
+                  completed ||
+                  !snapshot?.joinTimeLocalISO ||
+                  !hasNumericOffset(snapshot.joinTimeLocalISO)
                 }
               />
               <Button

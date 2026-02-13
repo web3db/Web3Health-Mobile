@@ -4,14 +4,9 @@ import {
   sendOpenAppNudge,
 } from "@/src/services/notifications";
 import {
-  computeNextWindowFromSnapshot,
-  useShareStore,
+  useShareStore
 } from "@/src/store/useShareStore";
 
-import {
-  getCatchUpStatus as plannerGetCatchUpStatus,
-  type PlannerContext,
-} from "@/src/services/sharing/planner";
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useMemo, useState } from "react";
@@ -48,8 +43,8 @@ export function useShareSyncMonitor() {
   const engine = useShareStore((s) => s.engine);
   const tick = useShareStore((s) => s.tick);
 
-  const cycleAnchorUtc = useShareStore((s) => s.cycleAnchorUtc);
-  const segmentsExpected = useShareStore((s) => s.segmentsExpected);
+  // const cycleAnchorUtc = useShareStore((s) => s.cycleAnchorUtc);
+  // const segmentsExpected = useShareStore((s) => s.segmentsExpected);
   const snapshot = useShareStore((s) => s.snapshot);
 
   const userId = useShareStore((s) => s.userId);
@@ -101,20 +96,87 @@ export function useShareSyncMonitor() {
   //   };
   // }, [lastRunAtISO, segmentsSent]);
 
+  // const state: SyncState = useMemo(() => {
+  //   const now = Date.now();
+
+  //   const anchor = cycleAnchorUtc;
+  //   const expected = segmentsExpected ?? 0;
+
+  //   const next =
+  //     anchor && expected
+  //       ? computeNextWindowFromSnapshot(
+  //           anchor,
+  //           engine?.lastSentDayIndex ?? null,
+  //           expected,
+  //         )
+  //       : null;
+
+  //   // Prefer real backend activity; fall back to bg breadcrumb
+  //   const lastActivityISO =
+  //     snapshot?.lastUploadedAt ?? lastRunAtISO ?? undefined;
+
+  //   const last = lastActivityISO ? Date.parse(lastActivityISO) : undefined;
+  //   const isStale24h = last ? now - last >= 24 * 60 * 60 * 1000 : true;
+
+  //   // Catch-up preview should be derived from server truth when available.
+  //   // We DO NOT trigger catch-up here; this is display-only state.
+  //   let missedCount: number | undefined;
+  //   let nextCatchUpFromUtcISO: string | undefined;
+  //   let nextCatchUpToUtcISO: string | undefined;
+
+  //   if (
+  //     snapshot?.cycleAnchorUtc &&
+  //     snapshot?.joinTimeLocalISO &&
+  //     typeof snapshot?.segmentsExpected === "number"
+  //   ) {
+  //     const lastSent =
+  //       snapshot.lastSentDayIndex == null
+  //         ? 0
+  //         : Number(snapshot.lastSentDayIndex);
+
+  //     const ctx: PlannerContext = {
+  //       joinTimeLocalISO: snapshot.joinTimeLocalISO,
+  //       joinTimezone: snapshot.joinTimezone ?? "Local",
+  //       cycleAnchorUtc: snapshot.cycleAnchorUtc,
+  //       segmentsExpected: Number(snapshot.segmentsExpected ?? 0),
+  //       alreadySentDayIndices: lastSent >= 1 ? [lastSent] : [],
+  //       lastSentDayIndex: lastSent,
+  //       mode: "NORMAL",
+  //     };
+
+  //     const r = plannerGetCatchUpStatus(
+  //       ctx,
+  //       lastSent,
+  //       new Date(now).toISOString(),
+  //     );
+  //     missedCount = r.count;
+  //     nextCatchUpFromUtcISO = r.next?.fromUtc;
+  //     nextCatchUpToUtcISO = r.next?.toUtc;
+  //   }
+
+  //   return {
+  //     lastAttemptAtISO,
+  //     lastRunAtISO,
+  //     segmentsSent,
+  //     isStale24h,
+  //     nextWindowStartUtcISO: next?.fromUtc ?? "",
+  //     nextWindowEndUtcISO: next?.toUtc ?? "",
+  //     missedCount,
+  //     nextCatchUpFromUtcISO,
+  //     nextCatchUpToUtcISO,
+  //   };
+  // }, [
+  //   lastAttemptAtISO,
+  //   lastRunAtISO,
+  //   segmentsSent,
+  //   cycleAnchorUtc,
+  //   segmentsExpected,
+  //   engine?.lastSentDayIndex,
+  //   snapshot?.lastUploadedAt,
+  // ]);
+
   const state: SyncState = useMemo(() => {
     const now = Date.now();
-
-    const anchor = cycleAnchorUtc;
-    const expected = segmentsExpected ?? 0;
-
-    const next =
-      anchor && expected
-        ? computeNextWindowFromSnapshot(
-            anchor,
-            engine?.lastSentDayIndex ?? null,
-            expected,
-          )
-        : null;
 
     // Prefer real backend activity; fall back to bg breadcrumb
     const lastActivityISO =
@@ -123,49 +185,18 @@ export function useShareSyncMonitor() {
     const last = lastActivityISO ? Date.parse(lastActivityISO) : undefined;
     const isStale24h = last ? now - last >= 24 * 60 * 60 * 1000 : true;
 
-    // Catch-up preview should be derived from server truth when available.
-    // We DO NOT trigger catch-up here; this is display-only state.
-    let missedCount: number | undefined;
-    let nextCatchUpFromUtcISO: string | undefined;
-    let nextCatchUpToUtcISO: string | undefined;
-
-    if (
-      snapshot?.cycleAnchorUtc &&
-      snapshot?.joinTimeLocalISO &&
-      typeof snapshot?.segmentsExpected === "number"
-    ) {
-      const lastSent =
-        snapshot.lastSentDayIndex == null
-          ? 0
-          : Number(snapshot.lastSentDayIndex);
-
-      const ctx: PlannerContext = {
-        joinTimeLocalISO: snapshot.joinTimeLocalISO,
-        joinTimezone: snapshot.joinTimezone ?? "Local",
-        cycleAnchorUtc: snapshot.cycleAnchorUtc,
-        segmentsExpected: Number(snapshot.segmentsExpected ?? 0),
-        alreadySentDayIndices: lastSent >= 1 ? [lastSent] : [],
-        lastSentDayIndex: lastSent,
-        mode: "NORMAL",
-      };
-
-      const r = plannerGetCatchUpStatus(
-        ctx,
-        lastSent,
-        new Date(now).toISOString(),
-      );
-      missedCount = r.count;
-      nextCatchUpFromUtcISO = r.next?.fromUtc;
-      nextCatchUpToUtcISO = r.next?.toUtc;
-    }
+    // Display-only catch-up preview derived from server snapshot.
+    const missedCount = snapshot?.catchUp?.countEligibleNow;
+    const nextCatchUpFromUtcISO = snapshot?.catchUp?.next?.fromUtc;
+    const nextCatchUpToUtcISO = snapshot?.catchUp?.next?.toUtc;
 
     return {
       lastAttemptAtISO,
       lastRunAtISO,
       segmentsSent,
       isStale24h,
-      nextWindowStartUtcISO: next?.fromUtc ?? "",
-      nextWindowEndUtcISO: next?.toUtc ?? "",
+      nextWindowStartUtcISO: snapshot?.nextDue?.fromUtc ?? "",
+      nextWindowEndUtcISO: snapshot?.nextDue?.toUtc ?? "",
       missedCount,
       nextCatchUpFromUtcISO,
       nextCatchUpToUtcISO,
@@ -174,10 +205,12 @@ export function useShareSyncMonitor() {
     lastAttemptAtISO,
     lastRunAtISO,
     segmentsSent,
-    cycleAnchorUtc,
-    segmentsExpected,
-    engine?.lastSentDayIndex,
     snapshot?.lastUploadedAt,
+    snapshot?.nextDue?.fromUtc,
+    snapshot?.nextDue?.toUtc,
+    snapshot?.catchUp?.countEligibleNow,
+    snapshot?.catchUp?.next?.fromUtc,
+    snapshot?.catchUp?.next?.toUtc,
   ]);
 
   // Nudge user if stale for >24h and session is ACTIVE

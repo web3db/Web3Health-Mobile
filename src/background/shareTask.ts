@@ -5,7 +5,9 @@ import * as BackgroundTask from "expo-background-task";
 import * as TaskManager from "expo-task-manager";
 import { Platform } from "react-native";
 
-import { getSessionByPosting } from "@/src/services/sharing/api";
+import {
+  getSessionSnapshot
+} from "@/src/services/sharing/api";
 // import { checkMetricPermissionsForMap } from "@/src/services/sharing/summarizer";
 import { isShareReady, useShareStore } from "@/src/store/useShareStore";
 
@@ -145,99 +147,103 @@ TaskManager.defineTask(SHARE_BG_TASK, async () => {
     const s = useShareStore.getState();
 
     // Optional: if sessionId missing but we have postingId+userId, try resolver once
+    // if (!s.sessionId && s.postingId && s.userId) {
+    //   try {
+    //     const resolved = await getSessionByPosting(s.postingId, s.userId);
+    //     if (resolved && resolved.sessionId) {
+    // useShareStore.setState((prev) => ({
+    //   sessionId: resolved.sessionId,
+    //   segmentsExpected: Number(
+    //     resolved.segmentsExpected ?? prev.segmentsExpected ?? 0
+    //   ),
+    //   status: "ACTIVE",
+    //   engine: { ...prev.engine, status: "ACTIVE" },
+
+    //   // Optional (only if missing); safe defaults
+    //   cycleAnchorUtc: prev.cycleAnchorUtc ?? new Date().toISOString(),
+    //   originalCycleAnchorUtc:
+    //     prev.originalCycleAnchorUtc ?? new Date().toISOString(),
+    // }));
+
+    // useShareStore.setState((prev) => ({
+    //   sessionId: resolved.sessionId,
+    //   segmentsExpected: Number(
+    //     resolved.segmentsExpected ?? prev.segmentsExpected ?? 0,
+    //   ),
+    //   status: "ACTIVE",
+    //   engine: { ...(prev.engine ?? {}), status: "ACTIVE" },
+
+    //   // IMPORTANT: do not invent anchors here.
+    //   // We will pull the canonical server snapshot below and then align anchors from it.
+    // }));
+
+    // // Pull canonical server snapshot so planner uses server truth in this same run
+    // await useShareStore
+    //   .getState()
+    //   .fetchSessionSnapshot(
+    //     useShareStore.getState().userId!,
+    //     useShareStore.getState().postingId!,
+    //   );
+
+    // // Align planner anchors to the canonical server anchor right away
+    // {
+    //   const snap = useShareStore.getState().snapshot;
+    //   if (snap?.cycleAnchorUtc) {
+    //     useShareStore.setState((prev) => ({
+    //       cycleAnchorUtc: snap.cycleAnchorUtc, // planner ISO used by planner/tick
+    //       engine: {
+    //         ...prev.engine,
+    //         // engine.cycleAnchorUtc is stored in ms (number)
+    //         cycleAnchorUtc: new Date(snap.cycleAnchorUtc).getTime(),
+    //       },
+    //     }));
+    //     if (typeof snap?.segmentsExpected === "number") {
+    //       useShareStore.setState((prev) => ({
+    //         segmentsExpected: snap.segmentsExpected,
+    //         engine: {
+    //           ...prev.engine,
+    //           segmentsExpected: snap.segmentsExpected,
+    //         },
+    //       }));
+    //     }
+    //   }
+    // }
+
+    // if (__DEV__)
+    //   console.log(
+    //     "[BG] session resolved via resolver",
+    //     resolved.sessionId,
+    //   );
+
+    // Minimal local activation (do NOT invent anchors here)
+    //
+
+    // Recovery: if we have postingId+userId but sessionId is missing, use the authoritative snapshot.
+    // This avoids resolver-based reuse and avoids inventing anchors.
     if (!s.sessionId && s.postingId && s.userId) {
       try {
-        const resolved = await getSessionByPosting(s.postingId, s.userId);
-        if (resolved && resolved.sessionId) {
-          // useShareStore.setState((prev) => ({
-          //   sessionId: resolved.sessionId,
-          //   segmentsExpected: Number(
-          //     resolved.segmentsExpected ?? prev.segmentsExpected ?? 0
-          //   ),
-          //   status: "ACTIVE",
-          //   engine: { ...prev.engine, status: "ACTIVE" },
+        const snapRes = await getSessionSnapshot(s.userId, s.postingId);
+        const r = snapRes?.session;
 
-          //   // Optional (only if missing); safe defaults
-          //   cycleAnchorUtc: prev.cycleAnchorUtc ?? new Date().toISOString(),
-          //   originalCycleAnchorUtc:
-          //     prev.originalCycleAnchorUtc ?? new Date().toISOString(),
-          // }));
-
-          // useShareStore.setState((prev) => ({
-          //   sessionId: resolved.sessionId,
-          //   segmentsExpected: Number(
-          //     resolved.segmentsExpected ?? prev.segmentsExpected ?? 0,
-          //   ),
-          //   status: "ACTIVE",
-          //   engine: { ...(prev.engine ?? {}), status: "ACTIVE" },
-
-          //   // IMPORTANT: do not invent anchors here.
-          //   // We will pull the canonical server snapshot below and then align anchors from it.
-          // }));
-
-          // // Pull canonical server snapshot so planner uses server truth in this same run
-          // await useShareStore
-          //   .getState()
-          //   .fetchSessionSnapshot(
-          //     useShareStore.getState().userId!,
-          //     useShareStore.getState().postingId!,
-          //   );
-
-          // // Align planner anchors to the canonical server anchor right away
-          // {
-          //   const snap = useShareStore.getState().snapshot;
-          //   if (snap?.cycleAnchorUtc) {
-          //     useShareStore.setState((prev) => ({
-          //       cycleAnchorUtc: snap.cycleAnchorUtc, // planner ISO used by planner/tick
-          //       engine: {
-          //         ...prev.engine,
-          //         // engine.cycleAnchorUtc is stored in ms (number)
-          //         cycleAnchorUtc: new Date(snap.cycleAnchorUtc).getTime(),
-          //       },
-          //     }));
-          //     if (typeof snap?.segmentsExpected === "number") {
-          //       useShareStore.setState((prev) => ({
-          //         segmentsExpected: snap.segmentsExpected,
-          //         engine: {
-          //           ...prev.engine,
-          //           segmentsExpected: snap.segmentsExpected,
-          //         },
-          //       }));
-          //     }
-          //   }
-          // }
-
-          // if (__DEV__)
-          //   console.log(
-          //     "[BG] session resolved via resolver",
-          //     resolved.sessionId,
-          //   );
-
-          // Minimal local activation (do NOT invent anchors here)
+        if (r?.session_id) {
+          // Minimal local activation; all timeline fields will be hydrated by fetchSessionSnapshot below.
           useShareStore.setState((prev) => ({
-            sessionId: resolved.sessionId,
+            sessionId: r.session_id,
             status: "ACTIVE",
             engine: { ...(prev.engine ?? {}), status: "ACTIVE" },
-            // NOTE: timeline fields (anchor/join/lastSent) are hydrated from snapshot below
           }));
 
-          // Pull canonical server snapshot (and hydrate live fields via ShareStore)
-          {
-            const cur = useShareStore.getState();
-            if (cur.userId && cur.postingId) {
-              await cur.fetchSessionSnapshot(cur.userId, cur.postingId);
-            }
-          }
+          // Hydrate store from server snapshot (authoritative: next_due/catch_up/wake_at_utc)
+          await useShareStore
+            .getState()
+            .fetchSessionSnapshot(s.userId, s.postingId);
 
-          if (__DEV__) {
-            console.log(
-              "[BG] session resolved via resolver",
-              resolved.sessionId,
-            );
-          }
+          if (__DEV__)
+            console.log("[BG] session recovered via snapshot", r.session_id);
         }
       } catch (e) {
-        if (__DEV__) console.log("[BG] resolver failed (non-fatal)", e);
+        if (__DEV__)
+          console.log("[BG] snapshot recovery failed (non-fatal)", e);
       }
     }
 
@@ -304,6 +310,23 @@ TaskManager.defineTask(SHARE_BG_TASK, async () => {
       return BackgroundTask.BackgroundTaskResult.Success;
     }
 
+    // Server-driven sleep: if the store already has a wake time and we are idle, do not run.
+    // (wake time is set from snapshot.wake_at_utc by store logic)
+    const nowMs = Date.now();
+    const eng = st.engine;
+
+    if (
+      eng?.currentDueDayIndex == null &&
+      eng?.nextRetryAtUtc &&
+      nowMs < eng.nextRetryAtUtc
+    ) {
+      await writeBgSnapshot("sleep-until-wake", {
+        wakeAtMs: eng.nextRetryAtUtc,
+        msLeft: eng.nextRetryAtUtc - nowMs,
+      });
+      return BackgroundTask.BackgroundTaskResult.Success;
+    }
+
     // Short-circuit if health platform isn’t usable or we have nothing mapped to share.
     if (
       (healthPlatform === "ios" || healthPlatform === "android") &&
@@ -334,11 +357,27 @@ TaskManager.defineTask(SHARE_BG_TASK, async () => {
     }
 
     // Proceed to tick + sweep backlog (handles multiple overdue days)
+    // const before = st.engine?.segmentsSent ?? 0;
+    // if (__DEV__) console.log("[BG] tick() start", { before });
+
+    // await st.tick();
+    // await useShareStore.getState().catchUpIfNeeded(); // ensure we process all due windows
+
+    // const after = useShareStore.getState().engine?.segmentsSent ?? 0;
+    // if (__DEV__)
+    //   console.log("[BG] tick() done", { after, changed: after > before });
+
+    // Proceed to one-step processing (contract: one day at a time, ordered).
+    // tick() will:
+    // - retry an in-flight window if needed (pendingWindow)
+    // - otherwise fetch snapshot and process exactly ONE eligible window
+
+    // Proceed to tick (one-day-per-run contract; no batching)
+
     const before = st.engine?.segmentsSent ?? 0;
     if (__DEV__) console.log("[BG] tick() start", { before });
 
     await st.tick();
-    await useShareStore.getState().catchUpIfNeeded(); // ensure we process all due windows
 
     const after = useShareStore.getState().engine?.segmentsSent ?? 0;
     if (__DEV__)

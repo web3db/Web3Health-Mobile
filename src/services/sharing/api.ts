@@ -16,7 +16,17 @@ import {
 } from "./schema";
 
 import type { ActiveShareSessionDto, UploadSegmentResult } from "./types";
+const TAG = "[sharing.api]";
 
+function assertIsoHasNumericOffset(label: string, iso: string) {
+  if (typeof iso !== "string" || iso.length < 10) {
+    throw new Error(`${TAG} ${label}: expected string ISO, got ${String(iso)}`);
+  }
+  // Require numeric offset for "local ISO" fields (e.g. 2026-02-10T12:34:56.000-05:00)
+  if (!/[+-]\d{2}:\d{2}$/.test(iso)) {
+    throw new Error(`${TAG} ${label}: missing numeric offset (±HH:MM): ${iso}`);
+  }
+}
 /** Start (create) a session.
  *  NOTE: store passes joinTimeLocalISO → we must map to server's `joinTimeLocal`.
  */
@@ -37,6 +47,11 @@ export async function createSession(
   joinTimezone: string;
 }> {
   const url = buildUrl("user_start_share_session");
+  assertIsoHasNumericOffset(
+    "createSession joinTimeLocalISO",
+    params.joinTimeLocalISO,
+  );
+
   const body: any = {
     postingId,
     userId,
@@ -44,6 +59,7 @@ export async function createSession(
     joinTimezone: params.joinTimezone,
     segmentsExpected: params.segmentsExpected,
   };
+
   if (params.cycleAnchorUtc) {
     body.cycleAnchorUtc = params.cycleAnchorUtc;
   }
@@ -55,6 +71,11 @@ export async function createSession(
     );
   }
   const parsed = StartSessionRes.parse(json);
+  assertIsoHasNumericOffset(
+    "createSession response joinTimeLocalISO",
+    parsed.joinTimeLocal,
+  );
+
   return {
     sessionId: parsed.sessionId,
     cycleAnchorUtc: parsed.cycleAnchorUtc,
@@ -188,7 +209,61 @@ export async function getSessionSnapshot(userId: number, postingId: number) {
       `share_get_session_snapshot ${status} ${String((json as any)?.message ?? text ?? "")}`,
     );
   }
+
   const parsed = SessionSnapshotRes.parse(json);
+
+  const s = parsed.session;
+  if (s?.join_time_local_iso) {
+    assertIsoHasNumericOffset(
+      "getSessionSnapshot join_time_local_iso",
+      s.join_time_local_iso,
+    );
+  }
+
+  // TEMP debug: verify server-authoritative next_due + catch_up + wake_at_utc are flowing through.
+  // Remove once stable.
+  if (__DEV__) {
+    const s = parsed.session;
+    const nd = s?.next_due;
+    const cu = (s as any)?.catch_up;
+    const cuNext = cu?.next ?? null;
+
+    console.log("[sharing.api] snapshot", {
+      session_id: s?.session_id ?? null,
+      last_sent_day_index: s?.last_sent_day_index ?? null,
+      join_timezone: s?.join_timezone ?? null,
+      join_local_date: s?.join_local_date ?? null,
+      grace_minutes: s?.grace_minutes ?? null,
+
+      catch_up: cu
+        ? {
+            count_eligible_now: cu.count_eligible_now ?? null,
+            next: cuNext
+              ? {
+                  day_index: cuNext.day_index,
+                  eligible_at_utc: cuNext.eligible_at_utc,
+                  is_eligible: cuNext.is_eligible,
+                  from_utc: cuNext.from_utc,
+                  to_utc: cuNext.to_utc,
+                }
+              : null,
+          }
+        : null,
+
+      next_due: nd
+        ? {
+            day_index: nd.day_index,
+            eligible_at_utc: nd.eligible_at_utc,
+            is_eligible: nd.is_eligible,
+            from_utc: nd.from_utc,
+            to_utc: nd.to_utc,
+          }
+        : null,
+
+      wake_at_utc: (s as any)?.wake_at_utc ?? null,
+    });
+  }
+
   return parsed;
 }
 
