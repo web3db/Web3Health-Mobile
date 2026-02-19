@@ -10,7 +10,13 @@ import type {
 } from "@kingstinct/react-native-healthkit";
 
 import { Linking, Platform } from "react-native";
-import { makeDailyEdges, makeHourlyEdges24 } from "./bucketing";
+import {
+  makeDailyEdges,
+  makeHourlyEdges24,
+  makeUtcBucketEdgesForWindow,
+  type Range,
+} from "./bucketing";
+
 /**
  * HealthKit wiring for iOS (Web3Health).
  *
@@ -98,6 +104,11 @@ export type Bucket = {
 
 export type Window = { fromUtc: string; toUtc: string };
 export type SeriesPoint = { ts: string; value: number };
+
+export type HeartRateLatest = {
+  bpm: number | null;
+  atISO?: string;
+};
 
 export type TimezoneInfo = {
   iana?: string;
@@ -204,13 +215,13 @@ function daysAgoUtc(days: number): Date {
 
 function startOfUtcDay(d: Date): Date {
   return new Date(
-    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()),
   );
 }
 
 function addUtcDays(d: Date, n: number): Date {
   return new Date(
-    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + n)
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + n),
   );
 }
 
@@ -250,7 +261,7 @@ async function queryQuantitySamplesNormalized(
     to?: Date;
     limit?: number;
     ascending?: boolean;
-  }
+  },
 ): Promise<HKQuantitySample[]> {
   try {
     const HK = await getHK();
@@ -280,7 +291,7 @@ async function queryCategorySamplesNormalized(
     to?: Date;
     limit?: number;
     ascending?: boolean;
-  }
+  },
 ): Promise<HKCategorySample[]> {
   try {
     const HK = await getHK();
@@ -311,18 +322,21 @@ async function queryCategorySamplesNormalized(
   }
 }
 // ───────────────────────── Low-level statistics query wrappers ─────────────────────────
+// REPLACE WITH THIS (drop-in safe version that matches your TS types: filter.date.startDate/endDate)
+
 async function hkQueryStatisticsForQuantity(
   id: QuantityTypeIdentifier,
   statistics: readonly StatisticsOptions[],
-  options?: StatisticsQueryOptions
+  options?: StatisticsQueryOptions,
 ): Promise<QueryStatisticsResponse | null> {
   try {
     const HK = await getHK();
+
     const fn = (HK as any).queryStatisticsForQuantity as
       | ((
           identifier: QuantityTypeIdentifier,
           stats: readonly StatisticsOptions[],
-          opts?: StatisticsQueryOptions
+          opts?: StatisticsQueryOptions,
         ) => Promise<QueryStatisticsResponse>)
       | undefined;
 
@@ -331,30 +345,38 @@ async function hkQueryStatisticsForQuantity(
       return null;
     }
 
-    // Pass filter through in the library's expected JS shape.
-    // If caller provided ISO/number, normalize to Date objects.
+    // Normalize date range into: options.filter.date.{startDate,endDate}
     let opts = options;
     if (options?.filter) {
       const f: any = options.filter;
-      const start =
-        f.startDate instanceof Date
-          ? f.startDate
-          : f.startDate
-            ? new Date(f.startDate)
+      const d: any = f?.date ?? {};
+
+      const rawStart = d?.startDate;
+      const rawEnd = d?.endDate;
+
+      const startDate =
+        rawStart instanceof Date
+          ? rawStart
+          : rawStart != null
+            ? new Date(rawStart)
             : undefined;
-      const end =
-        f.endDate instanceof Date
-          ? f.endDate
-          : f.endDate
-            ? new Date(f.endDate)
+
+      const endDate =
+        rawEnd instanceof Date
+          ? rawEnd
+          : rawEnd != null
+            ? new Date(rawEnd)
             : undefined;
 
       opts = {
         ...options,
         filter: {
           ...f,
-          startDate: start,
-          endDate: end,
+          date: {
+            ...d,
+            startDate,
+            endDate,
+          },
         },
       } as any;
     }
@@ -363,8 +385,7 @@ async function hkQueryStatisticsForQuantity(
       ...(id === "HKQuantityTypeIdentifierDistanceWalkingRunning"
         ? { unit: "m" }
         : {}),
-
-      ...opts,
+      ...(opts ?? {}),
     });
 
     return res ?? null;
@@ -379,17 +400,18 @@ async function hkQueryStatisticsCollectionForQuantity(
   statistics: readonly StatisticsOptions[],
   anchorDate: Date,
   interval: IntervalComponents,
-  options?: StatisticsQueryOptions
+  options?: StatisticsQueryOptions,
 ): Promise<QueryStatisticsResponse[]> {
   try {
     const HK = await getHK();
+
     const fn = (HK as any).queryStatisticsCollectionForQuantity as
       | ((
           identifier: QuantityTypeIdentifier,
           stats: readonly StatisticsOptions[],
-          anchorIso: string,
+          anchor: Date,
           intervalComponents: IntervalComponents,
-          opts?: StatisticsQueryOptions
+          opts?: StatisticsQueryOptions,
         ) => Promise<QueryStatisticsResponse[]>)
       | undefined;
 
@@ -398,42 +420,47 @@ async function hkQueryStatisticsCollectionForQuantity(
       return [];
     }
 
-    // Pass filter through in the library's expected JS shape.
-    // If caller provided ISO/number, normalize to Date objects.
+    // Normalize date range into: options.filter.date.{startDate,endDate}
     let opts = options;
     if (options?.filter) {
       const f: any = options.filter;
-      const start =
-        f.startDate instanceof Date
-          ? f.startDate
-          : f.startDate
-            ? new Date(f.startDate)
+      const d: any = f?.date ?? {};
+
+      const rawStart = d?.startDate;
+      const rawEnd = d?.endDate;
+
+      const startDate =
+        rawStart instanceof Date
+          ? rawStart
+          : rawStart != null
+            ? new Date(rawStart)
             : undefined;
-      const end =
-        f.endDate instanceof Date
-          ? f.endDate
-          : f.endDate
-            ? new Date(f.endDate)
+
+      const endDate =
+        rawEnd instanceof Date
+          ? rawEnd
+          : rawEnd != null
+            ? new Date(rawEnd)
             : undefined;
 
       opts = {
         ...options,
         filter: {
           ...f,
-          startDate: start,
-          endDate: end,
+          date: {
+            ...d,
+            startDate,
+            endDate,
+          },
         },
       } as any;
     }
 
-    const anchorIso = anchorDate.toISOString().replace(/\.\d{3}Z$/, "Z");
-
-    const res = await fn(id, statistics, anchorIso, interval, {
+    const res = await fn(id, statistics, anchorDate, interval, {
       ...(id === "HKQuantityTypeIdentifierDistanceWalkingRunning"
         ? { unit: "m" }
         : {}),
-
-      ...opts,
+      ...(opts ?? {}),
     });
 
     return Array.isArray(res) ? res : [];
@@ -448,7 +475,7 @@ async function hkQueryStatisticsCollectionForQuantity(
 function makeFixedBuckets(
   from: Date,
   to: Date,
-  bucketSizeMs: number
+  bucketSizeMs: number,
 ): Bucket[] {
   const fromMs = from.getTime();
   const toMs = to.getTime();
@@ -502,7 +529,7 @@ function makeFixedBuckets(
 // }
 function accumulateSleepIntoBucketsByMinutes(
   samples: HKCategorySample[],
-  buckets: Bucket[]
+  buckets: Bucket[],
 ) {
   if (!samples?.length || !buckets.length) return;
 
@@ -579,6 +606,116 @@ export async function hkIsAvailable(): Promise<boolean> {
 
 export type HKReadRequestStatus = "unknown" | "shouldRequest" | "unnecessary";
 
+// export async function hkGetReadRequestStatus(): Promise<HKReadRequestStatus> {
+//   if (Platform.OS !== "ios") return "unknown";
+
+//   const available = await hkIsAvailable();
+//   if (!available) return "unknown";
+
+//   try {
+//     const HK = await getHK();
+//     const fn = (HK as any).getRequestStatusForAuthorization as
+//       | ((
+//           writeTypes: readonly SampleTypeIdentifier[],
+//           readTypes?: readonly SampleTypeIdentifier[]
+//         ) => Promise<number | string>)
+//       | ((opts: {
+//           writeTypes?: readonly SampleTypeIdentifier[];
+//           readTypes?: readonly SampleTypeIdentifier[];
+//         }) => Promise<number | string>)
+//       | undefined;
+
+//     if (!fn) {
+//       log("[HK] [AUTH] getRequestStatusForAuthorization not available");
+//       return "unknown";
+//     }
+
+//     const readTypes = READ_TYPES as readonly SampleTypeIdentifier[];
+//     const emptyWrite: readonly SampleTypeIdentifier[] = [];
+
+//     log(
+//       "[HK] [AUTH] hkGetReadRequestStatus: intending READ-ONLY",
+//       "readTypes=",
+//       readTypes,
+//       "fn.length=",
+//       fn.length
+//     );
+
+//     let raw: number | string;
+
+//     // If API looks like options-object (length <= 1), send explicit readTypes/writeTypes.
+//     if (fn.length <= 1) {
+//       raw = await (fn as any)({
+//         writeTypes: emptyWrite,
+//         readTypes,
+//       });
+//       log(
+//         "[HK] [AUTH] getRequestStatusForAuthorization({ writeTypes: [], readTypes }) →",
+//         raw
+//       );
+//     } else {
+//       // Positional form: treat first param as writeTypes, second as readTypes.
+//       raw = await (fn as any)(emptyWrite, readTypes);
+//       log("[HK] [AUTH] getRequestStatusForAuthorization([], readTypes) →", raw);
+//     }
+
+//     if (raw === 1 || raw === "shouldRequest") return "shouldRequest";
+//     if (raw === 2 || raw === "unnecessary") return "unnecessary";
+//     if (raw === 0 || raw === "unknown") return "unknown";
+
+//     // Defensive fallback
+//     return "unknown";
+//   } catch (e) {
+//     logError("hkGetReadRequestStatus failed", e);
+//     return "unknown";
+//   }
+// }
+
+/** ───────────────────────── Request status ───────────────────────── */
+// export async function hkGetReadRequestStatus(): Promise<HKReadRequestStatus> {
+//   if (Platform.OS !== "ios") return "unknown";
+
+//   const available = await hkIsAvailable();
+//   if (!available) return "unknown";
+
+//   try {
+//     const HK = await getHK();
+//     const fn = (HK as any).getRequestStatusForAuthorization;
+
+//     if (!fn) {
+//       log("[HK] [AUTH] getRequestStatusForAuthorization not available");
+//       return "unknown";
+//     }
+
+//     const readTypes = READ_TYPES as readonly SampleTypeIdentifier[];
+//     const emptyWrite: readonly SampleTypeIdentifier[] = [];
+
+//     let raw: number | string;
+
+//     try {
+//       // Try Object syntax first
+//       raw = await (fn as any)({
+//         read: readTypes,
+//         write: emptyWrite,
+//       });
+//       log("[HK] [AUTH] status via object →", raw);
+//     } catch {
+//        // Fallback to positional
+//        raw = await (fn as any)(readTypes, emptyWrite);
+//        log("[HK] [AUTH] status via positional →", raw);
+//     }
+
+//     if (raw === 1 || raw === "shouldRequest") return "shouldRequest";
+//     if (raw === 2 || raw === "unnecessary") return "unnecessary";
+
+//     return "unknown";
+//   } catch (e) {
+//     logError("hkGetReadRequestStatus failed", e);
+//     return "unknown";
+//   }
+// }
+
+/** ───────────────────────── Request status ───────────────────────── */
 export async function hkGetReadRequestStatus(): Promise<HKReadRequestStatus> {
   if (Platform.OS !== "ios") return "unknown";
 
@@ -587,56 +724,44 @@ export async function hkGetReadRequestStatus(): Promise<HKReadRequestStatus> {
 
   try {
     const HK = await getHK();
-    const fn = (HK as any).getRequestStatusForAuthorization as
-      | ((
-          writeTypes: readonly SampleTypeIdentifier[],
-          readTypes?: readonly SampleTypeIdentifier[]
-        ) => Promise<number | string>)
-      | ((opts: {
-          writeTypes?: readonly SampleTypeIdentifier[];
-          readTypes?: readonly SampleTypeIdentifier[];
-        }) => Promise<number | string>)
-      | undefined;
+    const fn = (HK as any).getRequestStatusForAuthorization;
 
-    if (!fn) {
+    if (typeof fn !== "function") {
       log("[HK] [AUTH] getRequestStatusForAuthorization not available");
       return "unknown";
     }
 
     const readTypes = READ_TYPES as readonly SampleTypeIdentifier[];
-    const emptyWrite: readonly SampleTypeIdentifier[] = [];
-
-    log(
-      "[HK] [AUTH] hkGetReadRequestStatus: intending READ-ONLY",
-      "readTypes=",
-      readTypes,
-      "fn.length=",
-      fn.length
-    );
+    const emptyShare: readonly SampleTypeIdentifier[] = [];
 
     let raw: number | string;
 
-    // If API looks like options-object (length <= 1), send explicit readTypes/writeTypes.
-    if (fn.length <= 1) {
+    // Prefer the documented object form (toRead/toShare). :contentReference[oaicite:1]{index=1}
+    try {
       raw = await (fn as any)({
-        writeTypes: emptyWrite,
-        readTypes,
+        toRead: readTypes,
+        toShare: emptyShare,
       });
+      log("[HK] [AUTH] status via object { toRead, toShare } →", raw);
+    } catch (objErr) {
       log(
-        "[HK] [AUTH] getRequestStatusForAuthorization({ writeTypes: [], readTypes }) →",
-        raw
+        "[HK] [AUTH] object status failed, trying positional fallbacks...",
+        objErr,
       );
-    } else {
-      // Positional form: treat first param as writeTypes, second as readTypes.
-      raw = await (fn as any)(emptyWrite, readTypes);
-      log("[HK] [AUTH] getRequestStatusForAuthorization([], readTypes) →", raw);
+
+      // Fallback 1: some builds accept (toRead, toShare)
+      try {
+        raw = await (fn as any)(readTypes, emptyShare);
+        log("[HK] [AUTH] status via positional (toRead, toShare) →", raw);
+      } catch (posErr1) {
+        // Fallback 2: older variants may accept (toShare, toRead)
+        raw = await (fn as any)(emptyShare, readTypes);
+        log("[HK] [AUTH] status via positional (toShare, toRead) →", raw);
+      }
     }
 
     if (raw === 1 || raw === "shouldRequest") return "shouldRequest";
     if (raw === 2 || raw === "unnecessary") return "unnecessary";
-    if (raw === 0 || raw === "unknown") return "unknown";
-
-    // Defensive fallback
     return "unknown";
   } catch (e) {
     logError("hkGetReadRequestStatus failed", e);
@@ -656,6 +781,68 @@ export async function hkGetReadRequestStatus(): Promise<HKReadRequestStatus> {
  *   We detect the signature at runtime and always pass an empty write set.
  */
 
+// export async function hkRequestReadAuthorization(): Promise<boolean> {
+//   if (Platform.OS !== "ios") return false;
+
+//   const available = await hkIsAvailable();
+//   if (!available) {
+//     log("[AUTH] hkRequestReadAuthorization: HealthKit not available");
+//     return false;
+//   }
+
+//   try {
+//     const HK = await getHK();
+//     const requestAuthorization = (HK as any).requestAuthorization as
+//       | ((
+//           writeTypes: readonly SampleTypeIdentifier[],
+//           readTypes?: readonly SampleTypeIdentifier[]
+//         ) => Promise<boolean>)
+//       | ((opts: {
+//           // Different versions use different keys; we support both.
+//           writeTypes?: readonly SampleTypeIdentifier[];
+//           readTypes?: readonly SampleTypeIdentifier[];
+//           toWrite?: readonly SampleTypeIdentifier[];
+//           toRead?: readonly SampleTypeIdentifier[];
+//         }) => Promise<boolean>)
+//       | undefined;
+
+//     if (typeof requestAuthorization !== "function") {
+//       log("[AUTH] requestAuthorization not available on HK module");
+//       return false;
+//     }
+
+//     const readTypes = READ_TYPES as readonly SampleTypeIdentifier[];
+//     const emptyWrite: readonly SampleTypeIdentifier[] = [];
+
+//     let ok = false;
+
+//     if (requestAuthorization.length <= 1) {
+//       // Object-form API (options object). We populate both legacy and new keys.
+//       ok = !!(await (requestAuthorization as any)({
+//         writeTypes: emptyWrite,
+//         readTypes,
+//         toWrite: emptyWrite,
+//         toRead: readTypes,
+//       }));
+//       log(
+//         "[HK] [AUTH] requestAuthorization({ writeTypes: [], readTypes }) →",
+//         ok
+//       );
+//     } else {
+//       // Positional API used by Core.requestAuthorization(writeTypes, readTypes)
+//       ok = !!(await (requestAuthorization as any)(emptyWrite, readTypes));
+//       log("[HK] [AUTH] requestAuthorization([], readTypes) →", ok);
+//     }
+
+//     return ok;
+//   } catch (e) {
+//     logError("hkRequestReadAuthorization failed", e);
+//     return false;
+//   }
+// }
+
+/** ───────────────────────── Request read authorization ───────────────────────── */
+/** ───────────────────────── Request read authorization ───────────────────────── */
 export async function hkRequestReadAuthorization(): Promise<boolean> {
   if (Platform.OS !== "ios") return false;
 
@@ -667,19 +854,7 @@ export async function hkRequestReadAuthorization(): Promise<boolean> {
 
   try {
     const HK = await getHK();
-    const requestAuthorization = (HK as any).requestAuthorization as
-      | ((
-          writeTypes: readonly SampleTypeIdentifier[],
-          readTypes?: readonly SampleTypeIdentifier[]
-        ) => Promise<boolean>)
-      | ((opts: {
-          // Different versions use different keys; we support both.
-          writeTypes?: readonly SampleTypeIdentifier[];
-          readTypes?: readonly SampleTypeIdentifier[];
-          toWrite?: readonly SampleTypeIdentifier[];
-          toRead?: readonly SampleTypeIdentifier[];
-        }) => Promise<boolean>)
-      | undefined;
+    const requestAuthorization = (HK as any).requestAuthorization;
 
     if (typeof requestAuthorization !== "function") {
       log("[AUTH] requestAuthorization not available on HK module");
@@ -687,33 +862,43 @@ export async function hkRequestReadAuthorization(): Promise<boolean> {
     }
 
     const readTypes = READ_TYPES as readonly SampleTypeIdentifier[];
-    const emptyWrite: readonly SampleTypeIdentifier[] = [];
+    const emptyShare: readonly SampleTypeIdentifier[] = [];
 
-
-    let ok = false;
-
-    if (requestAuthorization.length <= 1) {
-      // Object-form API (options object). We populate both legacy and new keys.
-      ok = !!(await (requestAuthorization as any)({
-        writeTypes: emptyWrite,
-        readTypes,
-        toWrite: emptyWrite,
+    // Prefer the documented object form (toRead/toShare). :contentReference[oaicite:2]{index=2}
+    try {
+      const ok = !!(await (requestAuthorization as any)({
         toRead: readTypes,
+        toShare: emptyShare,
       }));
+      log("[HK] [AUTH] requestAuthorization({ toRead, toShare }) →", ok);
+      return ok;
+    } catch (objErr) {
       log(
-        "[HK] [AUTH] requestAuthorization({ writeTypes: [], readTypes }) →",
-        ok
-      );
-    } else {
-      // Positional API used by Core.requestAuthorization(writeTypes, readTypes)
-      ok = !!(await (requestAuthorization as any)(emptyWrite, readTypes));
-      log(
-        "[HK] [AUTH] requestAuthorization([], readTypes) →",
-        ok
+        "[HK] [AUTH] object auth failed, trying positional fallbacks...",
+        objErr,
       );
     }
 
-    return ok;
+    // Fallbacks for older builds / alternate signatures.
+    try {
+      // Fallback 1: (toRead, toShare)
+      const ok = !!(await (requestAuthorization as any)(readTypes, emptyShare));
+      log("[HK] [AUTH] requestAuthorization(toRead, toShare) →", ok);
+      return ok;
+    } catch (posErr1) {
+      try {
+        // Fallback 2: (toShare, toRead)
+        const ok = !!(await (requestAuthorization as any)(
+          emptyShare,
+          readTypes,
+        ));
+        log("[HK] [AUTH] requestAuthorization(toShare, toRead) →", ok);
+        return ok;
+      } catch (posErr2) {
+        logError("[HK] [AUTH] all auth call forms failed", posErr2);
+        return false;
+      }
+    }
   } catch (e) {
     logError("hkRequestReadAuthorization failed", e);
     return false;
@@ -836,7 +1021,7 @@ export async function hkGetAuthorizationSnapshot(): Promise<HKAuthorizationSnaps
 // }
 
 export async function hkRead24hBuckets(
-  metric: QuantMetricKey
+  metric: QuantMetricKey,
 ): Promise<Bucket[]> {
   if (Platform.OS !== "ios") return [];
 
@@ -851,7 +1036,6 @@ export async function hkRead24hBuckets(
 
     const from = edges[0].start;
     const to = new Date();
-
     const statsRes = await hkQueryStatisticsCollectionForQuantity(
       typeId,
       stats,
@@ -859,10 +1043,12 @@ export async function hkRead24hBuckets(
       interval,
       {
         filter: {
-          startDate: from,
-          endDate: to,
+          date: {
+            startDate: from,
+            endDate: to,
+          },
         },
-      }
+      },
     );
 
     // Key helper to match edges to stats intervals safely.
@@ -905,7 +1091,7 @@ export async function hkRead24hBuckets(
       buckets.length,
       "buckets in",
       Date.now() - t0,
-      "ms"
+      "ms",
     );
     return buckets;
   } catch (e) {
@@ -915,7 +1101,7 @@ export async function hkRead24hBuckets(
       metric,
       "errored after",
       Date.now() - t0,
-      "ms"
+      "ms",
     );
     return [];
   }
@@ -991,7 +1177,7 @@ export async function hkRead24hBuckets(
 
 async function hkReadDailyBuckets(
   metric: QuantMetricKey,
-  days: number
+  days: number,
 ): Promise<Bucket[]> {
   if (Platform.OS !== "ios") return [];
 
@@ -1014,10 +1200,12 @@ async function hkReadDailyBuckets(
       interval,
       {
         filter: {
-          startDate: from,
-          endDate: to,
+          date: {
+            startDate: from,
+            endDate: to,
+          },
         },
-      }
+      },
     );
 
     const toKey = (d: any) => {
@@ -1060,7 +1248,7 @@ async function hkReadDailyBuckets(
       buckets.length,
       "buckets in",
       Date.now() - t0,
-      "ms"
+      "ms",
     );
     return buckets;
   } catch (e) {
@@ -1072,7 +1260,7 @@ async function hkReadDailyBuckets(
       days,
       "errored after",
       Date.now() - t0,
-      "ms"
+      "ms",
     );
     return [];
   }
@@ -1080,19 +1268,19 @@ async function hkReadDailyBuckets(
 
 /** 7d/30d/90d (daily) for quantity metrics */
 export async function hkRead7dBuckets(
-  metric: QuantMetricKey
+  metric: QuantMetricKey,
 ): Promise<Bucket[]> {
   return hkReadDailyBuckets(metric, 7);
 }
 
 export async function hkRead30dBuckets(
-  metric: QuantMetricKey
+  metric: QuantMetricKey,
 ): Promise<Bucket[]> {
   return hkReadDailyBuckets(metric, 30);
 }
 
 export async function hkRead90dBuckets(
-  metric: QuantMetricKey
+  metric: QuantMetricKey,
 ): Promise<Bucket[]> {
   return hkReadDailyBuckets(metric, 90);
 }
@@ -1252,8 +1440,8 @@ export async function hkRead90dBuckets(
 //   }
 // }
 
-export async function hkReadHeartRateLatest(): Promise<number | null> {
-  if (Platform.OS !== "ios") return null;
+export async function hkReadHeartRateLatest(): Promise<HeartRateLatest> {
+  if (Platform.OS !== "ios") return { bpm: null };
 
   try {
     const typeId = HK_TYPES.heartRate as QuantityTypeIdentifier;
@@ -1269,7 +1457,7 @@ export async function hkReadHeartRateLatest(): Promise<number | null> {
 
     if (!samples || samples.length === 0) {
       log("[HR] no heartRate samples in last 24h");
-      return null;
+      return { bpm: null };
     }
 
     const s = samples[0];
@@ -1277,10 +1465,13 @@ export async function hkReadHeartRateLatest(): Promise<number | null> {
     const bpm = v > 0 ? v : 0;
 
     log("[HR] latest heartRate sample →", bpm);
-    return bpm > 0 ? bpm : null;
+    return {
+      bpm: bpm > 0 ? bpm : null,
+      atISO: (s.endDate ?? s.startDate)?.toISOString?.(),
+    };
   } catch (e) {
     logError("[HR] hkReadHeartRateLatest failed", e);
-    return null;
+    return { bpm: null };
   }
 }
 
@@ -1344,6 +1535,54 @@ export async function hkReadHeartRateLatest(): Promise<number | null> {
 // }
 
 /** Heart rate in arbitrary window: stats only */
+// export async function hkReadHeartRateInWindow(win: Window): Promise<{
+//   avgBpm?: number;
+//   minBpm?: number;
+//   maxBpm?: number;
+//   points?: SeriesPoint[];
+// }> {
+//   if (Platform.OS !== "ios") return {};
+
+//   try {
+//     const from = parseIso(win.fromUtc);
+//     const to = parseIso(win.toUtc);
+//     if (!from || !to || !(to.getTime() > from.getTime())) {
+//       log("[HR] hkReadHeartRateInWindow invalid window", win);
+//       return {};
+//     }
+
+//     const typeId = HK_TYPES.heartRate as QuantityTypeIdentifier;
+
+//     const statsRes = await hkQueryStatisticsForQuantity(
+//       typeId,
+//       ["discreteAverage"],
+//       {
+//         filter: {
+//           date: {
+//             startDate: from,
+//             endDate: to,
+//           },
+//         },
+//       }
+//     );
+
+//     if (!statsRes) return {};
+
+//     const avg =
+//       Number((statsRes as any).averageQuantity?.quantity) ||
+//       Number((statsRes as any).avgQuantity?.quantity) ||
+//       0;
+
+//     if (!(Number.isFinite(avg) && avg > 0)) return {};
+
+//     return { avgBpm: avg };
+//   } catch (e) {
+//     logError("[HR] hkReadHeartRateInWindow failed", e);
+//     return {};
+//   }
+// }
+
+/** Heart rate in arbitrary window: stats (avg/min/max) */
 export async function hkReadHeartRateInWindow(win: Window): Promise<{
   avgBpm?: number;
   minBpm?: number;
@@ -1362,15 +1601,15 @@ export async function hkReadHeartRateInWindow(win: Window): Promise<{
 
     const typeId = HK_TYPES.heartRate as QuantityTypeIdentifier;
 
+    // Best-effort: request avg + min + max from HealthKit stats.
     const statsRes = await hkQueryStatisticsForQuantity(
       typeId,
-      ["discreteAverage"],
+      ["discreteAverage", "discreteMin", "discreteMax"],
       {
         filter: {
-          startDate: from,
-          endDate: to,
+          date: { startDate: from, endDate: to },
         },
-      }
+      },
     );
 
     if (!statsRes) return {};
@@ -1380,9 +1619,22 @@ export async function hkReadHeartRateInWindow(win: Window): Promise<{
       Number((statsRes as any).avgQuantity?.quantity) ||
       0;
 
-    if (!(Number.isFinite(avg) && avg > 0)) return {};
+    const min =
+      Number((statsRes as any).minimumQuantity?.quantity) ||
+      Number((statsRes as any).minQuantity?.quantity) ||
+      0;
 
-    return { avgBpm: avg };
+    const max =
+      Number((statsRes as any).maximumQuantity?.quantity) ||
+      Number((statsRes as any).maxQuantity?.quantity) ||
+      0;
+
+    const out: { avgBpm?: number; minBpm?: number; maxBpm?: number } = {};
+    if (Number.isFinite(avg) && avg > 0) out.avgBpm = avg;
+    if (Number.isFinite(min) && min > 0) out.minBpm = min;
+    if (Number.isFinite(max) && max > 0) out.maxBpm = max;
+
+    return out;
   } catch (e) {
     logError("[HR] hkReadHeartRateInWindow failed", e);
     return {};
@@ -1502,7 +1754,14 @@ export async function hkReadHeartRateHourly24(): Promise<Bucket[]> {
       stats, // ["discreteAverage"]
       anchorDate,
       interval,
-      { filter: { startDate: from, endDate: to } }
+      {
+        filter: {
+          date: {
+            startDate: from,
+            endDate: to,
+          },
+        },
+      },
     );
 
     const toKey = (d: any) => {
@@ -1542,7 +1801,7 @@ export async function hkReadHeartRateHourly24(): Promise<Bucket[]> {
       buckets.length,
       "buckets in",
       Date.now() - t0,
-      "ms"
+      "ms",
     );
 
     return buckets;
@@ -1552,7 +1811,7 @@ export async function hkReadHeartRateHourly24(): Promise<Bucket[]> {
       "[TIME] hkReadHeartRateHourly24(v4-stats)",
       "errored after",
       Date.now() - t0,
-      "ms"
+      "ms",
     );
     return [];
   }
@@ -1636,7 +1895,7 @@ export async function hkReadHeartRateHourly24(): Promise<Bucket[]> {
 //   }
 // }
 export async function hkReadHeartRateDailyBuckets(
-  days: 7 | 30 | 90
+  days: 7 | 30 | 90,
 ): Promise<Bucket[]> {
   if (Platform.OS !== "ios") return [];
 
@@ -1657,7 +1916,14 @@ export async function hkReadHeartRateDailyBuckets(
       stats, // ["discreteAverage"]
       anchorDate,
       interval,
-      { filter: { startDate: from, endDate: to } }
+      {
+        filter: {
+          date: {
+            startDate: from,
+            endDate: to,
+          },
+        },
+      },
     );
 
     const toKey = (d: any) => {
@@ -1698,7 +1964,7 @@ export async function hkReadHeartRateDailyBuckets(
       buckets.length,
       "buckets in",
       Date.now() - t0,
-      "ms"
+      "ms",
     );
     return buckets;
   } catch (e) {
@@ -1709,7 +1975,7 @@ export async function hkReadHeartRateDailyBuckets(
       days,
       "errored after",
       Date.now() - t0,
-      "ms"
+      "ms",
     );
     return [];
   }
@@ -1860,7 +2126,7 @@ export async function hkReadSleep7dBuckets(): Promise<Bucket[]> {
 /** Sleep daily buckets (7/30/90) */
 
 export async function hkReadSleepDailyBuckets(
-  days: 7 | 30 | 90
+  days: 7 | 30 | 90,
 ): Promise<Bucket[]> {
   if (Platform.OS !== "ios") return [];
 
@@ -1933,7 +2199,7 @@ export async function hkReadSleepDailyBuckets(
       result.length,
       "buckets in",
       Date.now() - t0,
-      "ms"
+      "ms",
     );
     return result;
   } catch (e) {
@@ -1944,7 +2210,7 @@ export async function hkReadSleepDailyBuckets(
       days,
       "errored after",
       Date.now() - t0,
-      "ms"
+      "ms",
     );
     return [];
   }
@@ -1953,7 +2219,7 @@ export async function hkReadSleepDailyBuckets(
 /** Sleep minutes in arbitrary window */
 
 export async function hkReadSleepMinutesInWindow(
-  win: Window
+  win: Window,
 ): Promise<{ minutes: number }> {
   if (Platform.OS !== "ios") return { minutes: 0 };
 
@@ -2063,7 +2329,7 @@ export async function hkReadSleepHourly24(): Promise<Bucket[]> {
       result.length,
       "buckets in",
       Date.now() - t0,
-      "ms"
+      "ms",
     );
     return result;
   } catch (e) {
@@ -2073,11 +2339,363 @@ export async function hkReadSleepHourly24(): Promise<Bucket[]> {
   }
 }
 
+/** ───────────────────────── NEW: Window-based hourly buckets ─────────────────────────
+ *
+ * These APIs are for the sharing summarizer: “same unit, same bucket, no raw aggregation”.
+ *
+ * - Quantity metrics + HR: use HealthKit statistics *collection* (aggregated by HK).
+ * - Sleep: uses category intervals and overlaps them into hourly buckets.
+ */
+
+function rangesToBuckets(edges: Range[]): Bucket[] {
+  return (edges || []).map((e) => ({
+    start: e.start.toISOString(),
+    end: e.end.toISOString(),
+    value: 0,
+  }));
+}
+
+function toStartKey(d: any): string {
+  const iso =
+    d instanceof Date ? d.toISOString() : d ? new Date(d).toISOString() : "";
+  // Normalize to seconds precision.
+  return iso.replace(/\.\d{3}Z$/, "Z");
+}
+
+export async function hkReadQuantityHourlyBucketsInWindow(
+  metric: QuantMetricKey,
+  win: Window,
+  bucketMinutes: number = 60,
+): Promise<Bucket[]> {
+  if (Platform.OS !== "ios") return [];
+
+  const t0 = Date.now();
+  try {
+    const from = parseIso(win.fromUtc);
+    const to = parseIso(win.toUtc);
+    if (!from || !to || !(to.getTime() > from.getTime())) {
+      log("[Q][Hourly] invalid window", metric, win);
+      return [];
+    }
+
+    // We generate UTC-aligned edges; these are the “expected” bucket boundaries.
+    const edges = makeUtcBucketEdgesForWindow(win, bucketMinutes);
+    const buckets = rangesToBuckets(edges);
+    if (!buckets.length) {
+      log(
+        "[Q][Hourly] no buckets produced",
+        metric,
+        "bucketMinutes=",
+        bucketMinutes,
+      );
+      return [];
+    }
+
+    const { typeId, stats } = QTY_TYPE_MAP[metric];
+    const anchorDate = edges[0].start;
+
+    const interval: IntervalComponents =
+      bucketMinutes >= 60 && bucketMinutes % 60 === 0
+        ? { hour: bucketMinutes / 60 }
+        : { minute: bucketMinutes };
+
+    // Diagnostic: verify what we are asking HK for, and what we expect back.
+    log("[Q][Hourly] start", {
+      metric,
+      bucketMinutes,
+      interval,
+      anchorISO: anchorDate.toISOString(),
+      edges: edges.length,
+      edge0: edges[0]?.start?.toISOString?.(),
+      edgeN: edges[edges.length - 1]?.start?.toISOString?.(),
+      fromISO: from.toISOString(),
+      toISO: to.toISOString(),
+    });
+
+    const statsRes = await hkQueryStatisticsCollectionForQuantity(
+      typeId,
+      stats, // cumulativeSum
+      anchorDate,
+      interval,
+      {
+        filter: {
+          date: {
+            startDate: from,
+            endDate: to,
+          },
+        },
+      },
+    );
+
+    // Build map: intervalStartKey -> value.
+    const byStart = new Map<string, number>();
+    for (const r of statsRes as any[]) {
+      const k = toStartKey(r?.startDate ?? r?.from);
+      const v =
+        Number(r?.sumQuantity?.quantity) ||
+        Number(r?.cumulativeSumQuantity?.quantity) ||
+        0;
+      byStart.set(k, Number.isFinite(v) ? v : 0);
+    }
+
+    // Diagnostic: alignment/match-rate between our expected edges and HK’s returned intervals.
+    let matched = 0;
+    const missingKeys: string[] = [];
+    for (const e of edges) {
+      const k = toStartKey(e.start);
+      if (byStart.has(k)) matched += 1;
+      else if (missingKeys.length < 5) missingKeys.push(k);
+    }
+
+    const sampleKeys = Array.from(byStart.keys()).slice(0, 5);
+    log("[Q][Hourly] stats alignment", {
+      metric,
+      statsResCount: Array.isArray(statsRes) ? statsRes.length : 0,
+      mapKeys: byStart.size,
+      edges: edges.length,
+      matched,
+      matchRate: edges.length ? Number((matched / edges.length).toFixed(3)) : 0,
+      firstStatsKeys: sampleKeys,
+      firstMissingEdgeKeys: missingKeys,
+      elapsedMs: Date.now() - t0,
+    });
+
+    return buckets.map((b) => {
+      const k = toStartKey(b.start);
+      const v = byStart.get(k) ?? 0;
+      return {
+        start: b.start,
+        end: b.end,
+        value: Math.max(0, Math.round(v)),
+      };
+    });
+  } catch (e) {
+    logError(
+      `[Q][Hourly] hkReadQuantityHourlyBucketsInWindow(${metric}) failed`,
+      e,
+    );
+    log("[Q][Hourly] errored", metric, "elapsedMs=", Date.now() - t0);
+    return [];
+  }
+}
+
+export async function hkReadHeartRateHourlyBucketsInWindow(
+  win: Window,
+  bucketMinutes: number = 60,
+): Promise<Bucket[]> {
+  if (Platform.OS !== "ios") return [];
+
+  const t0 = Date.now();
+  try {
+    const from = parseIso(win.fromUtc);
+    const to = parseIso(win.toUtc);
+    if (!from || !to || !(to.getTime() > from.getTime())) {
+      log("[HR][Hourly] invalid window", win);
+      return [];
+    }
+
+    const edges = makeUtcBucketEdgesForWindow(win, bucketMinutes);
+    const buckets = rangesToBuckets(edges);
+    if (!buckets.length) {
+      log("[HR][Hourly] no buckets produced", "bucketMinutes=", bucketMinutes);
+      return [];
+    }
+
+    const { typeId, stats } = QTY_TYPE_MAP.heartRate; // discreteAverage
+    const anchorDate = edges[0].start;
+
+    const interval: IntervalComponents =
+      bucketMinutes >= 60 && bucketMinutes % 60 === 0
+        ? { hour: bucketMinutes / 60 }
+        : { minute: bucketMinutes };
+
+    log("[HR][Hourly] start", {
+      bucketMinutes,
+      interval,
+      anchorISO: anchorDate.toISOString(),
+      edges: edges.length,
+      edge0: edges[0]?.start?.toISOString?.(),
+      edgeN: edges[edges.length - 1]?.start?.toISOString?.(),
+      fromISO: from.toISOString(),
+      toISO: to.toISOString(),
+    });
+
+    const statsRes = await hkQueryStatisticsCollectionForQuantity(
+      typeId,
+      stats,
+      anchorDate,
+      interval,
+      {
+        filter: {
+          date: {
+            startDate: from,
+            endDate: to,
+          },
+        },
+      },
+    );
+
+    const byStart = new Map<string, number>();
+    for (const r of statsRes as any[]) {
+      const k = toStartKey(r?.startDate ?? r?.from);
+      const v =
+        Number(r?.averageQuantity?.quantity) ||
+        Number(r?.avgQuantity?.quantity) ||
+        0;
+      byStart.set(k, Number.isFinite(v) ? v : 0);
+    }
+
+    let matched = 0;
+    const missingKeys: string[] = [];
+    for (const e of edges) {
+      const k = toStartKey(e.start);
+      if (byStart.has(k)) matched += 1;
+      else if (missingKeys.length < 5) missingKeys.push(k);
+    }
+
+    log("[HR][Hourly] stats alignment", {
+      statsResCount: Array.isArray(statsRes) ? statsRes.length : 0,
+      mapKeys: byStart.size,
+      edges: edges.length,
+      matched,
+      matchRate: edges.length ? Number((matched / edges.length).toFixed(3)) : 0,
+      firstStatsKeys: Array.from(byStart.keys()).slice(0, 5),
+      firstMissingEdgeKeys: missingKeys,
+      elapsedMs: Date.now() - t0,
+    });
+
+    return buckets.map((b) => {
+      const k = toStartKey(b.start);
+      const v = byStart.get(k) ?? 0;
+      return {
+        start: b.start,
+        end: b.end,
+        value: v > 0 ? v : 0,
+      };
+    });
+  } catch (e) {
+    logError("[HR][Hourly] hkReadHeartRateHourlyBucketsInWindow failed", e);
+    log("[HR][Hourly] errored elapsedMs=", Date.now() - t0);
+    return [];
+  }
+}
+
+export async function hkReadSleepHourlyBucketsInWindow(
+  win: Window,
+  bucketMinutes: number = 60,
+): Promise<Bucket[]> {
+  if (Platform.OS !== "ios") return [];
+
+  const t0 = Date.now();
+  try {
+    const from = parseIso(win.fromUtc);
+    const to = parseIso(win.toUtc);
+    if (!from || !to || !(to.getTime() > from.getTime())) {
+      log("[SLP][Hourly] invalid window", win);
+      return [];
+    }
+
+    const edges = makeUtcBucketEdgesForWindow(win, bucketMinutes);
+    const buckets = rangesToBuckets(edges);
+    if (!buckets.length) {
+      log("[SLP][Hourly] no buckets produced", "bucketMinutes=", bucketMinutes);
+      return [];
+    }
+
+    log("[SLP][Hourly] start", {
+      bucketMinutes,
+      edges: edges.length,
+      edge0: edges[0]?.start?.toISOString?.(),
+      edgeN: edges[edges.length - 1]?.start?.toISOString?.(),
+      fromISO: from.toISOString(),
+      toISO: to.toISOString(),
+    });
+
+    const typeId = HK_TYPES.sleep as SampleTypeIdentifier;
+    const samples = await queryCategorySamplesNormalized(typeId, {
+      from,
+      to,
+      limit: 0,
+      ascending: true,
+    });
+
+    // Diagnostic: show if we got long/odd intervals that could “smear” across buckets.
+    if (samples.length) {
+      const first = samples[0];
+      const last = samples[samples.length - 1];
+      const firstDurMin =
+        first?.startDate && first?.endDate
+          ? Math.round(
+              (first.endDate.getTime() - first.startDate.getTime()) / 60000,
+            )
+          : null;
+
+      log("[SLP][Hourly] samples", {
+        count: samples.length,
+        firstStart: first?.startDate?.toISOString?.(),
+        firstEnd: first?.endDate?.toISOString?.(),
+        firstDurMin,
+        lastStart: last?.startDate?.toISOString?.(),
+        lastEnd: last?.endDate?.toISOString?.(),
+      });
+
+      accumulateSleepIntoBucketsByMinutes(samples, buckets);
+    } else {
+      log("[SLP][Hourly] samples=0");
+    }
+
+    const out = buckets.map((b) => ({
+      start: b.start,
+      end: b.end,
+      value: Math.max(0, Math.round(b.value)),
+    }));
+
+    const nonZero = out.filter((x) => (x.value || 0) > 0).length;
+    const totalMin = out.reduce((s, x) => s + (Number(x.value) || 0), 0);
+
+    log("[SLP][Hourly] result", {
+      buckets: out.length,
+      nonZero,
+      totalMin,
+      elapsedMs: Date.now() - t0,
+    });
+
+    return out;
+  } catch (e) {
+    logError("[SLP][Hourly] hkReadSleepHourlyBucketsInWindow failed", e);
+    log("[SLP][Hourly] errored elapsedMs=", Date.now() - t0);
+    return [];
+  }
+}
+
+export async function hkReadHourlyBucketsInWindow(
+  metric: MetricKey,
+  win: Window,
+  bucketMinutes: number = 60,
+): Promise<Bucket[]> {
+  if (metric === "sleep")
+    return hkReadSleepHourlyBucketsInWindow(win, bucketMinutes);
+
+  if (metric === "heartRate")
+    return hkReadHeartRateHourlyBucketsInWindow(win, bucketMinutes);
+
+  if (
+    metric === "steps" ||
+    metric === "floors" ||
+    metric === "distance" ||
+    metric === "activeCalories"
+  ) {
+    return hkReadQuantityHourlyBucketsInWindow(metric, win, bucketMinutes);
+  }
+
+  return [];
+}
+
 // ───────────────────────── Detect active read metrics ─────────────────────────
 
 async function hkProbeMetricHasData(
   metric: MetricKey,
-  opts?: { days?: number }
+  opts?: { days?: number },
 ): Promise<boolean> {
   if (Platform.OS !== "ios") {
     return false;
@@ -2095,7 +2713,7 @@ async function hkProbeMetricHasData(
       "start=",
       startISO,
       "end=",
-      endISO
+      endISO,
     );
     return false;
   }
@@ -2141,7 +2759,7 @@ async function hkProbeMetricHasData(
       "value=",
       v,
       "hasData=",
-      hasData
+      hasData,
     );
     return hasData;
   } catch (e) {
@@ -2260,7 +2878,7 @@ function writeActiveCache(metric: MetricKey, active: boolean) {
 // }
 
 export async function hkDetectActiveReadMetrics(
-  metricKeys: MetricKey[]
+  metricKeys: MetricKey[],
 ): Promise<MetricKey[]> {
   const startedAt = Date.now();
 
@@ -2316,7 +2934,7 @@ export async function hkDetectActiveReadMetrics(
 /** ───────────────────────── Map MetricKey → HK read types (used in legacy shims) ───────────────────────── */
 
 export function mapMetricKeysToHKReadTypes(
-  metricKeys: MetricKey[]
+  metricKeys: MetricKey[],
 ): SampleTypeIdentifier[] {
   const map: Record<MetricKey, SampleTypeIdentifier> = {
     steps: HK_TYPES.steps,
@@ -2510,7 +3128,7 @@ export function mapMetricKeysToHKReadTypes(
 
 export async function hkReadSumInWindow(
   metric: QuantMetricKey,
-  win: Window
+  win: Window,
 ): Promise<{ sum: number }> {
   if (Platform.OS !== "ios") return { sum: 0 };
 
@@ -2528,8 +3146,10 @@ export async function hkReadSumInWindow(
     // so we do not pass a speculative filter object.
     const res = await hkQueryStatisticsForQuantity(typeId, stats, {
       filter: {
-        startDate: from,
-        endDate: to,
+        date: {
+          startDate: from,
+          endDate: to,
+        },
       },
     });
 
@@ -2600,7 +3220,7 @@ export async function hkReadSumInWindow(
 // }
 
 export async function hkIsMetricEffectivelyReadable(
-  metric: MetricKey
+  metric: MetricKey,
 ): Promise<boolean> {
   if (Platform.OS !== "ios") {
     return false;
@@ -2629,7 +3249,7 @@ export async function hkIsMetricEffectivelyReadable(
 }
 
 export async function hkGetEffectivelyReadableMetrics(
-  metricKeys: MetricKey[]
+  metricKeys: MetricKey[],
 ): Promise<MetricKey[]> {
   if (!metricKeys || metricKeys.length === 0) {
     return [];
@@ -2659,7 +3279,7 @@ export async function hkGetEffectivelyReadableMetrics(
     log(
       "[AUTH] [Readable] hkGetEffectivelyReadableMetrics → [] (no unique metrics)",
       "elapsedMs=",
-      elapsedEmpty
+      elapsedEmpty,
     );
     return [];
   }
@@ -2684,7 +3304,7 @@ export async function hkGetEffectivelyReadableMetrics(
     "[AUTH] [Readable] hkGetEffectivelyReadableMetrics →",
     readable,
     "elapsedMs=",
-    elapsedMs
+    elapsedMs,
   );
 
   return readable;
@@ -2880,7 +3500,7 @@ export function todayRangeLocal() {
     0,
     0,
     0,
-    0
+    0,
   );
   return { startISO: start.toISOString(), endISO: now.toISOString() };
 }
@@ -2905,7 +3525,7 @@ export function last24hLocal() {
 /** Legacy readers now delegate to new primitives */
 
 export async function read24hBuckets(
-  metric: QuantMetricKey
+  metric: QuantMetricKey,
 ): Promise<Bucket[]> {
   legacyWarn("read24hBuckets → hkRead24hBuckets");
   return hkRead24hBuckets(metric);
@@ -2917,14 +3537,14 @@ export async function read7dBuckets(metric: QuantMetricKey): Promise<Bucket[]> {
 }
 
 export async function read30dBuckets(
-  metric: QuantMetricKey
+  metric: QuantMetricKey,
 ): Promise<Bucket[]> {
   legacyWarn("read30dBuckets → hkRead30dBuckets");
   return hkRead30dBuckets(metric);
 }
 
 export async function read90dBuckets(
-  metric: QuantMetricKey
+  metric: QuantMetricKey,
 ): Promise<Bucket[]> {
   legacyWarn("read90dBuckets → hkRead90dBuckets");
   return hkRead90dBuckets(metric);
@@ -2936,7 +3556,7 @@ export async function readHeartRateHourly24(): Promise<Bucket[]> {
 }
 
 export async function readHeartRateDailyBuckets(
-  days: 7 | 30 | 90
+  days: 7 | 30 | 90,
 ): Promise<Bucket[]> {
   legacyWarn("readHeartRateDailyBuckets → hkReadHeartRateDailyBuckets");
   return hkReadHeartRateDailyBuckets(days);
@@ -2984,7 +3604,8 @@ export async function readTodayActiveCaloriesKcal(): Promise<number> {
 
 export async function readTodayHeartRateLatestBpm(): Promise<number | null> {
   legacyWarn("readTodayHeartRateLatestBpm → hkReadHeartRateLatest");
-  return hkReadHeartRateLatest();
+  const latest = await hkReadHeartRateLatest();
+  return latest.bpm ?? null;
 }
 
 export async function readLatestWeightKg(): Promise<number | null> {
@@ -3016,7 +3637,7 @@ export async function readSleepHourlyBuckets24(): Promise<Bucket[]> {
 }
 
 export async function readSleepDailyBuckets(
-  days: 7 | 30 | 90
+  days: 7 | 30 | 90,
 ): Promise<Bucket[]> {
   legacyWarn("readSleepDailyBuckets → hkReadSleepDailyBuckets");
   return hkReadSleepDailyBuckets(days);
@@ -3042,7 +3663,7 @@ export async function hkDebugRaw() {
 /** Legacy auth helpers */
 
 export async function requestAuthorizationForTypes(
-  readTypes: string[]
+  readTypes: string[],
 ): Promise<boolean> {
   legacyWarn("requestAuthorizationForTypes");
   if (!readTypes || readTypes.length === 0) return false;
@@ -3050,7 +3671,7 @@ export async function requestAuthorizationForTypes(
 }
 
 export async function hkIsMetricAuthorized(
-  _metric: MetricKey
+  _metric: MetricKey,
 ): Promise<boolean> {
   legacyWarn("hkIsMetricAuthorized");
   // Library + Apple docs do not allow reliable per-type grant checks here.
@@ -3059,7 +3680,7 @@ export async function hkIsMetricAuthorized(
 
 export async function hkCheckAndMaybePrompt(
   metricKeys: MetricKey[],
-  opts?: { prompt?: boolean }
+  opts?: { prompt?: boolean },
 ): Promise<{
   authorizedKeys: MetricKey[];
   deniedKeys: MetricKey[];
@@ -3092,7 +3713,7 @@ export async function hkCheckAndMaybePrompt(
 }
 
 export async function getUndeterminedReadTypes(
-  metricKeys: MetricKey[]
+  metricKeys: MetricKey[],
 ): Promise<SampleTypeIdentifier[]> {
   legacyWarn("getUndeterminedReadTypes");
   const snap = await hkGetAuthorizationSnapshot();

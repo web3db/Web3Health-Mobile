@@ -15,10 +15,10 @@
 
 import { uploadSegment } from "./api";
 import {
-  GRACE_WAIT_MS,
+  getShareRuntimeConfig,
   MAX_RETRIES,
   RETRY_INTERVAL_MS,
-  getShareRuntimeConfig,
+  SHARE_BUCKET_MINUTES,
 } from "./constants";
 import { summarizeWindow, type MetricCode } from "./summarizer";
 import type { ShareSessionState, UploadSegmentResult } from "./types";
@@ -41,6 +41,9 @@ export type WindowDiagnostics = {
   unavailable: MetricCode[]; // permission missing or read error
   zeroData: MetricCode[]; // readable, but no data in [from,to)
   hadAnyData: boolean; // at least one metric had meaningful data
+
+  // Distinguish config errors from real "no data"
+  reason?: "NO_METRICS_CONFIGURED";
 };
 
 export type SegmentPayload = {
@@ -94,7 +97,8 @@ export async function buildSegmentPayload(
     userId: number;
     metricMap: Record<MetricCode, number>; // e.g. { STEPS:101, HR:110, KCAL:140 }
     probeOnly?: boolean; // for Day-0 decisions, optional
-  }
+    bucketMinutes?: number;
+  },
 ): Promise<{ payload: SegmentPayload; diag: WindowDiagnostics }> {
   const { fromUtc, toUtc, dayIndex } = window;
   console.log(TAG, "Building payload", { dayIndex, fromUtc, toUtc });
@@ -108,6 +112,20 @@ export async function buildSegmentPayload(
     hadAnyData: false,
   };
 
+  // Defensive: if called with empty map, make it explicit in logs/diag.
+  // (Process engine should already early-return before calling here.)
+  if (!ctx.metricMap || Object.keys(ctx.metricMap).length === 0) {
+    console.warn(TAG, "buildSegmentPayload called with empty metricMap", {
+      postingId: ctx.postingId,
+      sessionId: ctx.sessionId,
+      dayIndex,
+    });
+    diag.reason = "NO_METRICS_CONFIGURED";
+  }
+
+  const isPositive = (v: unknown) =>
+    typeof v === "number" && Number.isFinite(v) && v > 0;
+
   for (const [code, metricId] of Object.entries(ctx.metricMap) as Array<
     [MetricCode, number]
   >) {
@@ -115,7 +133,9 @@ export async function buildSegmentPayload(
       code,
       fromUtc,
       toUtc,
-      ctx.probeOnly ? { probeOnly: true } : undefined
+      ctx.probeOnly
+        ? { probeOnly: true, bucketMinutes: ctx.bucketMinutes }
+        : { bucketMinutes: ctx.bucketMinutes },
     );
 
     // Unreadable metric (no permission / read error) → include placeholder row
@@ -135,9 +155,14 @@ export async function buildSegmentPayload(
     }
 
     // Readable metric: decide if it has meaningful data
+    // NOTE: HR often returns avg/min/max without samplesCount; treat those as meaningful.
     const meaningful =
-      (s.totalValue != null && Number(s.totalValue) > 0) ||
-      (s.samplesCount != null && Number(s.samplesCount) > 0);
+      isPositive(s.totalValue) ||
+      isPositive(s.samplesCount) ||
+      (code === "HR" &&
+        (isPositive(s.avgValue) ||
+          isPositive(s.minValue) ||
+          isPositive(s.maxValue)));
 
     if (!meaningful) {
       diag.zeroData.push(code);
@@ -156,6 +181,16 @@ export async function buildSegmentPayload(
       computedJson: {
         ...(s.computedJson ?? {}),
         status: meaningful ? "OK" : "NO_DATA",
+        meaningfulBy: isPositive(s.totalValue)
+          ? "totalValue"
+          : isPositive(s.samplesCount)
+            ? "samplesCount"
+            : code === "HR" &&
+                (isPositive(s.avgValue) ||
+                  isPositive(s.minValue) ||
+                  isPositive(s.maxValue))
+              ? "hrStats"
+              : "none",
       },
     });
   }
@@ -186,10 +221,30 @@ function iso(t: number | null | undefined) {
 }
 
 /** Normalize whatever the API returns into an internal UploadSegmentResult shape. */
+// function normalizeUploadResult(raw: any): UploadSegmentResult {
+//   const hasOk = typeof raw?.ok === "boolean";
+//   const ok = hasOk
+//     ? !!raw.ok
+//     : !!raw?.status && !raw?.error && raw?.status !== "ERROR";
+//   const status = typeof raw?.status === "string" ? raw.status : undefined;
+//   const error = raw?.error ? String(raw.error) : undefined;
+//   return { ok, status, error };
+// }
+
 function normalizeUploadResult(raw: any): UploadSegmentResult {
   const hasOk = typeof raw?.ok === "boolean";
-  const ok = hasOk ? !!raw.ok : !!raw?.status && !raw?.error;
-  const status = typeof raw?.status === "string" ? raw.status : undefined;
+  const ok = hasOk
+    ? !!raw.ok
+    : !!raw?.status && !raw?.error && raw?.status !== "ERROR";
+
+  let status = typeof raw?.status === "string" ? raw.status : undefined;
+  if (status) {
+    const s = status.toUpperCase();
+    // Normalize variants to a single spelling used across the app.
+    if (s === "COMPLETED") status = "COMPLETE";
+    if (s === "COMPLETE") status = "COMPLETE";
+  }
+
   const error = raw?.error ? String(raw.error) : undefined;
   return { ok, status, error };
 }
@@ -212,7 +267,7 @@ export async function processDueWindow(
     metricMap: Record<MetricCode, number>;
   },
   state: ShareSessionState,
-  nowUtc: number = Date.now()
+  nowUtc: number = Date.now(),
 ): Promise<{ state: ShareSessionState; diag?: WindowDiagnostics }> {
   // One-time config banner per app lifetime
   if (!(global as any).__SHARE_CONFIG_LOGGED__) {
@@ -246,13 +301,43 @@ export async function processDueWindow(
     return { state };
   }
 
+  // if (state.currentDueDayIndex !== window.dayIndex) {
+  //   state = {
+  //     ...state,
+  //     currentDueDayIndex: window.dayIndex,
+  //     noDataRetryCount: 0,
+  //     nextRetryAtUtc: null, // clear any pending retry from prior day
+  //     graceAppliedForDay: null, // allow grace to apply once for this new day
+  //   };
+  // }
+
+  // CONFIG GUARD: metricMap empty is a configuration/state propagation error,
+  // not a "no Health data" situation. Do NOT consume retry budget.
+  if (!ctx.metricMap || Object.keys(ctx.metricMap).length === 0) {
+    console.warn(TAG, "NO_METRICS_CONFIGURED", {
+      postingId: ctx.postingId,
+      sessionId: ctx.sessionId,
+      dayIdx: window.dayIndex,
+    });
+
+    return {
+      state, // leave retries/day state untouched
+      diag: {
+        unavailable: [],
+        zeroData: [],
+        hadAnyData: false,
+        reason: "NO_METRICS_CONFIGURED",
+      },
+    };
+  }
+
   if (state.currentDueDayIndex !== window.dayIndex) {
     state = {
       ...state,
       currentDueDayIndex: window.dayIndex,
       noDataRetryCount: 0,
       nextRetryAtUtc: null, // clear any pending retry from prior day
-      graceAppliedForDay: null, // allow grace to apply once for this new day
+      graceAppliedForDay: null, // retained for backward compatibility; no longer used here
     };
   }
 
@@ -264,54 +349,58 @@ export async function processDueWindow(
       nextRetryAtISO: iso(state.nextRetryAtUtc),
       secondsRemaining: Math.max(
         0,
-        Math.ceil((state.nextRetryAtUtc - nowUtc) / 1000)
+        Math.ceil((state.nextRetryAtUtc - nowUtc) / 1000),
       ),
       noDataRetryCount: state.noDataRetryCount,
     });
     return { state };
   }
-  // ★ Day-0: fast probe-first path (avoid heavy compute when clearly no data yet)
-  if (window.dayIndex === 0) {
-    const { payload: probePayload, diag: probeDiag } =
-      await buildSegmentPayload(window, { ...ctx, probeOnly: true });
-    if (!probePayload.hasData) {
-      const nextRetryAtUtc =
-        nowUtc + withJitter(GRACE_WAIT_MS || RETRY_INTERVAL_MS); // prefer grace, fallback to retry interval
-      console.log(TAG, "day0-probe no-data → short-wait", {
-        dayIdx: window.dayIndex,
-        nextRetryAtISO: new Date(nextRetryAtUtc).toISOString(),
-        diag: probeDiag,
-      });
-      return {
-        state: {
-          ...state,
-          currentDueDayIndex: window.dayIndex,
-          noDataRetryCount: (state.noDataRetryCount ?? 0) + 1, // count toward retries, but still gentle on day-0
-          nextRetryAtUtc,
-        },
-        diag: probeDiag,
-      };
-    }
-    // If probe found data, continue to full build below.
-  }
+  // // ★ Day-0: fast probe-first path (avoid heavy compute when clearly no data yet)
+  // if (window.dayIndex === 0) {
+  //   const { payload: probePayload, diag: probeDiag } =
+  //     await buildSegmentPayload(window, {
+  //       ...ctx,
+  //       probeOnly: true,
+  //       bucketMinutes: SHARE_BUCKET_MINUTES,
+  //     });
+  //   if (!probePayload.hasData) {
+  //     const baseWait = GRACE_WAIT_MS > 0 ? GRACE_WAIT_MS : RETRY_INTERVAL_MS;
+  //     const nextRetryAtUtc = nowUtc + Math.max(1000, withJitter(baseWait)); // enforce at least 1s
+  //     console.log(TAG, "day0-probe no-data → short-wait", {
+  //       dayIdx: window.dayIndex,
+  //       nextRetryAtISO: new Date(nextRetryAtUtc).toISOString(),
+  //       diag: probeDiag,
+  //     });
+  //     return {
+  //       state: {
+  //         ...state,
+  //         currentDueDayIndex: window.dayIndex,
+  //         noDataRetryCount: (state.noDataRetryCount ?? 0) + 1, // count toward retries, but still gentle on day-0
+  //         nextRetryAtUtc,
+  //       },
+  //       diag: probeDiag,
+  //     };
+  //   }
+  //   // If probe found data, continue to full build below.
+  // }
 
-  // One-time grace per new due day to absorb provider write latency (not for Day-0)
-  if (
-    window.dayIndex !== 0 &&
-    GRACE_WAIT_MS > 0 &&
-    state.graceAppliedForDay !== window.dayIndex
-  ) {
-    const waitMs = withJitter(GRACE_WAIT_MS);
-    console.log(TAG, "grace-wait", { dayIdx: window.dayIndex, ms: waitMs });
-    return {
-      state: {
-        ...state,
-        currentDueDayIndex: window.dayIndex,
-        nextRetryAtUtc: nowUtc + waitMs,
-        graceAppliedForDay: window.dayIndex,
-      },
-    };
-  }
+  // // One-time grace per new due day to absorb provider write latency (not for Day-0)
+  // if (
+  //   window.dayIndex !== 0 &&
+  //   GRACE_WAIT_MS > 0 &&
+  //   state.graceAppliedForDay !== window.dayIndex
+  // ) {
+  //   const waitMs = withJitter(GRACE_WAIT_MS);
+  //   console.log(TAG, "grace-wait", { dayIdx: window.dayIndex, ms: waitMs });
+  //   return {
+  //     state: {
+  //       ...state,
+  //       currentDueDayIndex: window.dayIndex,
+  //       nextRetryAtUtc: nowUtc + waitMs,
+  //       graceAppliedForDay: window.dayIndex,
+  //     },
+  //   };
+  // }
 
   // Build payload from REAL data (now returns { payload, diag })
   const { payload, diag } = await buildSegmentPayload(window, {
@@ -319,10 +408,15 @@ export async function processDueWindow(
     postingId: ctx.postingId,
     userId: ctx.userId,
     metricMap: ctx.metricMap,
+    bucketMinutes: SHARE_BUCKET_MINUTES,
   });
 
   if (!payload.hasData) {
-    const newCount = state.noDataRetryCount + 1;
+    const prevCount = Number.isFinite(state.noDataRetryCount)
+      ? (state.noDataRetryCount as number)
+      : 0;
+
+    const newCount = prevCount + 1;
 
     // When we exceed MAX_RETRIES for a given day, we mark the engine status as
     // "CANCELLED". This is an engine-level decision only: the Share store

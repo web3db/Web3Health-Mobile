@@ -6,15 +6,12 @@ import { useCurrentUserId } from "@/src/hooks/useCurrentUserId";
 import { getSessionByPosting } from "@/src/services/sharing/api";
 import { getShareRuntimeConfig } from "@/src/services/sharing/constants";
 import {
+  checkMetricDataLast24Hours,
   checkMetricPermissionsForMap,
   type MetricCode,
 } from "@/src/services/sharing/summarizer";
 import { useMarketStore as useMarketplaceStore } from "@/src/store/useMarketStore";
-import {
-  computeNextWindowFromSnapshot,
-  formatTimeLeftLabel,
-  useShareStore,
-} from "@/src/store/useShareStore";
+import { formatTimeLeftLabel, useShareStore } from "@/src/store/useShareStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import { useFocusEffect } from "@react-navigation/native";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -28,6 +25,12 @@ import React, {
 import { Alert, Linking, Platform, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import {
+  planSimulatedWindow,
+  type PlannerContext,
+} from "@/src/services/sharing/planner";
+import { useApplyGateStore } from "@/src/store/useApplyGateStore";
+
 // --- tiny helpers (local to this file to keep it self-contained) ---
 const hasAny = (arr?: Array<any>) => Array.isArray(arr) && arr.length > 0;
 const hasText = (s?: string | null) => !!(s && s.trim().length > 0);
@@ -37,6 +40,28 @@ const formatAgeRange = (min?: number | null, max?: number | null) => {
   if (max != null) return `≤${max}`;
   return null;
 };
+
+// Match onboarding labels (so missing fields look human)
+const PROFILE_FIELD_LABELS: Record<string, string> = {
+  BirthYear: "Birth year",
+  RaceId: "Race",
+  SexId: "Sex",
+  HeightNum: "Height",
+  HeightUnitId: "Height unit",
+  WeightNum: "Weight",
+  WeightUnitId: "Weight unit",
+  MeasurementSystemId: "Measurement system",
+};
+
+function humanizeMissingFields(raw: unknown) {
+  const arr = Array.isArray(raw) ? raw : [];
+  const mapped = arr
+    .map((k) => PROFILE_FIELD_LABELS[String(k)] ?? null)
+    .filter((x): x is string => !!x);
+
+  // De-dupe + hide unknown backend keys
+  return Array.from(new Set(mapped));
+}
 
 type AnyMetricRow = {
   id?: number;
@@ -75,6 +100,23 @@ const labelOfMetric = (m: string) => {
   }
 };
 
+function showNoRecentDataAlert(missing: MetricCode[]) {
+  const labels = missing.map(labelOfMetric).join(", ");
+  Alert.alert(
+    "No recent data found",
+    `We couldn’t find any data in the last 24 hours for:\n• ${labels}\n\n` +
+      `To apply, please make sure these metrics are being recorded on your device, then try again.`,
+  );
+}
+
+function showMissingPermissionsAlert(missing: MetricCode[]) {
+  const labels = missing.map(labelOfMetric).join(", ");
+  Alert.alert(
+    "Permissions needed",
+    `To apply, please allow access to:\n• ${labels}\n\nThen try again.`,
+  );
+}
+
 // Normalize names → MetricCode
 function normalizeMetricCode(raw?: string | null): MetricCode | undefined {
   if (!raw) return;
@@ -95,7 +137,7 @@ function normalizeMetricCode(raw?: string | null): MetricCode | undefined {
 // Build a map of SupportedCode → metricId from the posting object (no hard-coding of IDs)
 function buildMetricMapStrict(
   posting: any,
-  metricCatalog?: Array<{ metricId: number; code: string }>
+  metricCatalog?: Array<{ metricId: number; code: string }>,
 ): Partial<Record<MetricCode, number>> {
   const out: Partial<Record<MetricCode, number>> = {};
 
@@ -142,7 +184,7 @@ function buildMetricMapStrict(
   ) {
     if (__DEV__) {
       console.log(
-        "[OppDetails] metricIds present but no catalog provided — cannot resolve codes from IDs yet"
+        "[OppDetails] metricIds present but no catalog provided — cannot resolve codes from IDs yet",
       );
     }
   }
@@ -156,12 +198,38 @@ function buildMetricMapStrict(
 // ─────────────────────────────────────────────────────────────────────────────
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
+function hasNumericOffset(iso: string) {
+  return /[+-]\d{2}:\d{2}$/.test(iso);
+}
+
+// Build an ISO string with a numeric offset (±HH:MM) using local wall-clock time.
+function buildLocalIsoWithOffset(d: Date) {
+  const pad2 = (n: number) => String(Math.trunc(Math.abs(n))).padStart(2, "0");
+
+  // JS getTimezoneOffset() is minutes behind UTC (NY winter: 300). Offset should be "-05:00".
+  const offsetMinutes = -d.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const hh = pad2(Math.floor(Math.abs(offsetMinutes) / 60));
+  const mm = pad2(Math.abs(offsetMinutes) % 60);
+  const offset = `${sign}${hh}:${mm}`;
+
+  const y = d.getFullYear();
+  const mo = pad2(d.getMonth() + 1);
+  const day = pad2(d.getDate());
+  const h = pad2(d.getHours());
+  const mi = pad2(d.getMinutes());
+  const s = pad2(d.getSeconds());
+  const ms = String(d.getMilliseconds()).padStart(3, "0");
+
+  return `${y}-${mo}-${day}T${h}:${mi}:${s}.${ms}${offset}`;
+}
 
 function fmtUTC(iso: string) {
   return new Date(iso).toISOString().replace(".000Z", "Z");
 }
 
-function fmtLocal(iso: string) {
+function fmtLocal(iso?: string | null) {
+  if (!iso) return "—";
   // 24h local for clarity in QA; shows date + time
   return new Date(iso).toLocaleString(undefined, {
     year: "numeric",
@@ -171,6 +239,96 @@ function fmtLocal(iso: string) {
     minute: "2-digit",
     hour12: false,
   });
+}
+
+const ONE_MIN_MS = 60 * 1000;
+
+function fmtLocalTime(iso: string) {
+  return new Date(iso).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function fmtLocalDate(iso: string) {
+  return new Date(iso).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+  });
+}
+
+/**
+ * UI-only: display [fromUtc, toUtc) as inclusive end-of-day by rendering (toUtc - 1 minute).
+ * Example: "Feb 18, 2026 00:00 → 23:59"
+ */
+function fmtLocalWindowIntuitive(
+  fromUtc?: string | null,
+  toUtc?: string | null,
+) {
+  if (!fromUtc || !toUtc) return "—";
+
+  const toMinus1MinIso = new Date(Date.parse(toUtc) - ONE_MIN_MS).toISOString();
+
+  const sameLocalDate = fmtLocalDate(fromUtc) === fmtLocalDate(toMinus1MinIso);
+
+  if (sameLocalDate) {
+    return `${fmtLocalDate(fromUtc)} ${fmtLocalTime(fromUtc)} → ${fmtLocalTime(toMinus1MinIso)}`;
+  }
+
+  return `${fmtLocalDate(fromUtc)} ${fmtLocalTime(fromUtc)} → ${fmtLocalDate(toMinus1MinIso)} ${fmtLocalTime(toMinus1MinIso)}`;
+}
+
+function fmtMonthDay(iso: string) {
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: "short",
+    day: "2-digit",
+  });
+}
+
+function computeMissedCatchUp(
+  snap: {
+    cycleAnchorUtc: string;
+    segmentsExpected: number;
+    lastSentDayIndex: number | null;
+  },
+  nowMs: number,
+  dayMs: number,
+  graceMs: number,
+): {
+  missedCount: number;
+  nextMissedDayIndex: number | null;
+  nextFromUtc: string | null;
+} {
+  const anchorMs = Date.parse(snap.cycleAnchorUtc);
+  if (!Number.isFinite(anchorMs)) {
+    return { missedCount: 0, nextMissedDayIndex: null, nextFromUtc: null };
+  }
+
+  const expected = Number(snap.segmentsExpected ?? 0);
+  const lastSent =
+    snap.lastSentDayIndex == null ? 0 : Number(snap.lastSentDayIndex);
+
+  let missedCount = 0;
+  let nextMissedDayIndex: number | null = null;
+  let nextFromUtc: string | null = null;
+
+  for (let dayIdx = Math.max(1, lastSent + 1); dayIdx <= expected; dayIdx++) {
+    const toMs = anchorMs + dayIdx * dayMs;
+    const fromMs = toMs - dayMs;
+    const dueAtMs = toMs + graceMs;
+
+    if (nowMs >= dueAtMs) {
+      missedCount += 1;
+      if (nextMissedDayIndex == null) {
+        nextMissedDayIndex = dayIdx;
+        nextFromUtc = new Date(fromMs).toISOString();
+      }
+    }
+  }
+
+  return { missedCount, nextMissedDayIndex, nextFromUtc };
 }
 
 // === [SECTION_HEADER_COMPONENT] reusable title + subtitle
@@ -196,39 +354,76 @@ function SectionHeader({
   );
 }
 
-
-
 export default function OpportunityDetails() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const c = useThemeColors();
   const startSession = useShareStore((s) => s.startSession);
-  const status = useShareStore((s) => s.status);
-  const segmentsExpected = useShareStore((s) => s.segmentsExpected);
+
+  // NEW: posting-scoped context
+  const setActivePosting = useShareStore((s) => s.setActivePosting);
+
+  const tick = useShareStore((s) => s.tick);
+  const syncNow = useShareStore((s) => s.syncNow);
+  const catchUpNextOne = useShareStore((s) => s.catchUpNextOne);
   const enterSimulation = useShareStore((s) => s.enterSimulation);
   const simulateNextDay = useShareStore((s) => s.simulateNextDay);
   const exitSimulation = useShareStore((s) => s.exitSimulation);
-  const mode = useShareStore((s) => s.engine.mode);
-  const cycleAnchorUtc = useShareStore((s) => s.cycleAnchorUtc);
-  const originalCycleAnchorUtc = useShareStore((s) => s.originalCycleAnchorUtc);
-  const engine = useShareStore((s) => s.engine);
-  const tick = useShareStore((s) => s.tick);
-  const catchUpIfNeeded = useShareStore((s) => s.catchUpIfNeeded);
-  const sessionId = useShareStore((s) => s.sessionId);
-  const isProcessing = !!engine?.currentDueDayIndex;
-  const completed = (engine?.segmentsSent ?? 0) >= (segmentsExpected ?? 0);
+
+  const fetchSessionSnapshot = useShareStore((s) => s.fetchSessionSnapshot);
+
   const userId = useCurrentUserId();
+  const ensureCanApply = useApplyGateStore((s) => s.ensureCanApply);
   const { getByIdSafe, savedIds, toggleSave, loadById, loading } =
     useMarketplaceStore();
-  const lastDiag = useShareStore((s) => s.lastWindowDiag);
-  const snapshot = useShareStore((s) => s.snapshot);
-  const fetchSessionSnapshot = useShareStore((s) => s.fetchSessionSnapshot);
 
   const cached = useMemo(
     () => (id ? getByIdSafe(String(id)) : undefined),
-    [getByIdSafe, id]
+    [getByIdSafe, id],
   );
   const [item, setItem] = useState(cached);
+
+  const postingId = useMemo(() => {
+    if (!item) return 0;
+    const pid = Number((item as any).postingId ?? (item as any).id);
+    return Number.isFinite(pid) ? pid : 0;
+  }, [item]);
+
+  // Always keep ShareStore “active posting” aligned to this screen’s postingId.
+  useEffect(() => {
+    if (postingId) setActivePosting(postingId);
+  }, [postingId, setActivePosting]);
+
+  const shareCtx = useShareStore(
+    useCallback(
+      (s) => (postingId ? (s as any).contexts?.[postingId] : undefined),
+      [postingId],
+    ),
+  );
+
+  const status = String(shareCtx?.status ?? "");
+  const engine = shareCtx?.engine;
+  const sessionId = shareCtx?.sessionId ?? null;
+  const snapshot = shareCtx?.snapshot ?? null;
+  const catchUpStatus = shareCtx?.catchUpStatus ?? null; // missedCount = eligible-now count
+  const segmentsExpected = shareCtx?.segmentsExpected ?? null;
+  const cycleAnchorUtc = shareCtx?.cycleAnchorUtc ?? null;
+  const originalCycleAnchorUtc = shareCtx?.originalCycleAnchorUtc ?? null;
+  const lastDiag = shareCtx?.lastWindowDiag ?? null;
+
+  const mode = String(engine?.mode ?? "");
+  const inFlight = (shareCtx as any)?.inFlight === true;
+  const isProcessing = inFlight;
+
+  // Engine-side completion should only be true once we have a valid expected count (>0).
+  const expectedCount =
+    typeof segmentsExpected === "number" && segmentsExpected > 0
+      ? segmentsExpected
+      : null;
+
+  const engineCompleted =
+    expectedCount != null && (engine?.segmentsSent ?? 0) >= expectedCount;
+
   const [sessionLookup, setSessionLookup] = useState<null | {
     sessionId: number;
     statusName?: string | null;
@@ -251,21 +446,20 @@ export default function OpportunityDetails() {
     sent: number;
     due: number | null;
   }>({
-    status: String(useShareStore.getState().status ?? ""),
-    sent: Number(useShareStore.getState().engine?.segmentsSent ?? 0),
-    due: (useShareStore.getState().engine?.currentDueDayIndex ?? null) as
-      | number
-      | null,
+    status: "",
+    sent: 0,
+    due: null,
   });
 
   const refreshSessionLookup = useCallback(async () => {
     if (!item || userId == null) return;
-    const postingId = Number((item as any).postingId ?? (item as any).id);
+    if (!postingId) return;
     setSessionLookupLoading(true);
     try {
       const res = await getSessionByPosting(postingId, userId).catch(
-        () => null
+        () => null,
       );
+
       if (res) {
         const next = {
           sessionId: res.sessionId,
@@ -279,18 +473,17 @@ export default function OpportunityDetails() {
     } finally {
       setSessionLookupLoading(false);
     }
-  }, [item, userId]);
+  }, [postingId, userId]);
 
   useEffect(() => {
     if (item && userId != null) refreshSessionLookup();
   }, [item, userId, refreshSessionLookup]);
 
   useEffect(() => {
-    if (!item || userId == null) return;
-    const postingId = Number((item as any).postingId ?? (item as any).id);
+    if (userId == null) return;
     if (!postingId) return;
     fetchSessionSnapshot(userId, postingId);
-  }, [item, userId, fetchSessionSnapshot]);
+  }, [userId, postingId, fetchSessionSnapshot]);
 
   const [nowTick, setNowTick] = useState(Date.now());
 
@@ -298,18 +491,20 @@ export default function OpportunityDetails() {
     useCallback(() => {
       const id = setInterval(() => setNowTick(Date.now()), 60_000);
       return () => clearInterval(id as unknown as number);
-    }, [])
+    }, []),
   );
 
   // Keep UI in sync: refresh on screen focus and when share engine progresses
   useFocusEffect(
     useCallback(() => {
+      // Ensure store actions apply to THIS posting
+      if (postingId) setActivePosting(postingId);
+
       // Refresh when the screen gains focus
       refreshSessionLookup();
 
       // Also refresh backend snapshot on focus (server-clock truth)
       (async () => {
-        const postingId = Number((item as any)?.postingId ?? (item as any)?.id);
         if (userId != null && postingId) {
           await useShareStore
             .getState()
@@ -317,22 +512,26 @@ export default function OpportunityDetails() {
         }
       })();
 
-      // Sync the snapshot before listening
-      shareSnapRef.current = {
-        status: String(useShareStore.getState().status ?? ""),
-        sent: Number(useShareStore.getState().engine?.segmentsSent ?? 0),
-        due: (useShareStore.getState().engine?.currentDueDayIndex ?? null) as
-          | number
-          | null,
-      };
-
-      // Subscribe to the whole store; do our own selection+diff
-      const unsubscribe = useShareStore.subscribe((s) => {
-        const next = {
-          status: String(s.status ?? ""),
-          sent: Number(s.engine?.segmentsSent ?? 0),
-          due: (s.engine?.currentDueDayIndex ?? null) as number | null,
+      // Sync the snapshot before listening (posting-scoped)
+      {
+        const st: any = useShareStore.getState();
+        const ctx0 = postingId ? st.contexts?.[postingId] : null;
+        shareSnapRef.current = {
+          status: String(ctx0?.status ?? ""),
+          sent: Number(ctx0?.engine?.segmentsSent ?? 0),
+          due: (ctx0?.engine?.currentDueDayIndex ?? null) as number | null,
         };
+      }
+
+      // Subscribe to the whole store; select posting-scoped values for diff
+      const unsubscribe = useShareStore.subscribe((s: any) => {
+        const ctxN = postingId ? s.contexts?.[postingId] : null;
+        const next = {
+          status: String(ctxN?.status ?? ""),
+          sent: Number(ctxN?.engine?.segmentsSent ?? 0),
+          due: (ctxN?.engine?.currentDueDayIndex ?? null) as number | null,
+        };
+
         const prev = shareSnapRef.current;
 
         if (
@@ -343,9 +542,6 @@ export default function OpportunityDetails() {
           // update snapshot *first* to avoid duplicate refreshes
           shareSnapRef.current = next;
           refreshSessionLookup();
-          const postingId = Number(
-            (item as any)?.postingId ?? (item as any)?.id
-          );
           if (userId != null && postingId) {
             void useShareStore
               .getState()
@@ -355,38 +551,38 @@ export default function OpportunityDetails() {
       });
 
       return () => unsubscribe();
-    }, [refreshSessionLookup, item, userId])
+    }, [refreshSessionLookup, userId, postingId, setActivePosting]),
   );
 
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        if (!item || userId == null) return;
-        const postingId = Number((item as any).postingId ?? (item as any).id);
-        setSessionLookupLoading(true);
-        const res = await getSessionByPosting(postingId, userId).catch(
-          () => null
-        );
-        if (!mounted) return;
-        if (res) {
-          const next = {
-            sessionId: res.sessionId,
-            statusName: res.statusName,
-            source: res.source as "ACTIVE" | "LATEST",
-          };
-          setSessionLookup((prev) => (sameLookup(prev, next) ? prev : next));
-        } else {
-          setSessionLookup((prev) => (prev === null ? prev : null));
-        }
-      } finally {
-        if (mounted) setSessionLookupLoading(false);
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, [item, userId]);
+  // useEffect(() => {
+  //   let mounted = true;
+  //   (async () => {
+  //     try {
+  //       if (!item || userId == null) return;
+  //       const postingId = Number((item as any).postingId ?? (item as any).id);
+  //       setSessionLookupLoading(true);
+  //       const res = await getSessionByPosting(postingId, userId).catch(
+  //         () => null,
+  //       );
+  //       if (!mounted) return;
+  //       if (res) {
+  //         const next = {
+  //           sessionId: res.sessionId,
+  //           statusName: res.statusName,
+  //           source: res.source as "ACTIVE" | "LATEST",
+  //         };
+  //         setSessionLookup((prev) => (sameLookup(prev, next) ? prev : next));
+  //       } else {
+  //         setSessionLookup((prev) => (prev === null ? prev : null));
+  //       }
+  //     } finally {
+  //       if (mounted) setSessionLookupLoading(false);
+  //     }
+  //   })();
+  //   return () => {
+  //     mounted = false;
+  //   };
+  // }, [item, userId]);
 
   useEffect(() => {
     let mounted = true;
@@ -398,13 +594,13 @@ export default function OpportunityDetails() {
       try {
         const forceFn = loadById as unknown as (
           a: string,
-          b?: { force?: boolean }
+          b?: { force?: boolean },
         ) => any;
         const fetched = await forceFn(String(id), { force: true }).catch(
           async () => {
             const legacyFn = loadById as unknown as (a: string) => any;
             return legacyFn(String(id));
-          }
+          },
         );
         // always prefer fresh fetched data, even if the same id
         if (mounted && fetched) {
@@ -425,6 +621,16 @@ export default function OpportunityDetails() {
   useEffect(() => {
     if (__DEV__) console.log("[OppDetails] item (cached or fetched) =", item);
   }, [item]);
+
+  useEffect(() => {
+    if (!__DEV__) return;
+    console.log("[OppDetails][ID]", {
+      routeId: id,
+      itemId: (item as any)?.id,
+      itemPostingId: (item as any)?.postingId,
+      resolvedPostingId: postingId,
+    });
+  }, [id, item, postingId]);
 
   // keep the ORIGINAL join anchor for consistent backdating
   const originalAnchorRef = useRef<string | null>(null);
@@ -557,7 +763,42 @@ export default function OpportunityDetails() {
     if (userId == null) {
       Alert.alert(
         "Sign in required",
-        "Please sign in to apply and start sharing."
+        "Please sign in to apply and start sharing.",
+      );
+      return;
+    }
+
+    // Apply gate: ensure profile is complete before applying
+    const gate = await ensureCanApply(userId);
+
+    if (!gate.ok) {
+      // Case A: profile truly incomplete → route to onboarding
+      if (gate.needsProfile) {
+        const missingPretty = humanizeMissingFields(gate.missingProfileFields);
+        const missing =
+          missingPretty.length > 0
+            ? `\n\nMissing: ${missingPretty.join(", ")}`
+            : "";
+
+        Alert.alert(
+          "Complete your profile",
+          `Please complete your profile before applying.${missing}`,
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Go to profile",
+              onPress: () => router.push("/(app)/onboarding/profile"),
+            },
+          ],
+        );
+        return;
+      }
+
+      // Case B: backend error/unreachable or other non-profile block → do NOT route
+      Alert.alert(
+        "Unable to verify profile",
+        gate.error ??
+          "We couldn't verify your profile right now. Please try again.",
       );
       return;
     }
@@ -570,7 +811,7 @@ export default function OpportunityDetails() {
       console.log("[OppDetails] No resolvable metrics for posting", { item });
       Alert.alert(
         "Unsupported",
-        "This posting’s metrics cannot be resolved yet. Please try again later."
+        "This posting’s metrics cannot be resolved yet. Please try again later.",
       );
       return;
     }
@@ -589,9 +830,7 @@ export default function OpportunityDetails() {
           text: "OK",
           onPress: async () => {
             try {
-              const postingId = Number(
-                (item as any).postingId ?? (item as any).id
-              );
+              if (!postingId) return;
 
               // Build map once for the session
               const metricMap = buildMetricMapStrict(item) as Partial<
@@ -600,34 +839,51 @@ export default function OpportunityDetails() {
 
               // Cross-platform readability probe (permissions / provider / data)
               const probe = await checkMetricPermissionsForMap(
-                metricMap as Record<MetricCode, number>
+                metricMap as Record<MetricCode, number>,
               );
               const missing = probe.missing ?? [];
 
+              // if (missing.length > 0) {
+              //   const missingLabels = missing.map(labelOfMetric).join(", ");
+              //   const msg =
+              //     `Right now we cannot read data for:\n• ${missingLabels}\n\n` +
+              //     `This can happen if Health permissions are disabled or there is no data yet for those metrics.\n\n` +
+              //     `You can still start sharing; those metrics will be reported as unavailable until data becomes readable.`;
+              //   const cont = await new Promise<boolean>((resolve) => {
+              //     Alert.alert("Some metrics unavailable", msg, [
+              //       {
+              //         text: "Cancel",
+              //         style: "cancel",
+              //         onPress: () => resolve(false),
+              //       },
+              //       { text: "Start anyway", onPress: () => resolve(true) },
+              //     ]);
+              //   });
+              //   if (!cont) return;
+              // }
+
               if (missing.length > 0) {
-                const missingLabels = missing.map(labelOfMetric).join(", ");
-                const msg =
-                  `Right now we cannot read data for:\n• ${missingLabels}\n\n` +
-                  `This can happen if Health permissions are disabled or there is no data yet for those metrics.\n\n` +
-                  `You can still start sharing; those metrics will be reported as unavailable until data becomes readable.`;
-                const cont = await new Promise<boolean>((resolve) => {
-                  Alert.alert("Some metrics unavailable", msg, [
-                    {
-                      text: "Cancel",
-                      style: "cancel",
-                      onPress: () => resolve(false),
-                    },
-                    { text: "Start anyway", onPress: () => resolve(true) },
-                  ]);
-                });
-                if (!cont) return;
+                showMissingPermissionsAlert(missing);
+                return;
               }
+
+              // NEW: strict eligibility gate — require data in the last 24 hours
+              const dataProbe = await checkMetricDataLast24Hours(codes);
+              if (!dataProbe.ok) {
+                if (__DEV__) {
+                  console.log("[OppDetails] 24h data gate failed", dataProbe);
+                }
+                showNoRecentDataAlert(dataProbe.missingData);
+                return;
+              }
+
+              if (postingId) setActivePosting(postingId);
 
               await startSession(
                 postingId,
                 userId!,
                 metricMap,
-                Number(item.dataCoverageDaysRequired ?? 5)
+                Number(item.dataCoverageDaysRequired ?? 5),
               );
               setSessionLookup((prev) => ({
                 sessionId: prev?.sessionId ?? 0,
@@ -635,28 +891,336 @@ export default function OpportunityDetails() {
                 source: "ACTIVE",
               }));
               refreshSessionLookup();
-              const pid = Number((item as any).postingId ?? (item as any).id);
-              if (userId != null && pid) {
-                void useShareStore.getState().fetchSessionSnapshot(userId, pid);
+              if (userId != null && postingId) {
+                void useShareStore
+                  .getState()
+                  .fetchSessionSnapshot(userId, postingId);
               }
+
+              // Alert.alert(
+              //   "Sharing started",
+              //   __DEV__
+              //     ? "First segment will send now.\nDay progression is accelerated for testing."
+              //     : "We’ll send your first segment now and continue every 24 hours.",
+              // );
               Alert.alert(
                 "Sharing started",
                 __DEV__
-                  ? "First segment will send now.\nDay progression is accelerated for testing."
-                  : "We’ll send your first segment now and continue every 24 hours."
+                  ? "Sharing is active. Sync will run when the next window is eligible.\nUse the Test Panel to simulate days."
+                  : "Sharing is active. Sync will run when your next window becomes eligible.",
               );
             } catch (e) {
               console.log("[OppDetails] startSession error", e);
               Alert.alert(
                 "Error",
-                "Failed to start sharing. Please try again."
+                "Failed to start sharing. Please try again.",
               );
             }
           },
         },
-      ]
+      ],
     );
-  }, [item, startSession, userId, refreshSessionLookup]);
+  }, [
+    item,
+    postingId,
+    setActivePosting,
+    startSession,
+    userId,
+    ensureCanApply,
+    router,
+    refreshSessionLookup,
+  ]);
+
+  const saved = item?.id != null ? savedIds?.includes(item.id) : false;
+
+  const lookupStatusUpper = String(
+    sessionLookup?.statusName ?? "",
+  ).toUpperCase();
+  const snapshotStatusUpper = String(
+    snapshot?.statusName ?? snapshot?.statusCode ?? "",
+  ).toUpperCase();
+  const storeStatusUpper = String(status ?? "").toUpperCase();
+
+  // Prefer server lookup, then server snapshot, then local store.
+  const apiStatusUpper =
+    lookupStatusUpper || snapshotStatusUpper || storeStatusUpper;
+
+  const organizerLabel =
+    (hasText(item?.sponsor) ? String(item?.sponsor).trim() : null) ??
+    "the study team";
+
+  const coverageDays = Number(item?.dataCoverageDaysRequired ?? 5);
+
+  const applyDisclosureLine =
+    `By applying, you agree to share the requested health metrics for ${coverageDays} day` +
+    `${coverageDays === 1 ? "" : "s"} with ${organizerLabel}. ` +
+    `Your data is shared in de-identified form and is not labeled with your name or direct personal identifiers.`;
+
+  const { applyTitle, applyDisabled } = useMemo(() => {
+    if (userId == null) {
+      return { applyTitle: "Sign in to apply", applyDisabled: true };
+    }
+
+    // While we’re actively checking, disable.
+    if (sessionLookupLoading) {
+      return { applyTitle: "Checking…", applyDisabled: true };
+    }
+
+    // If ANY source says ACTIVE/COMPLETED, do not allow Apply.
+    if (apiStatusUpper === "ACTIVE") {
+      return { applyTitle: "Already sharing", applyDisabled: true };
+    }
+    if (apiStatusUpper === "COMPLETED" || apiStatusUpper === "COMPLETE") {
+      return { applyTitle: "Completed", applyDisabled: true };
+    }
+
+    // CANCELLED (or empty/unknown) should allow Apply.
+    return { applyTitle: "Apply", applyDisabled: false };
+  }, [userId, sessionLookupLoading, apiStatusUpper]);
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // NEW: Sim helpers (use ORIGINAL anchor; always 24h blocks)
+  // nextTargetIdx = next unsent day (1..segmentsExpected)
+  const devJoinLocalFallback = useMemo(() => {
+    // DEV-only: allow preview/sim UI to function before snapshot arrives.
+    // Do NOT use this for real session creation; store/api are the source of truth.
+    const iso = buildLocalIsoWithOffset(new Date());
+    return hasNumericOffset(iso) ? iso : null;
+  }, []);
+
+  const nextTargetIdx = Math.min(
+    Math.max(1, (engine?.lastSentDayIndex ?? 0) + 1),
+    Number(segmentsExpected ?? 0) || 0,
+  );
+
+  // const nextWindowPreview = (() => {
+  //   const baseIso = originalCycleAnchorUtc ?? cycleAnchorUtc;
+  //   if (
+  //     !testFlags.TEST_MODE ||
+  //     !sessionId ||
+  //     status !== "ACTIVE" ||
+  //     !baseIso ||
+  //     nextTargetIdx <= 0 ||
+  //     completed
+  //   ) {
+  //     return null;
+  //   }
+  //   const t0 = Date.parse(baseIso);
+  //   const fromUtc = new Date(t0 - nextTargetIdx * ONE_DAY_MS).toISOString();
+  //   const toUtc = new Date(t0 - (nextTargetIdx - 1) * ONE_DAY_MS).toISOString();
+  //   return {
+  //     idx: nextTargetIdx,
+  //     fromUtc,
+  //     toUtc,
+  //     fromLocal: fmtLocal(fromUtc),
+  //     toLocal: fmtLocal(toUtc),
+  //   };
+  // })();
+
+  // const backdateToDayIndexAndTick = useCallback((targetDayIdx: number) => {
+  //   if (!testFlags.TEST_MODE) return;
+  //   const baseIso = originalAnchorRef.current ?? cycleAnchorUtc;
+  //   if (!baseIso) {
+  //     if (__DEV__) console.log('[OppDetails][TEST] No anchor yet.');
+  //     return;
+  //   }
+  //   const newIso = new Date(Date.parse(baseIso) - targetDayIdx * ONE_DAY_MS).toISOString();
+  //   if (__DEV__) console.log('[OppDetails][TEST] backdate', { targetDayIdx, baseIso, newIso });
+  //   setBackdatedAnchorTestOnly(newIso);
+  //   // process immediately; store will handle grace/retries if needed
+  //   tick();
+  // }, [cycleAnchorUtc, setBackdatedAnchorTestOnly, tick]);
+
+  // const simNextDay = useCallback(() => {
+  //   if (!segmentsExpected) return;
+  //   if ((engine?.lastSentDayIndex ?? 0) >= segmentsExpected) return;
+  //   backdateToDayIndexAndTick(nextTargetIdx);
+  // }, [segmentsExpected, engine?.lastSentDayIndex, nextTargetIdx, backdateToDayIndexAndTick]);
+
+  // const simAllRemaining = useCallback(() => {
+  //   if (!segmentsExpected) return;
+  //   // Backdate to N so all windows 1..N are in the past, then let catch-up sweep them.
+  //   const baseIso = originalAnchorRef.current ?? cycleAnchorUtc;
+  //   if (!baseIso) return;
+  //   const n = Number(segmentsExpected);
+  //   const newIso = new Date(Date.parse(baseIso) - n * ONE_DAY_MS).toISOString();
+  //   if (__DEV__) console.log('[OppDetails][TEST] backdate ALL', { n, baseIso, newIso });
+  //   setBackdatedAnchorTestOnly(newIso);
+  //   // Sweep all past windows in order
+  //   catchUpIfNeeded();
+  // }, [segmentsExpected, cycleAnchorUtc, setBackdatedAnchorTestOnly, catchUpIfNeeded]);
+
+  const nextWindowPreview = (() => {
+    const baseIso = originalCycleAnchorUtc ?? cycleAnchorUtc;
+
+    if (
+      !testFlags.TEST_MODE ||
+      !sessionId ||
+      status !== "ACTIVE" ||
+      !baseIso ||
+      nextTargetIdx <= 0 ||
+      engineCompleted
+    ) {
+      return null;
+    }
+
+    // Mirror store simulation exactly: 24h blocks from immutable baseIso.
+    const joinLocal = snapshot?.joinTimeLocalISO;
+    const joinTz = snapshot?.joinTimezone;
+
+    // If we don’t have a valid local ISO with offset yet, do NOT call planner.
+    // (Using baseIso here is wrong because it’s UTC "Z".)
+    const effectiveJoinLocal =
+      joinLocal && hasNumericOffset(joinLocal)
+        ? joinLocal
+        : devJoinLocalFallback;
+
+    if (!effectiveJoinLocal) {
+      if (__DEV__) {
+        console.warn(
+          "[OppDetails] nextWindowPreview skipped: missing/invalid joinTimeLocalISO",
+          {
+            joinTimeLocalISO: joinLocal ?? null,
+            cycleAnchorUtc: baseIso,
+          },
+        );
+      }
+      return null;
+    }
+
+    const ctx: PlannerContext = {
+      joinTimeLocalISO: effectiveJoinLocal,
+      joinTimezone: joinTz ?? "Local",
+      cycleAnchorUtc: baseIso,
+      segmentsExpected: Number(segmentsExpected ?? 0) || 0,
+      alreadySentDayIndices:
+        engine?.lastSentDayIndex != null ? [engine.lastSentDayIndex] : [],
+      lastSentDayIndex: engine?.lastSentDayIndex ?? null,
+      mode: "SIM",
+    };
+
+    const win = planSimulatedWindow(ctx, nextTargetIdx);
+
+    return {
+      idx: nextTargetIdx,
+      fromUtc: win.fromUtc,
+      toUtc: win.toUtc,
+      fromLocal: fmtLocal(win.fromUtc),
+      toLocal: fmtLocal(win.toUtc),
+    };
+  })();
+
+  const simNextDay = useCallback(async () => {
+    if (!testFlags.TEST_MODE) return;
+    if (!segmentsExpected) return;
+    if ((engine?.lastSentDayIndex ?? 0) >= segmentsExpected) return;
+    if (engineCompleted) return;
+    if (mode !== "SIM") enterSimulation();
+    await simulateNextDay();
+  }, [
+    segmentsExpected,
+    engine?.lastSentDayIndex,
+    simulateNextDay,
+    enterSimulation,
+    mode,
+    engineCompleted,
+  ]);
+
+  const ensurePostingMetricMap = useCallback(() => {
+    if (!postingId) return null;
+
+    const existing = ((shareCtx as any)?.metricMap ?? {}) as Partial<
+      Record<MetricCode, number>
+    >;
+
+    if (existing && Object.keys(existing).length > 0) return existing;
+
+    // Rebuild from the currently-loaded posting details
+    const rebuilt = buildMetricMapStrict(item) as Partial<
+      Record<MetricCode, number>
+    >;
+
+    if (rebuilt && Object.keys(rebuilt).length > 0) {
+      // Persist into store context (if store exposes setContext)
+      const st: any = useShareStore.getState();
+      st?.setContext?.(postingId, { metricMap: rebuilt });
+      return rebuilt;
+    }
+
+    return {};
+  }, [postingId, shareCtx, item]);
+
+  const doCatchUpOne = useCallback(async () => {
+    try {
+      if (postingId) setActivePosting(postingId);
+
+      const mm = ensurePostingMetricMap() ?? {};
+      if (!mm || Object.keys(mm).length === 0) {
+        Alert.alert(
+          "Cannot catch up",
+          "This opportunity has no configured metric mapping yet. Please refresh the posting details and try again.",
+        );
+        return;
+      }
+
+      await catchUpNextOne();
+    } catch (e) {
+      if (__DEV__) console.warn("[OppDetails] catch-up error", e);
+    }
+  }, [catchUpNextOne, postingId, setActivePosting, ensurePostingMetricMap]);
+
+  const doSyncNow = useCallback(async () => {
+    try {
+      if (postingId) setActivePosting(postingId);
+
+      const mm = ensurePostingMetricMap() ?? {};
+      if (!mm || Object.keys(mm).length === 0) {
+        Alert.alert(
+          "Cannot sync",
+          "This opportunity has no configured metric mapping yet. Please refresh the posting details and try again.",
+        );
+        return;
+      }
+
+      await syncNow();
+    } catch (e) {
+      if (__DEV__) console.warn("[OppDetails] syncNow error", e);
+    }
+  }, [syncNow, postingId, setActivePosting, ensurePostingMetricMap]);
+
+  const simAllRemaining = useCallback(async () => {
+    if (!testFlags.TEST_MODE) return;
+    if (!postingId) return;
+
+    if (postingId) setActivePosting(postingId);
+
+    const expected0 = Number(segmentsExpected ?? 0);
+    if (!expected0) return;
+    if (engineCompleted) return;
+
+    if (mode !== "SIM") enterSimulation();
+
+    for (;;) {
+      const st: any = useShareStore.getState();
+      const ctx = st.contexts?.[postingId];
+      if (String(ctx?.status ?? "") !== "ACTIVE") break;
+
+      const sent = Number(ctx?.engine?.segmentsSent ?? 0);
+      const expected = Number(ctx?.segmentsExpected ?? 0);
+
+      if (expected > 0 && sent >= expected) break;
+
+      await st.simulateNextDay();
+      await Promise.resolve(); // let UI breathe
+    }
+  }, [
+    postingId,
+    setActivePosting,
+    segmentsExpected,
+    engineCompleted,
+    mode,
+    enterSimulation,
+  ]);
 
   if (!item) {
     return (
@@ -692,120 +1256,6 @@ export default function OpportunityDetails() {
       </SafeAreaView>
     );
   }
-
-  const saved = savedIds?.includes(item.id);
-
-  const apiStatusUpper = (sessionLookup?.statusName || "").toUpperCase();
-
-  const { applyTitle, applyDisabled } = useMemo(() => {
-    if (userId == null)
-      return { applyTitle: "Sign in to apply", applyDisabled: true };
-    if (sessionLookupLoading)
-      return { applyTitle: "Checking…", applyDisabled: true };
-    if (apiStatusUpper === "ACTIVE")
-      return { applyTitle: "Already sharing", applyDisabled: true };
-    if (apiStatusUpper === "COMPLETED")
-      return { applyTitle: "Completed", applyDisabled: true };
-    if (apiStatusUpper === "CANCELLED")
-      return { applyTitle: "Apply", applyDisabled: false };
-    return { applyTitle: "Apply", applyDisabled: false };
-  }, [userId, sessionLookupLoading, apiStatusUpper]);
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // NEW: Sim helpers (use ORIGINAL anchor; always 24h blocks)
-  // nextTargetIdx = next unsent day (1..segmentsExpected)
-  const nextTargetIdx = Math.min(
-    Math.max(1, (engine?.lastSentDayIndex ?? 0) + 1),
-    Number(segmentsExpected ?? 0) || 0
-  );
-
-  const nextWindowPreview = (() => {
-    const baseIso = originalCycleAnchorUtc ?? cycleAnchorUtc;
-    if (
-      !testFlags.TEST_MODE ||
-      !sessionId ||
-      status !== "ACTIVE" ||
-      !baseIso ||
-      nextTargetIdx <= 0 ||
-      completed
-    ) {
-      return null;
-    }
-    const t0 = Date.parse(baseIso);
-    const fromUtc = new Date(t0 - nextTargetIdx * ONE_DAY_MS).toISOString();
-    const toUtc = new Date(t0 - (nextTargetIdx - 1) * ONE_DAY_MS).toISOString();
-    return {
-      idx: nextTargetIdx,
-      fromUtc,
-      toUtc,
-      fromLocal: fmtLocal(fromUtc),
-      toLocal: fmtLocal(toUtc),
-    };
-  })();
-
-  // const backdateToDayIndexAndTick = useCallback((targetDayIdx: number) => {
-  //   if (!testFlags.TEST_MODE) return;
-  //   const baseIso = originalAnchorRef.current ?? cycleAnchorUtc;
-  //   if (!baseIso) {
-  //     if (__DEV__) console.log('[OppDetails][TEST] No anchor yet.');
-  //     return;
-  //   }
-  //   const newIso = new Date(Date.parse(baseIso) - targetDayIdx * ONE_DAY_MS).toISOString();
-  //   if (__DEV__) console.log('[OppDetails][TEST] backdate', { targetDayIdx, baseIso, newIso });
-  //   setBackdatedAnchorTestOnly(newIso);
-  //   // process immediately; store will handle grace/retries if needed
-  //   tick();
-  // }, [cycleAnchorUtc, setBackdatedAnchorTestOnly, tick]);
-
-  // const simNextDay = useCallback(() => {
-  //   if (!segmentsExpected) return;
-  //   if ((engine?.lastSentDayIndex ?? 0) >= segmentsExpected) return;
-  //   backdateToDayIndexAndTick(nextTargetIdx);
-  // }, [segmentsExpected, engine?.lastSentDayIndex, nextTargetIdx, backdateToDayIndexAndTick]);
-
-  // const simAllRemaining = useCallback(() => {
-  //   if (!segmentsExpected) return;
-  //   // Backdate to N so all windows 1..N are in the past, then let catch-up sweep them.
-  //   const baseIso = originalAnchorRef.current ?? cycleAnchorUtc;
-  //   if (!baseIso) return;
-  //   const n = Number(segmentsExpected);
-  //   const newIso = new Date(Date.parse(baseIso) - n * ONE_DAY_MS).toISOString();
-  //   if (__DEV__) console.log('[OppDetails][TEST] backdate ALL', { n, baseIso, newIso });
-  //   setBackdatedAnchorTestOnly(newIso);
-  //   // Sweep all past windows in order
-  //   catchUpIfNeeded();
-  // }, [segmentsExpected, cycleAnchorUtc, setBackdatedAnchorTestOnly, catchUpIfNeeded]);
-
-  const simNextDay = useCallback(async () => {
-    if (!testFlags.TEST_MODE) return;
-    if (!segmentsExpected) return;
-    if ((engine?.lastSentDayIndex ?? 0) >= segmentsExpected) return;
-    if (completed) return;
-    if (mode !== "SIM") enterSimulation();
-    await simulateNextDay();
-  }, [
-    segmentsExpected,
-    engine?.lastSentDayIndex,
-    simulateNextDay,
-    enterSimulation,
-    mode,
-  ]);
-
-  const simAllRemaining = useCallback(async () => {
-    if (!testFlags.TEST_MODE) return;
-    if (!segmentsExpected) return;
-    if (completed) return;
-    if (mode !== "SIM") enterSimulation();
-    for (;;) {
-      const s = useShareStore.getState();
-      if (s.status !== "ACTIVE") break;
-      const sent = s.engine?.segmentsSent ?? 0;
-      const expected = s.segmentsExpected ?? 0;
-      if (sent >= expected) break;
-      await s.simulateNextDay();
-      await Promise.resolve(); // let UI breathe
-    }
-  }, [segmentsExpected, enterSimulation, mode]);
 
   return (
     <SafeAreaView
@@ -857,7 +1307,7 @@ export default function OpportunityDetails() {
             {item.applyOpenAt && item.applyCloseAt ? (
               <Chip
                 label={`Apply window: ${new Date(item.applyOpenAt).toLocaleDateString()} → ${new Date(
-                  item.applyCloseAt
+                  item.applyCloseAt,
                 ).toLocaleDateString()}`}
               />
             ) : null}
@@ -915,9 +1365,12 @@ export default function OpportunityDetails() {
           const metricsArr: AnyMetricRow[] = Array.isArray(item?.metrics)
             ? (item.metrics as AnyMetricRow[])
             : [];
+
           const metricIdsArr: number[] = Array.isArray(item?.metricIds)
             ? (item.metricIds as number[])
-            : [];
+            : metricsArr
+                .map((m) => Number(m.metricId ?? m.id))
+                .filter((n) => Number.isFinite(n));
 
           if (__DEV__) {
             console.log("[OppDetails][UI] metricsArr=", metricsArr);
@@ -936,7 +1389,7 @@ export default function OpportunityDetails() {
                 m.code ??
                 m.id ??
                 m.metricId ??
-                "metric"
+                "metric",
             ); // ← force to string
             const sig = `${id}|${label}`;
             if (!seen.has(sig)) {
@@ -1042,7 +1495,7 @@ export default function OpportunityDetails() {
                       (p as any).displayName ??
                       (p as any).id ??
                       (p as any).viewPolicyId ??
-                      "Policy"
+                      "Policy",
                   );
                   return <Chip key={key} label={label} />;
                 })}
@@ -1131,6 +1584,11 @@ export default function OpportunityDetails() {
           </View>
         )}
 
+        {/* Apply disclosure (always visible before Apply) */}
+        <Text style={{ color: c.text.secondary, marginTop: 4, lineHeight: 18 }}>
+          {applyDisclosureLine}
+        </Text>
+
         {/* CTAs */}
         <View
           style={{
@@ -1179,46 +1637,130 @@ export default function OpportunityDetails() {
                 );
               }
 
-              const completed = s.segmentsSent >= s.segmentsExpected;
-              const nextWin = completed
-                ? null
-                : computeNextWindowFromSnapshot(
-                    s.cycleAnchorUtc,
-                    s.lastSentDayIndex,
-                    s.segmentsExpected
-                  );
+              const snapshotCompleted = s.segmentsSent >= s.segmentsExpected;
 
-              if (__DEV__ && nextWin) {
-                console.log(
-                  "[OppDetails] Next share window (server-anchored) =",
-                  nextWin
-                );
+              const nd = snapshotCompleted ? null : (s.nextDue ?? null);
+
+              if (__DEV__) {
+                console.log("[OppDetails] snapshot.nextDue =", nd);
               }
 
-              const nowIso = new Date(nowTick).toISOString();
-              const within =
-                nextWin && nextWin.fromUtc <= nowIso && nowIso < nextWin.toUtc;
+              const snapStatusUpper = String(
+                s.statusName ?? s.statusCode ?? "",
+              ).toUpperCase();
 
-              const nextLabel = !nextWin
+              const isEligible = !!nd?.isEligible;
+              const eligibleAtUtc = nd?.eligibleAtUtc ?? null;
+
+              const eligibilityLabel = snapshotCompleted
                 ? "—"
-                : within
-                  ? `closes ${formatTimeLeftLabel(nextWin.toUtc, nowTick)}`
-                  : `opens ${formatTimeLeftLabel(nextWin.fromUtc, nowTick)}`;
+                : isEligible
+                  ? "Ready to sync"
+                  : eligibleAtUtc
+                    ? `eligible ${formatTimeLeftLabel(eligibleAtUtc, nowTick)}`
+                    : "—";
 
-              const fmtLocal = (iso?: string | null) =>
-                iso
-                  ? new Date(iso).toLocaleString(undefined, {
-                      year: "numeric",
-                      month: "short",
-                      day: "2-digit",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                      hour12: false,
-                    })
-                  : "—";
+              // Server-truth backlog detection: backlog exists only if server provides an overdue missing window.
+              const backlogExists = !!s.catchUp?.next;
+
+              const catchUpEligibleNow = !!s.catchUp?.next?.isEligible;
+              const nextDueEligibleNow = !!nd?.isEligible;
+
+              const showCatchUp =
+                snapStatusUpper === "ACTIVE" &&
+                !!s.catchUp?.next &&
+                engine?.mode !== "SIM" &&
+                !isProcessing;
+
+              const showSyncNow =
+                snapStatusUpper === "ACTIVE" &&
+                !s.catchUp?.next &&
+                nextDueEligibleNow &&
+                engine?.mode !== "SIM" &&
+                !isProcessing;
+
+              if (__DEV__) {
+                console.log("[OppDetails][Buttons]", {
+                  snapStatusUpper,
+                  hasCatchUpNext: !!s.catchUp?.next,
+                  catchUpEligibleNow: !!s.catchUp?.next?.isEligible,
+                  nextDueEligibleNow: !!nd?.isEligible,
+                  nextDueEligibleAtUtc: nd?.eligibleAtUtc ?? null,
+                  mode: engine?.mode,
+                  processing: isProcessing,
+                });
+              }
 
               return (
                 <View style={{ gap: 4 }}>
+                  {/* {showCatchUp ? (
+                    <View style={{ marginTop: 6, gap: 6 }}>
+                      <Text style={{ color: c.text.secondary }}>
+                        You missed {catchUpInfo.missedCount} day
+                        {catchUpInfo.missedCount === 1 ? "" : "s"}. Catch them
+                        up one at a time.
+                      </Text>
+
+                      <Button
+                        title={
+                          catchUpInfo.nextFromUtc
+                            ? `Catch up ${fmtMonthDay(catchUpInfo.nextFromUtc)}`
+                            : "Catch up"
+                        }
+                        onPress={doCatchUpOne}
+                        disabled={
+                          status !== "ACTIVE" ||
+                          engine?.currentDueDayIndex != null ||
+                          engine?.mode === "SIM"
+                        }
+                      />
+                    </View>
+                  ) : null} */}
+
+                  {showCatchUp ? (
+                    <View style={{ marginTop: 6, gap: 6 }}>
+                      <Text style={{ color: c.text.secondary }}>
+                        {catchUpEligibleNow
+                          ? `You have ${catchUpStatus?.missedCount ?? 0} catch-up day${(catchUpStatus?.missedCount ?? 0) === 1 ? "" : "s"} eligible right now. Catch them up one at a time.`
+                          : "Catch-up is pending. The next catch-up window will become eligible soon."}
+                      </Text>
+
+                      <Button
+                        title={
+                          catchUpStatus?.nextLabel
+                            ? `Catch up ${catchUpStatus.nextLabel}`
+                            : "Catch up"
+                        }
+                        onPress={doCatchUpOne}
+                        disabled={
+                          status !== "ACTIVE" ||
+                          isProcessing ||
+                          engine?.mode === "SIM" ||
+                          !catchUpEligibleNow
+                        }
+                      />
+                    </View>
+                  ) : null}
+
+                  {showSyncNow ? (
+                    <View style={{ marginTop: 6, gap: 6 }}>
+                      <Text style={{ color: c.text.secondary }}>
+                        Your next window is eligible. Sync the most recent due
+                        day now.
+                      </Text>
+
+                      <Button
+                        title="Sync now"
+                        onPress={doSyncNow}
+                        disabled={
+                          status !== "ACTIVE" ||
+                          isProcessing ||
+                          engine?.mode === "SIM"
+                        }
+                      />
+                    </View>
+                  ) : null}
+
                   <Text style={{ color: c.text.secondary }}>
                     <Text style={{ fontWeight: "700", color: c.text.primary }}>
                       Started on:
@@ -1244,11 +1786,13 @@ export default function OpportunityDetails() {
                     <Text style={{ fontWeight: "700", color: c.text.primary }}>
                       Last window:
                     </Text>{" "}
-                    {s.lastWindowFromUtc ? fmtLocal(s.lastWindowFromUtc) : "—"}{" "}
-                    → {s.lastWindowToUtc ? fmtLocal(s.lastWindowToUtc) : "—"}
+                    {fmtLocalWindowIntuitive(
+                      s.lastWindowFromUtc,
+                      s.lastWindowToUtc,
+                    )}
                   </Text>
 
-                  <Text style={{ color: c.text.secondary }}>
+                  {/* <Text style={{ color: c.text.secondary }}>
                     <Text style={{ fontWeight: "700", color: c.text.primary }}>
                       Next share:
                     </Text>{" "}
@@ -1264,6 +1808,34 @@ export default function OpportunityDetails() {
                       Time left:
                     </Text>{" "}
                     {completed ? "—" : nextLabel}
+                  </Text> */}
+                  <Text style={{ color: c.text.secondary }}>
+                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
+                      Next share window:
+                    </Text>{" "}
+                    {snapshotCompleted
+                      ? "Completed"
+                      : nd
+                        ? fmtLocalWindowIntuitive(nd.fromUtc, nd.toUtc)
+                        : "—"}
+                  </Text>
+
+                  <Text style={{ color: c.text.secondary }}>
+                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
+                      Eligibility:
+                    </Text>{" "}
+                    {eligibilityLabel}
+                  </Text>
+
+                  <Text style={{ color: c.text.secondary }}>
+                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
+                      Eligible at:
+                    </Text>{" "}
+                    {snapshotCompleted
+                      ? "—"
+                      : eligibleAtUtc
+                        ? fmtLocal(eligibleAtUtc)
+                        : "—"}
                   </Text>
 
                   <View style={{ marginTop: 4 }}>
@@ -1314,8 +1886,9 @@ export default function OpportunityDetails() {
             <View style={{ gap: 4 }}>
               <Text style={{ color: c.text.secondary }}>
                 Status: {status} | Session: {sessionId ?? "—"} | Segments:{" "}
-                {engine.segmentsSent}/{segmentsExpected ?? "—"}
+                {engine?.segmentsSent ?? 0}/{segmentsExpected ?? "—"}
               </Text>
+
               <Text style={{ color: c.text.secondary }}>
                 Anchor (planner ISO): {cycleAnchorUtc ?? "—"}
               </Text>
@@ -1367,9 +1940,13 @@ export default function OpportunityDetails() {
                   Next Simulated Window (Day {nextWindowPreview.idx})
                 </Text>
                 <Text style={{ color: c.text.secondary }}>
-                  Local: {nextWindowPreview.fromLocal} →{" "}
-                  {nextWindowPreview.toLocal}
+                  Local:{" "}
+                  {fmtLocalWindowIntuitive(
+                    nextWindowPreview.fromUtc,
+                    nextWindowPreview.toUtc,
+                  )}
                 </Text>
+
                 <Text style={{ color: c.text.secondary }}>
                   UTC: {fmtUTC(nextWindowPreview.fromUtc)} →{" "}
                   {fmtUTC(nextWindowPreview.toUtc)}
@@ -1399,26 +1976,43 @@ export default function OpportunityDetails() {
                   status !== "ACTIVE" ||
                   !segmentsExpected ||
                   (engine?.lastSentDayIndex ?? 0) >= (segmentsExpected ?? 0) ||
-                  completed
+                  engineCompleted ||
+                  !(
+                    (snapshot?.joinTimeLocalISO &&
+                      hasNumericOffset(snapshot.joinTimeLocalISO)) ||
+                    devJoinLocalFallback
+                  )
                 }
               />
+
               <Button
                 title="Sim all remaining"
                 onPress={simAllRemaining}
                 variant="secondary"
                 disabled={
-                  !sessionId || status !== "ACTIVE" || !segmentsExpected
+                  !sessionId ||
+                  status !== "ACTIVE" ||
+                  !segmentsExpected ||
+                  isProcessing ||
+                  engineCompleted
                 }
               />
+
               <Button
                 title="Tick now"
-                onPress={() => tick()}
+                onPress={() => {
+                  if (postingId) setActivePosting(postingId);
+                  tick();
+                }}
                 variant="secondary"
                 disabled={!sessionId || status !== "ACTIVE"}
               />
               <Button
                 title="Catch up"
-                onPress={() => catchUpIfNeeded()}
+                onPress={() => {
+                  if (postingId) setActivePosting(postingId);
+                  void useShareStore.getState().catchUpNextOne();
+                }}
                 variant="secondary"
                 disabled={!sessionId || status !== "ACTIVE"}
               />

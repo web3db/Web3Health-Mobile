@@ -4,10 +4,11 @@ import { getShareRuntimeConfig } from "@/src/services/sharing/constants";
 import { selectUserId, useAuthStore } from "@/src/store/useAuthStore";
 import { useTrackingStore } from "@/src/store/useTrackingStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth, useUser } from "@clerk/clerk-expo";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useFonts } from "expo-font";
 import * as NavigationBar from "expo-navigation-bar";
+import { useRouter } from "expo-router";
 import { Drawer } from "expo-router/drawer";
 import React from "react";
 import { Platform } from "react-native";
@@ -19,6 +20,7 @@ import { Platform } from "react-native";
 // } from "@/src/services/tracking/healthkit";
 
 let __bgBootedOnce = false;
+let __pushBootedOnce = false;
 
 // === [ANCHOR: COMPONENT-FOREGROUND-TICK]
 function ForegroundTicker() {
@@ -28,7 +30,11 @@ function ForegroundTicker() {
 }
 
 function BackgroundBootWhenSignedIn() {
+  const router = useRouter();
   const { isSignedIn } = useAuth();
+  const { user, isLoaded: userLoaded } = useUser();
+  const clerkId = user?.id;
+
   const userId = useAuthStore(selectUserId);
   const { hcInitialize, hcInitialized } = useTrackingStore();
 
@@ -36,8 +42,8 @@ function BackgroundBootWhenSignedIn() {
     SpaceMono: require("../../assets/fonts/SpaceMono-Regular.ttf"),
   });
 
-  // Ready when: Clerk session + backend userId + fonts
-  const ready = isSignedIn && userId != null && fontsLoaded;
+  // Ready when: Clerk session + Clerk user loaded + backend userId + fonts
+  const ready = isSignedIn && userLoaded && userId != null && fontsLoaded;
 
   // Expose “ready” to any eager modules (sharing engine, etc.)
   React.useEffect(() => {
@@ -50,35 +56,105 @@ function BackgroundBootWhenSignedIn() {
     };
   }, [ready]);
 
-  // Background tasks + notifications (lazy import AFTER ready, register once)
+  // Background tasks + notifications (boot once)
   React.useEffect(() => {
     if (!ready) return;
+
     (async () => {
-      if (Platform.OS === "android" || Platform.OS === "ios") {
-        try {
-          if (!__bgBootedOnce) {
-            __bgBootedOnce = true; // === [ANCHOR: BOOT-ONCE-GUARD-SET]
-            const { initNotifications } = await import(
-              "@/src/services/notifications"
-            );
-            const { registerShareBackgroundTask } = await import(
-              "@/src/background/shareTask"
-            );
-            await initNotifications();
-            await registerShareBackgroundTask();
-            if (__DEV__) console.log("[BG] registerShareBackgroundTask → ok");
-          } else if (__DEV__) {
-            console.log("[BG] skipped re-register (already booted)");
-          }
-        } catch (e: any) {
-          console.warn(
-            "[BG] registerShareBackgroundTask → error",
-            e?.message ?? e
-          );
+      if (Platform.OS !== "android" && Platform.OS !== "ios") return;
+
+      try {
+        if (!__bgBootedOnce) {
+          __bgBootedOnce = true; // === [ANCHOR: BOOT-ONCE-GUARD-SET]
+          const { initNotifications } =
+            await import("@/src/services/notifications");
+          const { registerShareBackgroundTask } =
+            await import("@/src/background/shareTask");
+
+          await initNotifications();
+          await registerShareBackgroundTask();
+
+          if (__DEV__)
+            console.log("[BG] boot → notifications + background task OK");
+        } else if (__DEV__) {
+          console.log("[BG] skipped re-register (already booted)");
         }
+      } catch (e: any) {
+        console.warn("[BG] boot error", e?.message ?? e);
       }
     })();
   }, [ready]);
+
+  // Notification tap routing (boot once)
+  React.useEffect(() => {
+    if (!ready) return;
+
+    let cleanup: null | (() => void) = null;
+
+    (async () => {
+      try {
+        const { onNotificationResponse } =
+          await import("@/src/services/notifications");
+
+        cleanup = onNotificationResponse((data) => {
+          const postingIdRaw = (data as any)?.postingId;
+
+          const postingId =
+            typeof postingIdRaw === "string"
+              ? Number(postingIdRaw)
+              : postingIdRaw;
+
+          const hasPostingId =
+            typeof postingId === "number" &&
+            Number.isFinite(postingId) &&
+            postingId > 0;
+
+          if (hasPostingId) {
+            router.push({
+              pathname: "/opportunities/[id]",
+              params: { id: String(postingId) },
+            });
+            return;
+          }
+
+          router.push("/opportunities/index");
+        });
+      } catch (e: any) {
+        console.warn("[notif] tap listener init error", e?.message ?? e);
+      }
+    })();
+
+    return () => {
+      try {
+        cleanup?.();
+      } catch {}
+    };
+  }, [ready, router]);
+
+  // Push token registration (boot once, but waits for clerkId)
+  React.useEffect(() => {
+    if (!ready) return;
+    if (!clerkId) return; // important: wait until we actually have it
+
+    (async () => {
+      if (Platform.OS !== "android" && Platform.OS !== "ios") return;
+
+      try {
+        if (__pushBootedOnce) return;
+        __pushBootedOnce = true;
+
+        const { registerExpoPushToken } =
+          await import("@/src/services/notifications/push");
+        const r = await registerExpoPushToken({ clerkId });
+
+        if (__DEV__) console.log("[push] registerExpoPushToken result", r);
+      } catch (e: any) {
+        // Optional: allow retry if it fails
+        __pushBootedOnce = false;
+        console.warn("[push] register error", e?.message ?? e);
+      }
+    })();
+  }, [ready, clerkId]);
 
   // Optional: nav bar tweaks (Android only)
   React.useEffect(() => {
@@ -226,6 +302,14 @@ export default function AppGroupLayout() {
         />
         <Drawer.Screen
           name="background"
+          options={{ drawerItemStyle: { display: "none" } }}
+        />
+        <Drawer.Screen
+          name="auth/reset-required"
+          options={{ drawerItemStyle: { display: "none" } }}
+        />
+        <Drawer.Screen
+          name="onboarding/profile"
           options={{ drawerItemStyle: { display: "none" } }}
         />
 

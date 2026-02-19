@@ -4,9 +4,9 @@ import {
   ProfileEditSchema,
   type ProfileEdit,
   type UserProfile,
-} from '@/src/services/profile/api';
-import { selectUserId, useAuthStore } from '@/src/store/useAuthStore';
-import { create } from 'zustand';
+} from "@/src/services/profile/api";
+import { selectUserId, useAuthStore } from "@/src/store/useAuthStore";
+import { create } from "zustand";
 
 // ───────── helpers
 function shallowEqual<T extends Record<string, any>>(a: T, b: T): boolean {
@@ -65,7 +65,7 @@ export const useProfileStore = create<State & Actions>((set, get) => ({
       const auth = useAuthStore.getState();
       const userId = Number(selectUserId(auth) ?? 0);
       if (!Number.isFinite(userId) || userId <= 0) {
-        throw new Error('No userId in auth store');
+        throw new Error("No userId in auth store");
       }
 
       const user = await getUserProfile(userId);
@@ -73,7 +73,7 @@ export const useProfileStore = create<State & Actions>((set, get) => ({
       const nextEdits: ProfileEdit = {
         Name: user.Name,
         Email: user.Email ?? null,
-        BirthYear: user.BirthYear,
+        BirthYear: user.BirthYear ?? undefined,
         RaceId: user.RaceId ?? null,
         SexId: user.SexId ?? null,
         HeightNum: user.HeightNum ?? null,
@@ -82,18 +82,20 @@ export const useProfileStore = create<State & Actions>((set, get) => ({
         WeightUnitId: user.WeightUnitId ?? null,
         MeasurementSystemId: user.MeasurementSystemId ?? null,
         RoleId: user.RoleId ?? null,
-        selectedHealthConditionIds: (user.HealthConditions ?? []).map((h) => h.HealthConditionId),
+        selectedHealthConditionIds: (user.HealthConditions ?? []).map(
+          (h) => h.HealthConditionId,
+        ),
       };
 
       const s1 = get();
       const editsChanged =
         !shallowEqual(
           { ...s1.edits, selectedHealthConditionIds: undefined } as any,
-          { ...nextEdits, selectedHealthConditionIds: undefined } as any
+          { ...nextEdits, selectedHealthConditionIds: undefined } as any,
         ) ||
         !arrayEqualShallow(
           s1.edits.selectedHealthConditionIds ?? [],
-          nextEdits.selectedHealthConditionIds ?? []
+          nextEdits.selectedHealthConditionIds ?? [],
         );
 
       const profileChanged = s1.profile !== user;
@@ -124,14 +126,18 @@ export const useProfileStore = create<State & Actions>((set, get) => ({
   setProfile: (user) => {
     if (!user) {
       // clearing
-      set((s) => (s.profile == null && s.edits && Object.keys(s.edits).length === 0 ? s : { profile: null, edits: {}, validationWarnings: [] }));
+      set((s) =>
+        s.profile == null && s.edits && Object.keys(s.edits).length === 0
+          ? s
+          : { profile: null, edits: {}, validationWarnings: [] },
+      );
       return;
     }
 
     const nextEdits: ProfileEdit = {
       Name: user.Name,
       Email: user.Email ?? null,
-      BirthYear: user.BirthYear,
+      BirthYear: user.BirthYear ?? undefined,
       RaceId: user.RaceId ?? null,
       SexId: user.SexId ?? null,
       HeightNum: user.HeightNum ?? null,
@@ -140,18 +146,20 @@ export const useProfileStore = create<State & Actions>((set, get) => ({
       WeightUnitId: user.WeightUnitId ?? null,
       MeasurementSystemId: user.MeasurementSystemId ?? null,
       RoleId: user.RoleId ?? null,
-      selectedHealthConditionIds: (user.HealthConditions ?? []).map((h) => h.HealthConditionId),
+      selectedHealthConditionIds: (user.HealthConditions ?? []).map(
+        (h) => h.HealthConditionId,
+      ),
     };
 
     set((s) => {
       const editsChanged =
         !shallowEqual(
           { ...s.edits, selectedHealthConditionIds: undefined } as any,
-          { ...nextEdits, selectedHealthConditionIds: undefined } as any
+          { ...nextEdits, selectedHealthConditionIds: undefined } as any,
         ) ||
         !arrayEqualShallow(
           s.edits.selectedHealthConditionIds ?? [],
-          nextEdits.selectedHealthConditionIds ?? []
+          nextEdits.selectedHealthConditionIds ?? [],
         );
 
       const profileChanged = s.profile !== user;
@@ -180,11 +188,11 @@ export const useProfileStore = create<State & Actions>((set, get) => ({
       const next = { ...s.edits, ...patch };
       const hcSame = arrayEqualShallow(
         s.edits.selectedHealthConditionIds ?? [],
-        next.selectedHealthConditionIds ?? []
+        next.selectedHealthConditionIds ?? [],
       );
       const shallowSame = shallowEqual(
         { ...s.edits, selectedHealthConditionIds: undefined } as any,
-        { ...next, selectedHealthConditionIds: undefined } as any
+        { ...next, selectedHealthConditionIds: undefined } as any,
       );
       if (shallowSame && hcSame) return s; // no-op
       return { edits: next };
@@ -210,23 +218,24 @@ export const useProfileStore = create<State & Actions>((set, get) => ({
     // 2) Build PATCH body (A1 semantics for HealthConditions)
     const body: any = { userId: p.UserId };
     const keys: (keyof ProfileEdit)[] = [
-      'Name',
-      'Email',
-      'BirthYear',
-      'RaceId',
-      'SexId',
-      'HeightNum',
-      'HeightUnitId',
-      'WeightNum',
-      'WeightUnitId',
-      'MeasurementSystemId',
-      'RoleId',
-      'selectedHealthConditionIds',
+      "Name",
+      "Email",
+      "BirthYear",
+      "RaceId",
+      "SexId",
+      "HeightNum",
+      "HeightUnitId",
+      "WeightNum",
+      "WeightUnitId",
+      "MeasurementSystemId",
+      "RoleId",
+      "selectedHealthConditionIds",
     ];
     for (const k of keys) {
       const v = s.edits[k];
       if (v !== undefined) {
-        if (k === 'selectedHealthConditionIds') body.HealthConditions = v; // [] clears
+        if (k === "selectedHealthConditionIds")
+          body.HealthConditions = v; // [] clears
         else body[k] = v;
       }
     }
@@ -240,7 +249,7 @@ export const useProfileStore = create<State & Actions>((set, get) => ({
       const nextEdits: ProfileEdit = {
         Name: updated.Name,
         Email: updated.Email ?? null,
-        BirthYear: updated.BirthYear,
+        BirthYear: updated.BirthYear ?? undefined,
         RaceId: updated.RaceId ?? null,
         SexId: updated.SexId ?? null,
         HeightNum: updated.HeightNum ?? null,
@@ -249,7 +258,9 @@ export const useProfileStore = create<State & Actions>((set, get) => ({
         WeightUnitId: updated.WeightUnitId ?? null,
         MeasurementSystemId: updated.MeasurementSystemId ?? null,
         RoleId: updated.RoleId ?? null,
-        selectedHealthConditionIds: (updated.HealthConditions ?? []).map((h) => h.HealthConditionId),
+        selectedHealthConditionIds: (updated.HealthConditions ?? []).map(
+          (h) => h.HealthConditionId,
+        ),
       };
 
       const s2 = get();
@@ -257,15 +268,18 @@ export const useProfileStore = create<State & Actions>((set, get) => ({
       const editsChanged =
         !shallowEqual(
           { ...s2.edits, selectedHealthConditionIds: undefined } as any,
-          { ...nextEdits, selectedHealthConditionIds: undefined } as any
+          { ...nextEdits, selectedHealthConditionIds: undefined } as any,
         ) ||
         !arrayEqualShallow(
           s2.edits.selectedHealthConditionIds ?? [],
-          nextEdits.selectedHealthConditionIds ?? []
+          nextEdits.selectedHealthConditionIds ?? [],
         );
 
       const profileChanged = s2.profile !== updated;
-      const warningsChanged = !arrayEqualShallow(s2.validationWarnings, warnings);
+      const warningsChanged = !arrayEqualShallow(
+        s2.validationWarnings,
+        warnings,
+      );
 
       if (editsChanged || profileChanged || warningsChanged || s2.loading) {
         set({
@@ -296,7 +310,10 @@ export const useProfileStore = create<State & Actions>((set, get) => ({
   },
 }));
 
-export function computeAge(birthYear: number, birthDate?: string): number | null {
+export function computeAge(
+  birthYear: number,
+  birthDate?: string,
+): number | null {
   const now = new Date();
   if (birthDate) {
     const dob = new Date(birthDate);
@@ -312,35 +329,37 @@ export function computeAge(birthYear: number, birthDate?: string): number | null
 
 export function computeBMI(
   heightValue: number | null,
-  heightUnit: 'cm' | 'in',
+  heightUnit: "cm" | "in",
   weightValue: number | null,
-  weightUnit: 'kg' | 'lb'
+  weightUnit: "kg" | "lb",
 ): number | null {
   if (heightValue == null || weightValue == null) return null;
 
-  if (heightUnit === 'cm' && weightUnit === 'kg') {
+  if (heightUnit === "cm" && weightUnit === "kg") {
     const meters = heightValue / 100;
     if (meters <= 0) return null;
     return Number((weightValue / (meters * meters)).toFixed(1));
   }
 
-  if (heightUnit === 'in' && weightUnit === 'lb') {
+  if (heightUnit === "in" && weightUnit === "lb") {
     if (heightValue <= 0) return null;
-    return Number(((703 * weightValue) / (heightValue * heightValue)).toFixed(1));
+    return Number(
+      ((703 * weightValue) / (heightValue * heightValue)).toFixed(1),
+    );
   }
 
   // Mixed: convert to metric for a consistent calculation
-  const cm = heightUnit === 'in' ? heightValue * 2.54 : heightValue;
-  const kg = weightUnit === 'lb' ? weightValue / 2.20462 : weightValue;
+  const cm = heightUnit === "in" ? heightValue * 2.54 : heightValue;
+  const kg = weightUnit === "lb" ? weightValue / 2.20462 : weightValue;
   const meters = cm / 100;
   if (meters <= 0) return null;
   return Number((kg / (meters * meters)).toFixed(1));
 }
 
 export function bmiCategory(bmi: number | null): string {
-  if (bmi == null) return '—';
-  if (bmi < 18.5) return 'Underweight';
-  if (bmi < 25) return 'Normal';
-  if (bmi < 30) return 'Overweight';
-  return 'Obese';
+  if (bmi == null) return "—";
+  if (bmi < 18.5) return "Underweight";
+  if (bmi < 25) return "Normal";
+  if (bmi < 30) return "Overweight";
+  return "Obese";
 }

@@ -1,6 +1,5 @@
-import { z } from 'zod';
-import { RegisterFormSchema, RegisterPostSchema, type RegisterPostBody } from '../../utils/validation';
-import { buildUrl, fetchJson } from '../http/base';
+import { z } from "zod";
+import { buildUrl, fetchJson } from "../http/base";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Zod schemas for masters (align with your table columns)
@@ -93,14 +92,14 @@ const LooseHealth = z.object({
   isActive: z.boolean().optional(),
 });
 
-
 // response from users_create
 const CreatedUserRes = z.object({
   userId: z.number().int(),
   clerkId: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
   name: z.string(),
-  birthYear: z.number().int(),
+  // birthYear: z.number().int(),
+  birthYear: z.number().int().nullable().optional(),
   raceId: z.number().int().nullable().optional(),
   raceCode: z.string().nullable().optional(),
   raceDisplayName: z.string().nullable().optional(),
@@ -121,7 +120,7 @@ const CreatedUserRes = z.object({
         code: z.string().nullable().optional(),
         displayName: z.string().nullable().optional(),
         isActive: z.boolean().optional(),
-      })
+      }),
     )
     .default([])
     .optional(),
@@ -138,53 +137,57 @@ export type Option = { id: number; label: string; code?: string | null };
 // Masters fetchers (use your edge functions; no auth headers per your contract)
 // ─────────────────────────────────────────────────────────────────────────────
 export async function getUnits(): Promise<Option[]> {
-  const url = buildUrl('units');
-  const { ok, json, status, text } = await fetchJson('GET', url);
-  if (!ok || !json) throw new Error(`units ${status} ${String(text ?? '')}`);
+  const url = buildUrl("units");
+  const { ok, json, status, text } = await fetchJson("GET", url);
+  if (!ok || !json) throw new Error(`units ${status} ${String(text ?? "")}`);
   const arr = z.array(LooseUnit).parse(json);
   return arr.map((u) => {
-    const id = pick(u, ['unitId', 'UnitId']);
-    const code = pick(u, ['unitCode', 'UnitCode']) ?? null;
-    const name = pick(u, ['displayName', 'DisplayName']) ?? code ?? String(id);
+    const id = pick(u, ["unitId", "UnitId"]);
+    const code = pick(u, ["unitCode", "UnitCode"]) ?? null;
+    const name = pick(u, ["displayName", "DisplayName"]) ?? code ?? String(id);
     return { id: Number(id), label: String(name), code };
   });
 }
 
 export async function getRaces(): Promise<Option[]> {
-  const url = buildUrl('races');
-  const { ok, json, status, text } = await fetchJson('GET', url);
-  if (!ok || !json) throw new Error(`races ${status} ${String(text ?? '')}`);
+  const url = buildUrl("races");
+  const { ok, json, status, text } = await fetchJson("GET", url);
+  if (!ok || !json) throw new Error(`races ${status} ${String(text ?? "")}`);
   const arr = z.array(LooseRace).parse(json);
   return arr.map((r) => {
-    const id = pick(r, ['raceId', 'RaceId']);
-    const code = pick(r, ['raceCode', 'RaceCode']) ?? null;
-    const name = pick(r, ['raceDisplayName', 'DisplayName']) ?? code ?? String(id);
+    const id = pick(r, ["raceId", "RaceId"]);
+    const code = pick(r, ["raceCode", "RaceCode"]) ?? null;
+    const name =
+      pick(r, ["raceDisplayName", "DisplayName"]) ?? code ?? String(id);
     return { id: Number(id), label: String(name), code };
   });
 }
 
 export async function getSexes(): Promise<Option[]> {
-  const url = buildUrl('sexes');
-  const { ok, json, status, text } = await fetchJson('GET', url);
-  if (!ok || !json) throw new Error(`sexes ${status} ${String(text ?? '')}`);
+  const url = buildUrl("sexes");
+  const { ok, json, status, text } = await fetchJson("GET", url);
+  if (!ok || !json) throw new Error(`sexes ${status} ${String(text ?? "")}`);
   const arr = z.array(LooseSex).parse(json);
   return arr.map((s) => {
-    const id = pick(s, ['sexId', 'SexId']);
-    const code = pick(s, ['sexCode', 'SexCode']) ?? null;
-    const name = pick(s, ['sexDisplayName', 'DisplayName']) ?? code ?? String(id);
+    const id = pick(s, ["sexId", "SexId"]);
+    const code = pick(s, ["sexCode", "SexCode"]) ?? null;
+    const name =
+      pick(s, ["sexDisplayName", "DisplayName"]) ?? code ?? String(id);
     return { id: Number(id), label: String(name), code };
   });
 }
 
 export async function getMeasurementSystems(): Promise<Option[]> {
-  const url = buildUrl('measurement_systems');
-  const { ok, json, status, text } = await fetchJson('GET', url);
-  if (!ok || !json) throw new Error(`measurement_systems ${status} ${String(text ?? '')}`);
+  const url = buildUrl("measurement_systems");
+  const { ok, json, status, text } = await fetchJson("GET", url);
+  if (!ok || !json)
+    throw new Error(`measurement_systems ${status} ${String(text ?? "")}`);
   const arr = z.array(LooseMsys).parse(json);
   return arr.map((m) => {
-    const id = pick(m, ['measurementSystemId', 'MeasurementSystemId']);
-    const code = pick(m, ['measurementSystemCode', 'MeasurementSystemCode']) ?? null;
-    const name = pick(m, ['displayName', 'DisplayName']) ?? code ?? String(id);
+    const id = pick(m, ["measurementSystemId", "MeasurementSystemId"]);
+    const code =
+      pick(m, ["measurementSystemCode", "MeasurementSystemCode"]) ?? null;
+    const name = pick(m, ["displayName", "DisplayName"]) ?? code ?? String(id);
     return { id: Number(id), label: String(name), code };
   });
 }
@@ -197,36 +200,75 @@ export type HealthConditionOption = {
 };
 
 export async function getHealthConditions(): Promise<HealthConditionOption[]> {
-  const url = buildUrl('health_conditions');
-  const { ok, json, status, text } = await fetchJson('GET', url);
-  if (!ok || !json) throw new Error(`health_conditions ${status} ${String(text ?? '')}`);
+  const url = buildUrl("health_conditions");
+  const { ok, json, status, text } = await fetchJson("GET", url);
+  if (!ok || !json)
+    throw new Error(`health_conditions ${status} ${String(text ?? "")}`);
   const arr = z.array(LooseHealth).parse(json);
   return arr.map((h) => {
-    const id = pick(h, ['healthConditionId', 'HealthConditionId']);
-    const code = pick(h, ['code', 'Code']) ?? null;
-    const name = pick(h, ['displayName', 'DisplayName']) ?? code ?? String(id);
-    const active = pick(h, ['isActive', 'IsActive']);
-    return { id: Number(id), label: String(name), code, active: active as boolean | undefined };
+    const id = pick(h, ["healthConditionId", "HealthConditionId"]);
+    const code = pick(h, ["code", "Code"]) ?? null;
+    const name = pick(h, ["displayName", "DisplayName"]) ?? code ?? String(id);
+    const active = pick(h, ["isActive", "IsActive"]);
+    return {
+      id: Number(id),
+      label: String(name),
+      code,
+      active: active as boolean | undefined,
+    };
   });
 }
 // ─────────────────────────────────────────────────────────────────────────────
 // Create user
 // ─────────────────────────────────────────────────────────────────────────────
-export async function createUser(input: unknown): Promise<CreatedUser> {
-  // Validate full form, transform to post body (omit nulls)
-  const body: RegisterPostBody = RegisterPostSchema.parse(
-    RegisterFormSchema.parse(input)
-  );
 
-  const url = buildUrl('users_create');
-  const { ok, status, json, text } = await fetchJson('POST', url, body);
+// Lightweight register input: only what the first screen collects
+const RegisterLiteSchema = z.object({
+  clerkId: z.string().min(1).nullable().optional(),
+  email: z.string().email().nullable().optional(),
+  name: z.string().trim().min(1),
+  roleId: z.number().int().optional(),
+});
+
+// Transform to POST body: only send fields that exist
+const RegisterLitePostSchema = RegisterLiteSchema.transform((v) => ({
+  ...(v.clerkId ? { clerkId: v.clerkId } : {}),
+  ...(v.email ? { email: v.email } : {}),
+  name: v.name,
+  ...(typeof v.roleId === "number" ? { roleId: v.roleId } : {}),
+}));
+
+// export async function createUser(input: unknown): Promise<CreatedUser> {
+//   // Validate full form, transform to post body (omit nulls)
+//   const body: RegisterPostBody = RegisterPostSchema.parse(
+//     RegisterFormSchema.parse(input),
+//   );
+
+//   const url = buildUrl("users_create");
+//   const { ok, status, json, text } = await fetchJson("POST", url, body);
+//   if (!ok || !json) {
+//     throw new Error(
+//       `users_create ${status} ${String((json as any)?.message ?? text ?? "")}`,
+//     );
+//   }
+//   return CreatedUserRes.parse(json);
+// }
+
+export async function createUser(input: unknown): Promise<CreatedUser> {
+  // Validate lightweight register input (no birthYear)
+  const body = RegisterLitePostSchema.parse(RegisterLiteSchema.parse(input));
+
+  const url = buildUrl("users_create");
+  const { ok, status, json, text } = await fetchJson("POST", url, body);
+
   if (!ok || !json) {
-    throw new Error(`users_create ${status} ${String((json as any)?.message ?? text ?? '')}`);
+    throw new Error(
+      `users_create ${status} ${String((json as any)?.message ?? text ?? "")}`,
+    );
   }
+
   return CreatedUserRes.parse(json);
 }
-
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Profile GET/PATCH (NEW)
@@ -271,7 +313,7 @@ export const UserProfileZ = z.object({
   ClerkId: z.string().nullable().optional(),
   Email: z.string().nullable().optional(),
   Name: z.string(),
-  BirthYear: z.number(),
+  BirthYear: z.number().nullable(),
   RaceId: z.number().nullable().optional(),
   SexId: z.number().nullable().optional(),
   HeightNum: z.number().nullable().optional(),
@@ -298,18 +340,38 @@ export type UserProfile = z.infer<typeof UserProfileZ>;
 const GetProfileResZ = z.object({ ok: z.literal(true), user: UserProfileZ });
 const GetProfileErrZ = z.object({ ok: z.literal(false), error: z.string() });
 
+// export async function getUserProfile(userId: number): Promise<UserProfile> {
+//   const url = buildUrl("users_profile", { userId });
+//   const { ok, json, status, text } = await fetchJson("GET", url);
+//   if (!ok || !json)
+//     throw new Error(`users_profile ${status} ${String(text ?? "")}`);
+//   const parsed = GetProfileResZ.safeParse(json).success
+//     ? GetProfileResZ.parse(json)
+//     : (() => {
+//         const e = GetProfileErrZ.parse(json);
+//         throw new Error(e.error);
+//       })();
+//   return parsed.user;
+// }
+
 export async function getUserProfile(userId: number): Promise<UserProfile> {
   const url = buildUrl("users_profile", { userId });
   const { ok, json, status, text } = await fetchJson("GET", url);
-  if (!ok || !json) throw new Error(`users_profile ${status} ${String(text ?? "")}`);
-  const parsed =
-    GetProfileResZ.safeParse(json).success
-      ? GetProfileResZ.parse(json)
-      : (() => {
-          const e = GetProfileErrZ.parse(json);
-          throw new Error(e.error);
-        })();
-  return parsed.user;
+
+  if (!ok || !json)
+    throw new Error(`users_profile ${status} ${String(text ?? "")}`);
+
+  if (json?.ok === true) {
+    const parsed = GetProfileResZ.parse(json);
+    return parsed.user;
+  }
+
+  if (json?.ok === false) {
+    const e = GetProfileErrZ.parse(json);
+    throw new Error(e.error);
+  }
+
+  throw new Error("users_profile returned unexpected response shape");
 }
 
 export type PatchUserBody = Partial<{
@@ -340,14 +402,14 @@ const PatchErrZ = z.object({
 export async function patchUser(body: PatchUserBody): Promise<UserProfile> {
   const url = buildUrl("users_update");
   const { ok, status, json, text } = await fetchJson("PATCH", url, body);
-  if (!ok || !json) throw new Error(`users_update ${status} ${String(text ?? "")}`);
-  const parsed =
-    PatchResZ.safeParse(json).success
-      ? PatchResZ.parse(json)
-      : (() => {
-          const e = PatchErrZ.parse(json);
-          throw new Error(e.error);
-        })();
+  if (!ok || !json)
+    throw new Error(`users_update ${status} ${String(text ?? "")}`);
+  const parsed = PatchResZ.safeParse(json).success
+    ? PatchResZ.parse(json)
+    : (() => {
+        const e = PatchErrZ.parse(json);
+        throw new Error(e.error);
+      })();
   return parsed.user;
 }
 
@@ -357,7 +419,10 @@ export async function patchUser(body: PatchUserBody): Promise<UserProfile> {
 export const ProfileEditSchema = z.object({
   Name: z.string().min(1, "Name is required").optional(),
   Email: z
-    .union([z.string().email("Invalid email").min(1), z.literal("").transform(() => null)])
+    .union([
+      z.string().email("Invalid email").min(1),
+      z.literal("").transform(() => null),
+    ])
     .nullable()
     .optional(),
   BirthYear: z
@@ -377,3 +442,55 @@ export const ProfileEditSchema = z.object({
   selectedHealthConditionIds: z.array(z.number().int()).optional(),
 });
 export type ProfileEdit = z.infer<typeof ProfileEditSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// User profile status (for onboarding flow)
+// ─────────────────────────────────────────────────────────────────────────────
+const UserProfileStatusProfileZ = z.object({
+  UserId: z.number(),
+  BirthYear: z.number().nullable(),
+  RaceId: z.number().nullable(),
+  SexId: z.number().nullable(),
+  HeightNum: z.number().nullable(),
+  HeightUnitId: z.number().nullable(),
+  WeightNum: z.number().nullable(),
+  WeightUnitId: z.number().nullable(),
+  MeasurementSystemId: z.number().nullable(),
+});
+
+const UserProfileStatusResZ = z.object({
+  ok: z.literal(true),
+  userId: z.number(),
+  needsProfile: z.boolean(),
+  missingProfileFields: z.array(z.string()),
+  profile: UserProfileStatusProfileZ,
+});
+
+const UserProfileStatusErrZ = z.object({
+  ok: z.literal(false),
+  error: z.string(),
+});
+
+export type UserProfileStatus = z.infer<typeof UserProfileStatusResZ>;
+
+export async function getUserProfileStatus(
+  userId: number,
+): Promise<UserProfileStatus> {
+  const url = buildUrl("users_profile_status", { userId });
+  const { ok, json, status, text } = await fetchJson("GET", url);
+
+  if (!ok || !json) {
+    throw new Error(`users_profile_status ${status} ${String(text ?? "")}`);
+  }
+
+  if (json?.ok === true) {
+    return UserProfileStatusResZ.parse(json);
+  }
+
+  if (json?.ok === false) {
+    const e = UserProfileStatusErrZ.parse(json);
+    throw new Error(e.error);
+  }
+
+  throw new Error("users_profile_status returned unexpected response shape");
+}
