@@ -3,18 +3,19 @@ import {
   ensureNotifPermission,
   sendOpenAppNudge,
 } from "@/src/services/notifications";
-import {
-  useShareStore
-} from "@/src/store/useShareStore";
-
-
+import { useShareStore } from "@/src/store/useShareStore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useMemo, useState } from "react";
 
 const KEY_LAST_RUN = "bg.lastRunAt";
 const KEY_LAST_ATTEMPT = "bg.lastAttemptAt";
 const KEY_SEGMENTS = "bg.segmentsSent";
+
+const keyForPosting = (base: string, postingId?: number) =>
+  postingId ? `${base}.${postingId}` : base;
+
 const KEY_LAST_NUDGE = "bg.lastNudgeAt";
+const KEY_LAST_MONITOR_SNAPSHOT_PULL = "bg.monitorLastSnapshotPullAt";
 
 type SyncState = {
   // bg task executed (wake)
@@ -29,8 +30,8 @@ type SyncState = {
   isStale24h: boolean;
 
   // next due window (for “sync now” / timeline visibility)
-  nextWindowStartUtcISO: string;
-  nextWindowEndUtcISO: string;
+  nextWindowStartUtcISO?: string;
+  nextWindowEndUtcISO?: string;
 
   // catch-up preview (manual only; never auto-triggered by monitor)
   missedCount?: number;
@@ -39,17 +40,27 @@ type SyncState = {
 };
 
 export function useShareSyncMonitor() {
-  const status = useShareStore((s) => s.status);
-  const engine = useShareStore((s) => s.engine);
-  const tick = useShareStore((s) => s.tick);
-
-  // const cycleAnchorUtc = useShareStore((s) => s.cycleAnchorUtc);
-  // const segmentsExpected = useShareStore((s) => s.segmentsExpected);
-  const snapshot = useShareStore((s) => s.snapshot);
-
-  const userId = useShareStore((s) => s.userId);
-  const postingId = useShareStore((s) => s.postingId);
+  const syncNowAction = useShareStore((s) => s.syncNow);
   const fetchSessionSnapshot = useShareStore((s) => s.fetchSessionSnapshot);
+
+  const activePostingId = useShareStore((s) => s.activePostingId);
+  const ctx = useShareStore((s) =>
+    s.activePostingId ? (s as any).contexts?.[s.activePostingId] : undefined,
+  );
+
+  const status = ctx?.status;
+  const engine = ctx?.engine;
+  const snapshot = ctx?.snapshot;
+
+  const userId = ctx?.userId;
+
+  const postingIdRaw = activePostingId ?? ctx?.postingId;
+  const postingId =
+    typeof postingIdRaw === "number" && Number.isFinite(postingIdRaw)
+      ? postingIdRaw
+      : undefined;
+
+  const hasPosting = postingId != null;
 
   const [lastAttemptAtISO, setLastAttemptAtISO] = useState<
     string | undefined
@@ -59,20 +70,49 @@ export function useShareSyncMonitor() {
 
   // Read breadcrumbs that the bg task writes
   async function refreshBreadcrumbs() {
-    const attemptISO = await AsyncStorage.getItem(KEY_LAST_ATTEMPT);
-    const runISO = await AsyncStorage.getItem(KEY_LAST_RUN);
-    const seg = await AsyncStorage.getItem(KEY_SEGMENTS);
+    if (!hasPosting) {
+      setLastAttemptAtISO(undefined);
+      setLastRunAtISO(undefined);
+      setSegmentsSent(undefined);
+      return;
+    }
 
+    const [attemptISO, runISO, seg] = await Promise.all([
+      AsyncStorage.getItem(keyForPosting(KEY_LAST_ATTEMPT, postingId)),
+      AsyncStorage.getItem(keyForPosting(KEY_LAST_RUN, postingId)),
+      AsyncStorage.getItem(keyForPosting(KEY_SEGMENTS, postingId)),
+    ]);
+
+    const segNum = seg == null ? undefined : Number(seg);
     setLastAttemptAtISO(attemptISO ?? undefined);
     setLastRunAtISO(runISO ?? undefined);
-    setSegmentsSent(seg ? Number(seg) : undefined);
+    setSegmentsSent(Number.isFinite(segNum as number) ? segNum : undefined);
   }
 
   useEffect(() => {
-    // refresh on mount and whenever engine changes (optional)
+    // refresh on mount, when active posting changes, and when engine progress changes
     refreshBreadcrumbs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine?.segmentsSent]);
+  }, [activePostingId, engine?.segmentsSent]);
+
+  useEffect(() => {
+    if (!hasPosting) return;
+    if (userId == null || postingId == null) return;
+    if (status !== "ACTIVE") return;
+
+    (async () => {
+      const key = keyForPosting(KEY_LAST_MONITOR_SNAPSHOT_PULL, postingId);
+      const lastISO = await AsyncStorage.getItem(key);
+      const lastMs = lastISO ? Date.parse(lastISO) : NaN;
+      const nowMs = Date.now();
+
+      // 5 min is enough to keep "stale" logic accurate without being noisy
+      if (Number.isFinite(lastMs) && nowMs - lastMs < 5 * 60 * 1000) return;
+
+      await AsyncStorage.setItem(key, new Date(nowMs).toISOString());
+      await fetchSessionSnapshot(userId, postingId);
+    })().catch(() => {});
+  }, [hasPosting, userId, postingId, status, fetchSessionSnapshot]);
 
   // Compute windows using your runtime config
   // const state: SyncState = useMemo(() => {
@@ -182,8 +222,9 @@ export function useShareSyncMonitor() {
     const lastActivityISO =
       snapshot?.lastUploadedAt ?? lastRunAtISO ?? undefined;
 
-    const last = lastActivityISO ? Date.parse(lastActivityISO) : undefined;
-    const isStale24h = last ? now - last >= 24 * 60 * 60 * 1000 : true;
+    const lastMs = lastActivityISO ? Date.parse(lastActivityISO) : NaN;
+    const isStale24h =
+      !Number.isFinite(lastMs) || now - lastMs >= 24 * 60 * 60 * 1000;
 
     // Display-only catch-up preview derived from server snapshot.
     const missedCount = snapshot?.catchUp?.countEligibleNow;
@@ -195,8 +236,8 @@ export function useShareSyncMonitor() {
       lastRunAtISO,
       segmentsSent,
       isStale24h,
-      nextWindowStartUtcISO: snapshot?.nextDue?.fromUtc ?? "",
-      nextWindowEndUtcISO: snapshot?.nextDue?.toUtc ?? "",
+      nextWindowStartUtcISO: snapshot?.nextDue?.fromUtc ?? undefined,
+      nextWindowEndUtcISO: snapshot?.nextDue?.toUtc ?? undefined,
       missedCount,
       nextCatchUpFromUtcISO,
       nextCatchUpToUtcISO,
@@ -228,21 +269,32 @@ export function useShareSyncMonitor() {
   // }, [status, state.isStale24h]);
 
   useEffect(() => {
+    const wakeMs = snapshot?.wakeAtUtc ? Date.parse(snapshot.wakeAtUtc) : NaN;
+    const wakeSoon =
+      Number.isFinite(wakeMs) && wakeMs - Date.now() <= 30 * 60 * 1000; // 30 min
+
     const shouldConsider =
       status === "ACTIVE" &&
-      engine?.status === "ACTIVE" &&
+      snapshot != null &&
       engine?.mode !== "SIM" &&
-      state.isStale24h;
+      state.isStale24h &&
+      !wakeSoon;
 
     if (!shouldConsider) return;
 
     (async () => {
-      // throttle: at most once per 24h while stale
-      const last = await AsyncStorage.getItem(KEY_LAST_NUDGE);
+      if (!hasPosting) return;
+
+      // throttle: at most once per 12h while stale
+
+      const last = await AsyncStorage.getItem(
+        keyForPosting(KEY_LAST_NUDGE, postingId),
+      );
+
       const lastMs = last ? Date.parse(last) : NaN;
       const nowMs = Date.now();
 
-      if (Number.isFinite(lastMs) && nowMs - lastMs < 24 * 60 * 60 * 1000) {
+      if (Number.isFinite(lastMs) && nowMs - lastMs < 12 * 60 * 60 * 1000) {
         return;
       }
 
@@ -254,9 +306,19 @@ export function useShareSyncMonitor() {
         "Your sharing session needs an app open to catch up. Tap to sync now.",
       );
 
-      await AsyncStorage.setItem(KEY_LAST_NUDGE, new Date(nowMs).toISOString());
+      await AsyncStorage.setItem(
+        keyForPosting(KEY_LAST_NUDGE, postingId),
+        new Date(nowMs).toISOString(),
+      );
     })();
-  }, [status, engine?.status, engine?.mode, state.isStale24h]);
+  }, [
+    status,
+    engine?.status,
+    engine?.mode,
+    state.isStale24h,
+    snapshot?.wakeAtUtc,
+    postingId,
+  ]);
 
   // Manual “Sync Now” (foreground tick)
   // async function syncNow() {
@@ -265,7 +327,7 @@ export function useShareSyncMonitor() {
   // }
 
   async function syncNow() {
-    await tick();
+    await syncNowAction();
     await refreshBreadcrumbs();
 
     if (userId && postingId) {

@@ -18,7 +18,7 @@ import {
   getShareRuntimeConfig,
   MAX_RETRIES,
   RETRY_INTERVAL_MS,
-  SHARE_BUCKET_MINUTES
+  SHARE_BUCKET_MINUTES,
 } from "./constants";
 import { summarizeWindow, type MetricCode } from "./summarizer";
 import type { ShareSessionState, UploadSegmentResult } from "./types";
@@ -41,6 +41,9 @@ export type WindowDiagnostics = {
   unavailable: MetricCode[]; // permission missing or read error
   zeroData: MetricCode[]; // readable, but no data in [from,to)
   hadAnyData: boolean; // at least one metric had meaningful data
+
+  // Distinguish config errors from real "no data"
+  reason?: "NO_METRICS_CONFIGURED";
 };
 
 export type SegmentPayload = {
@@ -108,6 +111,17 @@ export async function buildSegmentPayload(
     zeroData: [],
     hadAnyData: false,
   };
+
+  // Defensive: if called with empty map, make it explicit in logs/diag.
+  // (Process engine should already early-return before calling here.)
+  if (!ctx.metricMap || Object.keys(ctx.metricMap).length === 0) {
+    console.warn(TAG, "buildSegmentPayload called with empty metricMap", {
+      postingId: ctx.postingId,
+      sessionId: ctx.sessionId,
+      dayIndex,
+    });
+    diag.reason = "NO_METRICS_CONFIGURED";
+  }
 
   const isPositive = (v: unknown) =>
     typeof v === "number" && Number.isFinite(v) && v > 0;
@@ -296,6 +310,26 @@ export async function processDueWindow(
   //     graceAppliedForDay: null, // allow grace to apply once for this new day
   //   };
   // }
+
+  // CONFIG GUARD: metricMap empty is a configuration/state propagation error,
+  // not a "no Health data" situation. Do NOT consume retry budget.
+  if (!ctx.metricMap || Object.keys(ctx.metricMap).length === 0) {
+    console.warn(TAG, "NO_METRICS_CONFIGURED", {
+      postingId: ctx.postingId,
+      sessionId: ctx.sessionId,
+      dayIdx: window.dayIndex,
+    });
+
+    return {
+      state, // leave retries/day state untouched
+      diag: {
+        unavailable: [],
+        zeroData: [],
+        hadAnyData: false,
+        reason: "NO_METRICS_CONFIGURED",
+      },
+    };
+  }
 
   if (state.currentDueDayIndex !== window.dayIndex) {
     state = {

@@ -59,27 +59,59 @@ const SHARE_DEBUG = __DEV__ && process.env.EXPO_PUBLIC_SHARE_DEBUG === "1";
 
 type WindowRef = { dayIndex: number; fromUtc: string; toUtc: string };
 
-type StoreState = {
-  // session/meta
+type PostingContext = {
   sessionId?: number;
-  postingId?: number;
+  postingId: number;
   userId?: number;
   segmentsExpected?: number;
   status: ShareStatus;
+
+  cycleAnchorUtc?: string;
+  originalCycleAnchorUtc?: string;
+  joinTimezone?: string;
+  joinTimeLocalISO?: string;
+
+  engine: ShareSessionState;
+
+  // Per-posting metric map (prevents cross-posting contamination)
+  metricMap?: Partial<Record<MetricCode, number>>;
+
+  pendingWindow?: WindowRef;
+
+  snapshot?: StoreState["snapshot"] | null;
+
+  catchUpStatus?: {
+    missedCount: number;
+    nextWindow: WindowRef | null;
+    nextLabel: string | null;
+  };
+
+  lastWindowDiag?: {
+    dayIndex: number;
+    unavailable: MetricCode[];
+    zeroData: MetricCode[];
+    hadAnyData: boolean;
+  };
+};
+
+type StoreState = {
+  contexts: Record<number, PostingContext>;
+  activePostingId?: number;
+
   // cancel action (resolver-backed)
   cancelCurrentSession: () => Promise<void>;
 
   // timing/meta used by planner
-  cycleAnchorUtc?: string; // UTC ISO string for planner
-  originalCycleAnchorUtc?: string; // UTC ISO string at session start (for Test Mode)
-  joinTimezone?: string; // 'America/New_York'
-  joinTimeLocalISO?: string; // local ISO with offset at join
+  // cycleAnchorUtc?: string; // UTC ISO string for planner
+  // originalCycleAnchorUtc?: string; // UTC ISO string at session start (for Test Mode)
+  // joinTimezone?: string; // 'America/New_York'
+  // joinTimeLocalISO?: string; // local ISO with offset at join
 
   // engine state (persisted) — mirrors ShareSessionState
-  engine: ShareSessionState;
+  // engine: ShareSessionState;
 
   // ephemeral (not persisted)
-  pendingWindow?: WindowRef;
+  // pendingWindow?: WindowRef;
 
   // metric map (MetricCode -> MetricId)
   metricMap: Partial<Record<MetricCode, number>>;
@@ -161,6 +193,9 @@ type StoreState = {
 
   // actions
   fetchSessionSnapshot: (userId: number, postingId: number) => Promise<void>;
+  getContext: (postingId: number) => PostingContext | undefined;
+  setContext: (postingId: number, patch: Partial<PostingContext>) => void;
+  setActivePosting: (postingId: number) => void;
 
   // NEW: hydrate live timeline + engine from backend snapshot
   hydrateFromSessionSnapshot: (
@@ -184,7 +219,7 @@ type StoreState = {
   sendFirstSegment: () => Promise<void>;
   sendNextIfDue: () => Promise<void>;
   catchUpIfNeeded: () => Promise<void>;
-
+  sendNextIfDueForPosting: (postingId: number) => Promise<void>;
   // Catch-up UI support (derived from planner + engine snapshot)
   catchUpStatus?: {
     missedCount: number;
@@ -196,9 +231,14 @@ type StoreState = {
   // Single-step catch-up (processes exactly ONE missed day per call)
   catchUpNextOne: () => Promise<void>;
 
+  // NEW: manual "Sync now" (nextDue-only; must stay hidden/blocked when backlog exists)
+  syncNow: () => Promise<void>;
+
   // cadence brain (call on focus/interval or background fetch)
   tick: () => Promise<void>;
 
+  // NEW: background-safe loop over all posting contexts
+  tickAll: () => Promise<void>;
   // Test Mode helpers
   setBackdatedAnchorTestOnly: (anchorIsoUtc: string) => void;
 
@@ -450,52 +490,104 @@ const initialEngine: ShareSessionState = {
 
 const STORE_NAME = "share-store-v2";
 
-const basePartialize = (s: StoreState): Partial<StoreState> => ({
-  sessionId: s.sessionId,
-  postingId: s.postingId,
-  userId: s.userId,
-  segmentsExpected: s.segmentsExpected,
-  status: s.status,
+const basePartialize = (s: StoreState): Partial<StoreState> => {
+  const cleaned: Record<number, PostingContext> = {};
 
-  cycleAnchorUtc: s.cycleAnchorUtc,
-  originalCycleAnchorUtc: s.originalCycleAnchorUtc,
-  joinTimezone: s.joinTimezone,
-  joinTimeLocalISO: s.joinTimeLocalISO,
+  for (const [k, c] of Object.entries(s.contexts ?? {})) {
+    const postingId = Number(k);
+    if (!Number.isFinite(postingId) || !c) continue;
 
-  engine: s.engine,
-  metricMap: s.metricMap,
+    // Persist only stable per-posting state.
+    // Do NOT persist server snapshots or transient “in-flight” windows.
+    cleaned[postingId] = {
+      sessionId: c.sessionId,
+      postingId: c.postingId,
+      userId: c.userId,
+      segmentsExpected: c.segmentsExpected,
+      status: c.status,
 
-  shareEnabled: s.shareEnabled,
-});
+      cycleAnchorUtc: c.cycleAnchorUtc,
+      originalCycleAnchorUtc: c.originalCycleAnchorUtc,
+      joinTimezone: c.joinTimezone,
+      joinTimeLocalISO: c.joinTimeLocalISO,
+
+      engine: c.engine,
+      metricMap: c.metricMap ?? {},
+
+      // explicitly drop ephemeral fields:
+      pendingWindow: undefined,
+      snapshot: null,
+      catchUpStatus: undefined,
+      lastWindowDiag: undefined,
+    };
+  }
+
+  return {
+    contexts: cleaned,
+    activePostingId: s.activePostingId,
+    metricMap: s.metricMap,
+    shareEnabled: s.shareEnabled,
+  };
+};
 
 const version = 2;
 
 const migrate = (persisted: any, _from: number): any => {
-  if (persisted?.engine) {
-    if (typeof persisted.engine.cycleAnchorUtc !== "number") {
-      const parsed = Number(persisted.engine.cycleAnchorUtc);
-      persisted.engine.cycleAnchorUtc = isNaN(parsed) ? Date.now() : parsed;
-    }
-    if (
-      persisted.engine.nextRetryAtUtc != null &&
-      typeof persisted.engine.nextRetryAtUtc !== "number"
-    ) {
-      const parsed = Number(persisted.engine.nextRetryAtUtc);
-      persisted.engine.nextRetryAtUtc = isNaN(parsed) ? null : parsed;
-    }
-    if (!persisted.engine.mode) persisted.engine.mode = "NORMAL";
-    if (typeof persisted.engine.simulationLock !== "boolean") {
-      persisted.engine.simulationLock = false;
-    }
-    if (typeof persisted.engine.segmentsExpected !== "number") {
-      // fall back to top-level segmentsExpected if present, else 0
-      persisted.engine.segmentsExpected =
-        typeof persisted.segmentsExpected === "number"
-          ? persisted.segmentsExpected
-          : 0;
+  const out = persisted ?? {};
+  const ctxs = out?.contexts;
+
+  if (ctxs && typeof ctxs === "object") {
+    for (const k of Object.keys(ctxs)) {
+      const c = ctxs[k];
+      if (!c) continue;
+
+      // Ensure engine exists + has required fields
+      if (!c.engine) c.engine = { ...initialEngine };
+
+      // cycleAnchorUtc must be number in engine
+      if (typeof c.engine.cycleAnchorUtc !== "number") {
+        const parsed = Number(c.engine.cycleAnchorUtc);
+        c.engine.cycleAnchorUtc = isNaN(parsed) ? Date.now() : parsed;
+      }
+
+      if (
+        c.engine.nextRetryAtUtc != null &&
+        typeof c.engine.nextRetryAtUtc !== "number"
+      ) {
+        const parsed = Number(c.engine.nextRetryAtUtc);
+        c.engine.nextRetryAtUtc = isNaN(parsed) ? null : parsed;
+      }
+
+      if (!c.engine.mode) c.engine.mode = "NORMAL";
+      if (typeof c.engine.simulationLock !== "boolean")
+        c.engine.simulationLock = false;
+
+      if (typeof c.engine.segmentsExpected !== "number") {
+        c.engine.segmentsExpected =
+          typeof c.segmentsExpected === "number" ? c.segmentsExpected : 0;
+      }
+
+      // Context defaults
+      if (!c.status) c.status = "PAUSED";
+      if (typeof c.postingId !== "number") c.postingId = Number(k);
+
+      // Backfill per-posting metricMap (older versions stored it at root)
+      if (!c.metricMap || typeof c.metricMap !== "object") {
+        c.metricMap =
+          out?.metricMap && typeof out.metricMap === "object"
+            ? out.metricMap
+            : {};
+      }
+
+      // Drop ephemeral fields if an older persisted store accidentally kept them.
+      if ("snapshot" in c) c.snapshot = null;
+      if ("pendingWindow" in c) c.pendingWindow = undefined;
+      if ("catchUpStatus" in c) c.catchUpStatus = undefined;
+      if ("lastWindowDiag" in c) c.lastWindowDiag = undefined;
     }
   }
-  return persisted;
+
+  return out;
 };
 
 // ---- Store ------------------------------------------------------------------
@@ -503,18 +595,43 @@ const migrate = (persisted: any, _from: number): any => {
 export const useShareStore = create<StoreState>()(
   persist(
     (set, get) => ({
-      status: "PAUSED",
-      metricMap: {},
-      engine: { ...initialEngine },
-      dashboard: undefined,
-      snapshot: null,
+      contexts: {},
+      activePostingId: undefined,
 
-      shareEnabled: true,
+      metricMap: {},
+      dashboard: undefined,
+
+      shareEnabled: false,
       setShareEnabled: (v) => set({ shareEnabled: !!v }),
 
       healthPlatform: Platform.OS === "ios" ? "ios" : "android",
       healthAvailable: undefined,
       healthGranted: undefined,
+
+      getContext(postingId: number) {
+        return get().contexts[postingId];
+      },
+
+      setContext(postingId: number, patch: Partial<PostingContext>) {
+        set((state) => ({
+          contexts: {
+            ...state.contexts,
+            [postingId]: {
+              ...(state.contexts[postingId] ?? {
+                postingId,
+                status: "PAUSED",
+                engine: { ...initialEngine },
+                metricMap: {},
+              }),
+              ...patch,
+            },
+          },
+        }));
+      },
+
+      setActivePosting(postingId: number) {
+        set({ activePostingId: postingId });
+      },
 
       async startSession(postingId, userId, metricMap, segmentsExpected) {
         try {
@@ -713,18 +830,16 @@ export const useShareStore = create<StoreState>()(
                 graceAppliedForDay: null,
               };
 
-              set({
+              const computedSnapshot = {
                 sessionId: r.session_id,
-                postingId,
-                userId,
-                metricMap,
-
-                segmentsExpected: eng.segmentsExpected,
-                status: "ACTIVE",
-
-                // Planner/meta from server snapshot (stable)
+                postingId: r.posting_id,
+                userId: r.user_id,
+                statusCode: r.status_code,
+                statusName: r.status_name,
+                segmentsExpected: r.segments_expected,
+                segmentsSent: r.segments_sent,
+                lastSentDayIndex: r.last_sent_day_index,
                 cycleAnchorUtc: r.cycle_anchor_utc,
-                originalCycleAnchorUtc: r.cycle_anchor_utc,
                 joinTimezone: r.join_timezone,
                 joinTimeLocalISO: (() => {
                   const j = r.join_time_local_iso;
@@ -741,72 +856,66 @@ export const useShareStore = create<StoreState>()(
                   return j;
                 })(),
 
+                // NEW (calendar day model)
+                joinLocalDate: (r as any).join_local_date ?? null,
+                graceMinutes: (r as any).grace_minutes ?? undefined,
+                nextDue: (r as any).next_due
+                  ? {
+                      dayIndex: (r as any).next_due.day_index,
+                      fromUtc: (r as any).next_due.from_utc,
+                      toUtc: (r as any).next_due.to_utc,
+                      eligibleAtUtc: (r as any).next_due.eligible_at_utc,
+                      isEligible: (r as any).next_due.is_eligible,
+                    }
+                  : null,
+                catchUp: (r as any).catch_up
+                  ? {
+                      countEligibleNow: Number(
+                        (r as any).catch_up.count_eligible_now ?? 0,
+                      ),
+                      next: (r as any).catch_up.next
+                        ? {
+                            dayIndex: (r as any).catch_up.next.day_index,
+                            fromUtc: (r as any).catch_up.next.from_utc,
+                            toUtc: (r as any).catch_up.next.to_utc,
+                            eligibleAtUtc: (r as any).catch_up.next
+                              .eligible_at_utc,
+                            isEligible: (r as any).catch_up.next.is_eligible,
+                          }
+                        : null,
+                    }
+                  : null,
+
+                wakeAtUtc: (r as any).wake_at_utc ?? null,
+
+                lastUploadedAt: r.last_uploaded_at,
+                lastWindowFromUtc: r.last_window_from_utc,
+                lastWindowToUtc: r.last_window_to_utc,
+              } satisfies NonNullable<StoreState["snapshot"]>;
+
+              get().setContext(postingId, {
+                sessionId: r.session_id,
+                postingId,
+                userId,
+                segmentsExpected: eng.segmentsExpected,
+                status: "ACTIVE",
+                cycleAnchorUtc: r.cycle_anchor_utc,
+                originalCycleAnchorUtc: r.cycle_anchor_utc,
+                joinTimezone: r.join_timezone,
+                joinTimeLocalISO: computedSnapshot.joinTimeLocalISO,
                 engine: eng,
+                snapshot: computedSnapshot,
+                metricMap, // <-- store per-posting
+                catchUpStatus: computeCatchUpStatusFromState({
+                  status: "ACTIVE",
+                  engine: eng,
+                  snapshot: computedSnapshot,
+                }),
+              });
 
-                // Optional: mirror snapshot for UI/debug
-                snapshot: {
-                  sessionId: r.session_id,
-                  postingId: r.posting_id,
-                  userId: r.user_id,
-                  statusCode: r.status_code,
-                  statusName: r.status_name,
-                  segmentsExpected: r.segments_expected,
-                  segmentsSent: r.segments_sent,
-                  lastSentDayIndex: r.last_sent_day_index,
-                  cycleAnchorUtc: r.cycle_anchor_utc,
-                  joinTimezone: r.join_timezone,
-                  joinTimeLocalISO: (() => {
-                    const j = r.join_time_local_iso;
-                    if (typeof j !== "string" || j.length < 10) {
-                      throw new Error(
-                        `${TAG} reuse ACTIVE: invalid join_time_local_iso from server`,
-                      );
-                    }
-                    if (!/[+-]\d{2}:\d{2}$/.test(j)) {
-                      throw new Error(
-                        `${TAG} reuse ACTIVE: join_time_local_iso missing numeric offset (±HH:MM): ${j}`,
-                      );
-                    }
-                    return j;
-                  })(),
-
-                  // NEW (calendar day model)
-                  joinLocalDate: (r as any).join_local_date ?? null,
-                  graceMinutes: (r as any).grace_minutes ?? undefined,
-                  nextDue: (r as any).next_due
-                    ? {
-                        dayIndex: (r as any).next_due.day_index,
-                        fromUtc: (r as any).next_due.from_utc,
-                        toUtc: (r as any).next_due.to_utc,
-                        eligibleAtUtc: (r as any).next_due.eligible_at_utc,
-                        isEligible: (r as any).next_due.is_eligible,
-                      }
-                    : null,
-                  catchUp: (r as any).catch_up
-                    ? {
-                        countEligibleNow: Number(
-                          (r as any).catch_up.count_eligible_now ?? 0,
-                        ),
-                        next: (r as any).catch_up.next
-                          ? {
-                              dayIndex: (r as any).catch_up.next.day_index,
-                              fromUtc: (r as any).catch_up.next.from_utc,
-                              toUtc: (r as any).catch_up.next.to_utc,
-                              eligibleAtUtc: (r as any).catch_up.next
-                                .eligible_at_utc,
-                              isEligible: (r as any).catch_up.next.is_eligible,
-                            }
-                          : null,
-                      }
-                    : null,
-
-                  wakeAtUtc: (r as any).wake_at_utc ?? null,
-
-                  lastUploadedAt: r.last_uploaded_at,
-                  lastWindowFromUtc: r.last_window_from_utc,
-                  lastWindowToUtc: r.last_window_to_utc,
-                },
-
+              set({
+                activePostingId: postingId,
+                metricMap, // keep as fallback (optional)
                 shareEnabled: true,
               });
 
@@ -869,20 +978,23 @@ export const useShareStore = create<StoreState>()(
             graceAppliedForDay: null,
           };
 
-          set({
+          get().setContext(postingId, {
             sessionId: sess.sessionId,
             postingId,
             userId,
-            metricMap,
             segmentsExpected: sess.segmentsExpected,
             status: "ACTIVE",
-
-            cycleAnchorUtc: sess.cycleAnchorUtc, // ISO for planner
+            cycleAnchorUtc: sess.cycleAnchorUtc,
             originalCycleAnchorUtc: sess.cycleAnchorUtc,
             joinTimezone: sess.joinTimezone,
             joinTimeLocalISO: sess.joinTimeLocalISO,
-
             engine: eng,
+            metricMap, // <-- store per-posting
+          });
+
+          set({
+            activePostingId: postingId,
+            metricMap, // keep as fallback (optional)
             shareEnabled: true,
           });
 
@@ -1033,10 +1145,14 @@ export const useShareStore = create<StoreState>()(
         }
 
         const st = get();
-        if (!st.sessionId || !st.postingId || !st.userId) return;
+        const pid = st.activePostingId;
+        if (!pid) return;
+
+        const ctx = st.contexts[pid];
+        if (!ctx?.sessionId || !ctx?.userId) return;
 
         // In SIM mode: Day progression is driven by simulateNextDay(); do nothing here.
-        if (st.engine.mode === "SIM") {
+        if (ctx.engine.mode === "SIM") {
           if (__DEV__)
             console.log(`${TAG} sendFirstSegment → passive (SIM mode)`);
           return;
@@ -1051,8 +1167,7 @@ export const useShareStore = create<StoreState>()(
           return;
         }
 
-        // New model: Day 0 is a full calendar day and is not sent until eligible.
-        // So "first segment" is simply "send next if due".
+        // New model: “first segment” is simply “send next if due”.
         await get().sendNextIfDue();
       },
 
@@ -1155,27 +1270,29 @@ export const useShareStore = create<StoreState>()(
       //   }
       // },
 
-      async sendNextIfDue() {
+      // Per-posting worker (safe for background loops)
+
+      async sendNextIfDueForPosting(postingId: number) {
         if (!isShareReady()) {
           if (SHARE_DEBUG)
-            console.log(`${TAG} sendNextIfDue → not ready; skipping`);
+            console.log(`${TAG} sendNextIfDueForPosting → not ready; skipping`);
           return;
         }
 
         const st = get();
-        if (!st.sessionId || !st.postingId || !st.userId) return;
-        if (st.status !== "ACTIVE") return;
+        const ctx = st.contexts[postingId];
+        if (!ctx?.sessionId || !ctx?.userId) return;
+        if (ctx.status !== "ACTIVE") return;
 
         // In SIM mode we are passive.
-        if (st.engine.mode === "SIM") {
-          if (__DEV__) console.log(`${TAG} sendNextIfDue → passive (SIM mode)`);
+        if (ctx.engine.mode === "SIM") {
+          if (__DEV__)
+            console.log(`${TAG} sendNextIfDueForPosting → passive (SIM mode)`);
           return;
         }
 
-        // Ensure we have a fresh snapshot (source of truth for next_due).
-        // Avoid calling this every tick unless we truly need it (tick calls sendNextIfDue only when no currentDueDayIndex).
-        // Ensure we have a fresh snapshot (source of truth for next_due + catch_up + wake_at_utc).
-        const snap0 = st.snapshot;
+        // Ensure snapshot exists (server is authoritative for next_due + catch_up + wake_at_utc)
+        const snap0 = ctx.snapshot ?? null;
         const missingServerFields =
           !snap0 ||
           snap0.catchUp === undefined ||
@@ -1183,68 +1300,35 @@ export const useShareStore = create<StoreState>()(
           snap0.nextDue === undefined;
 
         if (missingServerFields) {
-          await get().fetchSessionSnapshot(st.userId, st.postingId);
+          await get().fetchSessionSnapshot(ctx.userId!, postingId);
         }
 
-        // const snap = get().snapshot;
-        // const nd = snap?.nextDue ?? null;
-
-        // if (!nd) {
-        //   if (__DEV__)
-        //     console.log(`${TAG} sendNextIfDue → no nextDue in snapshot`);
-        //   return;
-        // }
-
-        // if (!nd.isEligible) {
-        //   if (__DEV__)
-        //     console.log(`${TAG} sendNextIfDue → not eligible yet`, {
-        //       dayIndex: nd.dayIndex,
-        //       eligibleAtUtc: nd.eligibleAtUtc,
-        //     });
-        //   return;
-        // }
-
-        // const win: WindowRef = {
-        //   dayIndex: nd.dayIndex,
-        //   fromUtc: nd.fromUtc,
-        //   toUtc: nd.toUtc,
-        // };
-
-        const snap = get().snapshot;
-
-        const cuNext = snap?.catchUp?.next ?? null;
+        const snap = get().contexts[postingId]?.snapshot ?? null;
         const nd = snap?.nextDue ?? null;
 
-        const chosen =
-          cuNext && cuNext.isEligible
-            ? { kind: "catch_up" as const, w: cuNext }
-            : nd && nd.isEligible
-              ? { kind: "next_due" as const, w: nd }
-              : null;
-
-        if (!chosen) {
-          // Not eligible yet. Use server wake hint to reduce unnecessary polling.
+        // Auto sending must only use nextDue (catch-up remains user-driven).
+        if (!nd || nd.isEligible !== true) {
           const wakeIso = snap?.wakeAtUtc ?? null;
           const wakeMs = wakeIso ? Date.parse(wakeIso) : NaN;
 
           if (Number.isFinite(wakeMs)) {
             set((s) => ({
-              engine: {
-                ...s.engine,
-                nextRetryAtUtc: wakeMs,
+              contexts: {
+                ...s.contexts,
+                [postingId]: {
+                  ...s.contexts[postingId],
+                  engine: {
+                    ...s.contexts[postingId].engine,
+                    nextRetryAtUtc: wakeMs,
+                  },
+                },
               },
             }));
           }
 
           if (__DEV__) {
-            console.log(`${TAG} sendNextIfDue → nothing eligible`, {
-              catchUpNext: cuNext
-                ? {
-                    dayIndex: cuNext.dayIndex,
-                    eligibleAtUtc: cuNext.eligibleAtUtc,
-                    isEligible: cuNext.isEligible,
-                  }
-                : null,
+            console.log(`${TAG} sendNextIfDueForPosting → not eligible`, {
+              postingId,
               nextDue: nd
                 ? {
                     dayIndex: nd.dayIndex,
@@ -1259,23 +1343,37 @@ export const useShareStore = create<StoreState>()(
         }
 
         const win: WindowRef = {
-          dayIndex: chosen.w.dayIndex,
-          fromUtc: chosen.w.fromUtc,
-          toUtc: chosen.w.toUtc,
+          dayIndex: nd.dayIndex,
+          fromUtc: nd.fromUtc,
+          toUtc: nd.toUtc,
         };
 
         // Stash exact window and mark engine as working this day.
         set((s) => ({
-          pendingWindow: win,
-          engine: {
-            ...s.engine,
-            currentDueDayIndex: win.dayIndex,
-            nextRetryAtUtc: null, // server grace already applied via eligibility
-            graceAppliedForDay: win.dayIndex,
+          contexts: {
+            ...s.contexts,
+            [postingId]: {
+              ...s.contexts[postingId],
+              pendingWindow: win,
+              engine: {
+                ...s.contexts[postingId].engine,
+                currentDueDayIndex: win.dayIndex,
+                nextRetryAtUtc: null,
+                graceAppliedForDay: win.dayIndex,
+              },
+            },
           },
         }));
 
-        await tryProcessWindow(win);
+        await tryProcessWindow(postingId, win);
+      },
+
+      // Active-posting wrapper (UI behavior unchanged)
+      async sendNextIfDue() {
+        const st = get();
+        const pid = st.activePostingId;
+        if (!pid) return;
+        await get().sendNextIfDueForPosting(pid);
       },
 
       // async catchUpIfNeeded() {
@@ -1325,15 +1423,20 @@ export const useShareStore = create<StoreState>()(
         }
 
         const st = get();
-        if (!st.sessionId || st.status !== "ACTIVE") return;
+        const pid = st.activePostingId;
+        if (!pid) return;
 
-        if (st.engine.mode === "SIM") {
+        const ctx = st.contexts[pid];
+        if (!ctx?.sessionId || !ctx?.userId) return;
+        if (ctx.status !== "ACTIVE") return;
+
+        if (ctx.engine.mode === "SIM") {
           if (__DEV__)
             console.log(`${TAG} catchUpIfNeeded → passive (SIM mode)`);
           return;
         }
 
-        // Server is authoritative. One call processes at most one day.
+        // Server is authoritative for snapshot. Catch-up remains user-driven.
         await get().sendNextIfDue();
         get().refreshCatchUpStatus();
       },
@@ -1341,45 +1444,233 @@ export const useShareStore = create<StoreState>()(
       refreshCatchUpStatus() {
         const st = get();
         // const s = computeCatchUpStatusFromState(st);
+        const pid = st.activePostingId;
+        if (!pid) return;
+        const ctx = st.contexts[pid];
+        if (!ctx) return;
+
         const s = computeCatchUpStatusFromState({
-          status: st.status,
-          engine: st.engine,
-          snapshot: st.snapshot,
+          status: ctx.status,
+          engine: ctx.engine,
+          snapshot: ctx.snapshot,
         });
-        set({ catchUpStatus: s });
+
+        set((state) => ({
+          contexts: {
+            ...state.contexts,
+            [pid]: {
+              ...state.contexts[pid],
+              catchUpStatus: s,
+            },
+          },
+        }));
+      },
+
+      async syncNow() {
+        if (!isShareReady()) {
+          if (__DEV__) console.log(`${TAG} syncNow → not ready`);
+          return;
+        }
+
+        const st0 = get();
+        const pid = st0.activePostingId;
+        if (!pid) {
+          if (__DEV__) console.log(`${TAG} syncNow → no activePostingId`);
+          return;
+        }
+
+        const ctx0 = st0.contexts[pid];
+        if (!ctx0) {
+          if (__DEV__) console.log(`${TAG} syncNow → missing context`, { pid });
+          return;
+        }
+
+        if (!ctx0.sessionId || !ctx0.userId) {
+          if (__DEV__)
+            console.log(`${TAG} syncNow → missing identity fields`, {
+              pid,
+              ctxSessionId: ctx0.sessionId ?? null,
+              ctxUserId: ctx0.userId ?? null,
+              snapSessionId: ctx0.snapshot?.sessionId ?? null,
+              snapUserId: ctx0.snapshot?.userId ?? null,
+            });
+          return;
+        }
+
+        if (ctx0.status !== "ACTIVE") {
+          if (__DEV__)
+            console.log(`${TAG} syncNow → not ACTIVE`, {
+              pid,
+              status: ctx0.status,
+            });
+          return;
+        }
+
+        if (ctx0.engine.mode === "SIM") {
+          if (__DEV__)
+            console.log(`${TAG} syncNow → blocked (SIM mode)`, { pid });
+          return;
+        }
+
+        // Manual press must always use a fresh server snapshot (server-authoritative)
+        notifyInfo("Refreshing session…");
+        await get().fetchSessionSnapshot(ctx0.userId!, pid);
+
+        const snap = get().contexts[pid]?.snapshot ?? null;
+        if (!snap) {
+          notifyInfo("Couldn’t refresh session state from server.");
+          return;
+        }
+
+        const cu = snap.catchUp ?? null;
+
+        // Backlog rule: if ANY catch-up backlog exists, manual "Sync now" must do nothing.
+        const backlogExists = !!cu?.next || (cu?.countEligibleNow ?? 0) > 0;
+        if (backlogExists) {
+          if (__DEV__) {
+            console.log(`${TAG} syncNow → blocked (backlog exists)`, {
+              countEligibleNow: cu?.countEligibleNow ?? 0,
+              hasNext: !!cu?.next,
+            });
+          }
+          return;
+        }
+
+        const nd = snap?.nextDue ?? null;
+        if (!nd) return;
+
+        if (!nd.isEligible) {
+          // Not eligible yet: honor server wake hint (store this on the active context engine)
+          const wakeIso = snap?.wakeAtUtc ?? null;
+          const wakeMs = wakeIso ? Date.parse(wakeIso) : NaN;
+          if (Number.isFinite(wakeMs)) {
+            set((s) => ({
+              contexts: {
+                ...s.contexts,
+                [pid]: {
+                  ...s.contexts[pid],
+                  engine: {
+                    ...s.contexts[pid].engine,
+                    nextRetryAtUtc: wakeMs,
+                  },
+                },
+              },
+            }));
+          }
+          return;
+        }
+
+        const win: WindowRef = {
+          dayIndex: nd.dayIndex,
+          fromUtc: nd.fromUtc,
+          toUtc: nd.toUtc,
+        };
+
+        // Mark engine as working this day + stash window for retry safety (on the active context)
+        set((s) => ({
+          contexts: {
+            ...s.contexts,
+            [pid]: {
+              ...s.contexts[pid],
+              pendingWindow: win,
+              engine: {
+                ...s.contexts[pid].engine,
+                currentDueDayIndex: win.dayIndex,
+                nextRetryAtUtc: null,
+                graceAppliedForDay: win.dayIndex,
+              },
+            },
+          },
+        }));
+
+        await tryProcessWindow(pid, win);
+
+        // Refresh snapshot + derived status so UI updates immediately
+        try {
+          const st1 = get();
+          const ctx1 = st1.contexts[pid];
+          if (ctx1?.userId) {
+            await get().fetchSessionSnapshot(ctx1.userId, pid);
+          }
+        } finally {
+          get().refreshCatchUpStatus();
+        }
       },
 
       async catchUpNextOne() {
         if (!isShareReady()) return;
 
-        const st = get();
-        if (!st.sessionId || st.status !== "ACTIVE") return;
-        if (st.engine.mode === "SIM") return;
+        const st0 = get();
+        const pid = st0.activePostingId;
+        if (!pid) return;
 
-        // Recompute status right before acting (keeps UI + action consistent)
-        // const s = computeCatchUpStatusFromState(st);
-        const s = computeCatchUpStatusFromState({
-          status: st.status,
-          engine: st.engine,
-          snapshot: st.snapshot,
-        });
-        set({ catchUpStatus: s });
+        const ctx0 = st0.contexts[pid];
+        if (!ctx0?.sessionId || !ctx0?.userId) return;
+        if (ctx0.status !== "ACTIVE") return;
+        if (ctx0.engine.mode === "SIM") return;
 
-        // const next = s.nextWindow;
-        // if (!next) return;
+        // Manual press must always use a fresh server snapshot (server-authoritative)
+        notifyInfo("Refreshing session…");
+        await get().fetchSessionSnapshot(ctx0.userId, pid);
 
-        // await tryProcessWindow(next);
+        const snap = get().contexts[pid]?.snapshot ?? null;
+        if (!snap) {
+          notifyInfo("Couldn’t refresh session state from server.");
+          return;
+        }
 
-        // // Refresh again after processing (so button advances or disappears)
-        // get().refreshCatchUpStatus();
-        const next = s.nextWindow;
-        if (!next) return;
+        const cuNext = snap.catchUp?.next ?? null;
 
-        // Server decides which window is valid/eligible; this processes one day.
-        await get().sendNextIfDue();
-
-        // Refresh again after processing (so button advances or disappears)
+        // Update derived UI status first (even if not eligible)
         get().refreshCatchUpStatus();
+
+        // Catch-up button must never send nextDue.
+        if (!cuNext || cuNext.isEligible !== true) {
+          if (__DEV__) {
+            console.log(`${TAG} catchUpNextOne → not eligible/no next`, {
+              hasNext: !!cuNext,
+              isEligible: cuNext?.isEligible ?? null,
+              eligibleAtUtc: cuNext?.eligibleAtUtc ?? null,
+            });
+          }
+          return;
+        }
+
+        const win: WindowRef = {
+          dayIndex: cuNext.dayIndex,
+          fromUtc: cuNext.fromUtc,
+          toUtc: cuNext.toUtc,
+        };
+
+        // Mark engine as working this day + stash window for retry safety (on the active context)
+        set((s) => ({
+          contexts: {
+            ...s.contexts,
+            [pid]: {
+              ...s.contexts[pid],
+              pendingWindow: win,
+              engine: {
+                ...s.contexts[pid].engine,
+                currentDueDayIndex: win.dayIndex,
+                nextRetryAtUtc: null,
+                graceAppliedForDay: win.dayIndex,
+              },
+            },
+          },
+        }));
+
+        await tryProcessWindow(pid, win);
+
+        // Refresh snapshot + derived status so UI advances immediately
+        try {
+          const st1 = get();
+          const ctx1 = st1.contexts[pid];
+          if (ctx1?.userId) {
+            await get().fetchSessionSnapshot(ctx1.userId, pid);
+          }
+        } finally {
+          get().refreshCatchUpStatus();
+        }
       },
 
       // Call this on focus + short interval (e.g., 5s in DEV, 60s in PROD)
@@ -1390,153 +1681,80 @@ export const useShareStore = create<StoreState>()(
         }
 
         const st = get();
-        if (__DEV__)
+        const pid = st.activePostingId;
+        if (!pid) return;
+
+        const ctx = st.contexts[pid];
+        if (!ctx?.sessionId) return;
+
+        if (__DEV__) {
           console.log(`${TAG} tick → engine gate`, {
-            status: st.engine.status,
-            storeStatus: st.status,
+            postingId: pid,
+            engineStatus: ctx.engine.status,
+            ctxStatus: ctx.status,
           });
+        }
 
-        if (!st.sessionId) return;
-
-        // Mirror engine status to store status and stop if terminal
+        // Stop if terminal or not ACTIVE
         if (
-          st.engine.status === "CANCELLED" ||
-          st.engine.status === "COMPLETE" ||
-          st.status !== "ACTIVE"
+          ctx.engine.status === "CANCELLED" ||
+          ctx.engine.status === "COMPLETE" ||
+          ctx.status !== "ACTIVE"
         ) {
-          if (st.status !== st.engine.status) set({ status: st.engine.status });
-          if (__DEV__)
+          if (__DEV__) {
             console.log(`${TAG} tick → stopping`, {
-              engineStatus: st.engine.status,
+              engineStatus: ctx.engine.status,
+              ctxStatus: ctx.status,
             });
+          }
           return;
         }
 
-        // SIM mode: passive; the dev button will drive simulateNextDay()
-        if (st.engine.mode === "SIM") {
+        // SIM mode: passive
+        if (ctx.engine.mode === "SIM") {
           if (__DEV__) console.log(`${TAG} tick → passive (SIM mode)`);
           return;
         }
 
         const now = Date.now();
-        const eng = st.engine;
+        const eng = ctx.engine;
 
-        // 1) If we’re already working a due day, handle grace/retry locally
+        // 1) If we’re already working a due day, retry using the stashed pendingWindow ONLY
         if (eng.currentDueDayIndex != null) {
           if (eng.nextRetryAtUtc && now < eng.nextRetryAtUtc) {
             if (__DEV__)
               console.log(`${TAG} tick → waiting`, {
                 nextRetryAt: eng.nextRetryAtUtc,
               });
-            return; // waiting
+            return;
           }
 
-          // const pw = st.pendingWindow;
-          // const win: WindowRef =
-          //   pw && pw.dayIndex === eng.currentDueDayIndex
-          //     ? pw
-          //     : (() => {
-          //         const { fromUtc, toUtc } = computeWindowForDayIndex(
-          //           st.cycleAnchorUtc!,
-          //           eng.currentDueDayIndex
-          //         );
-          //         if (__DEV__)
-          //           console.log(`${TAG} tick → new window`, {
-          //             dayIndex: eng.currentDueDayIndex,
-          //             fromUtc,
-          //             toUtc,
-          //           });
-          //         return { dayIndex: eng.currentDueDayIndex, fromUtc, toUtc };
-          //       })();
-
-          // set((s) => ({
-          //   pendingWindow: win,
-          //   engine: {
-          //     ...s.engine,
-          //     currentDueDayIndex: win.dayIndex,
-          //   },
-          // }));
-          // await tryProcessWindow(win);
-          // return;
-
-          // const pw = st.pendingWindow;
-          // const dueIdx = eng.currentDueDayIndex;
-
-          // // If we already have the exact window stashed, always reuse it.
-          // if (pw && pw.dayIndex === dueIdx) {
-          //   const win: WindowRef = pw;
-
-          //   set((s) => ({
-          //     pendingWindow: win,
-          //     engine: { ...s.engine, currentDueDayIndex: win.dayIndex },
-          //   }));
-
-          //   await tryProcessWindow(win);
-          //   return;
-          // }
-
-          // // Otherwise, rebuild the window safely.
-          // // Day-0 must not call computeWindowForDayIndex().
-          // const win: WindowRef = (() => {
-          //   if (dueIdx === 0) {
-          //     if (st.joinTimeLocalISO && st.cycleAnchorUtc) {
-          //       const w = buildDay0Window(
-          //         st.joinTimeLocalISO,
-          //         st.cycleAnchorUtc,
-          //       );
-          //       if (__DEV__)
-          //         console.log(`${TAG} tick → rebuilt Day-0 window`, {
-          //           dayIndex: 0,
-          //           fromUtc: w.fromUtc,
-          //           toUtc: w.toUtc,
-          //         });
-          //       return w;
-          //     }
-          //     throw new Error(
-          //       `${TAG} tick → cannot rebuild Day-0 (missing joinTimeLocalISO/cycleAnchorUtc)`,
-          //     );
-          //   }
-
-          //   const { fromUtc, toUtc } = computeWindowForDayIndex(
-          //     st.cycleAnchorUtc!,
-          //     dueIdx,
-          //   );
-          //   if (__DEV__)
-          //     console.log(`${TAG} tick → new window`, {
-          //       dayIndex: dueIdx,
-          //       fromUtc,
-          //       toUtc,
-          //     });
-          //   return { dayIndex: dueIdx, fromUtc, toUtc };
-          // })();
-
-          // set((s) => ({
-          //   pendingWindow: win,
-          //   engine: { ...s.engine, currentDueDayIndex: win.dayIndex },
-          // }));
-
-          // await tryProcessWindow(win);
-          // return;
-
-          const pw = st.pendingWindow;
+          const pw = ctx.pendingWindow;
           const dueIdx = eng.currentDueDayIndex;
 
-          // We must never rebuild windows locally in the new model.
-          // Retry must reuse the exact window that was stashed when the day became due.
           if (!pw || pw.dayIndex !== dueIdx) {
             if (__DEV__)
               console.warn(`${TAG} tick → missing stashed pendingWindow`, {
+                postingId: pid,
                 dueIdx,
                 pendingWindowDayIndex: pw?.dayIndex ?? null,
               });
 
-            // Safety reset: drop the in-flight due index so we re-check snapshot next tick/focus.
+            // Safety reset: clear in-flight state on this context only
             set((s) => ({
-              pendingWindow: undefined,
-              engine: {
-                ...s.engine,
-                currentDueDayIndex: null,
-                nextRetryAtUtc: null,
+              contexts: {
+                ...s.contexts,
+                [pid]: {
+                  ...s.contexts[pid],
+                  pendingWindow: undefined,
+                  engine: {
+                    ...s.contexts[pid].engine,
+                    currentDueDayIndex: null,
+                    nextRetryAtUtc: null,
+                    graceAppliedForDay: null,
+                    noDataRetryCount: 0,
+                  },
+                },
               },
             }));
             return;
@@ -1544,22 +1762,28 @@ export const useShareStore = create<StoreState>()(
 
           const win: WindowRef = pw;
 
+          // keep pendingWindow + due index consistent
           set((s) => ({
-            pendingWindow: win,
-            engine: { ...s.engine, currentDueDayIndex: win.dayIndex },
+            contexts: {
+              ...s.contexts,
+              [pid]: {
+                ...s.contexts[pid],
+                pendingWindow: win,
+                engine: {
+                  ...s.contexts[pid].engine,
+                  currentDueDayIndex: win.dayIndex,
+                },
+              },
+            },
           }));
 
-          await tryProcessWindow(win);
+          await tryProcessWindow(pid, win);
           return;
         }
 
-        // if (__DEV__) console.log(`${TAG} tick → checking if new window due`);
-
-        // // 2) Otherwise, see if a NEW window is due
-        // await get().sendNextIfDue();
         if (__DEV__) console.log(`${TAG} tick → checking if new window due`);
 
-        // If server told us when to wake, honor it to avoid polling and client-side time math.
+        // Honor server wake hint (stored on this context’s engine)
         if (eng.nextRetryAtUtc && now < eng.nextRetryAtUtc) {
           if (__DEV__)
             console.log(`${TAG} tick → sleeping until wake`, {
@@ -1570,7 +1794,76 @@ export const useShareStore = create<StoreState>()(
         }
 
         // 2) Otherwise, see if a NEW window is due (server snapshot decides)
-        await get().sendNextIfDue();
+        await get().sendNextIfDueForPosting(pid);
+      },
+
+      // NEW: background-safe loop across all posting contexts
+      async tickAll() {
+        if (!isShareReady()) return;
+
+        const st = get();
+        const now = Date.now();
+
+        const entries = Object.entries(st.contexts ?? {});
+        for (const [k, ctx] of entries) {
+          const postingId = Number(k);
+          if (!Number.isFinite(postingId)) continue;
+          if (!ctx?.sessionId) continue;
+
+          // Skip if not ACTIVE
+          if (ctx.status !== "ACTIVE") continue;
+
+          // Skip terminal
+          if (
+            ctx.engine.status === "CANCELLED" ||
+            ctx.engine.status === "COMPLETE"
+          ) {
+            continue;
+          }
+
+          // Skip SIM
+          if (ctx.engine.mode === "SIM") continue;
+
+          const eng = ctx.engine;
+
+          // Retry path: only use stashed pendingWindow for this posting
+          if (eng.currentDueDayIndex != null) {
+            if (eng.nextRetryAtUtc && now < eng.nextRetryAtUtc) continue;
+
+            const pw = ctx.pendingWindow;
+            const dueIdx = eng.currentDueDayIndex;
+
+            if (!pw || pw.dayIndex !== dueIdx) {
+              // Safety reset for this posting
+              set((s) => ({
+                contexts: {
+                  ...s.contexts,
+                  [postingId]: {
+                    ...s.contexts[postingId],
+                    pendingWindow: undefined,
+                    engine: {
+                      ...s.contexts[postingId].engine,
+                      currentDueDayIndex: null,
+                      nextRetryAtUtc: null,
+                      graceAppliedForDay: null,
+                      noDataRetryCount: 0,
+                    },
+                  },
+                },
+              }));
+              continue;
+            }
+
+            await tryProcessWindow(postingId, pw);
+            continue;
+          }
+
+          // Wake gating
+          if (eng.nextRetryAtUtc && now < eng.nextRetryAtUtc) continue;
+
+          // New-work path: per-posting worker
+          await get().sendNextIfDueForPosting(postingId);
+        }
       },
 
       // Test Mode-only anchor backdate (atomic)
@@ -1581,39 +1874,41 @@ export const useShareStore = create<StoreState>()(
           );
           return;
         }
-        try {
-          const ms = new Date(anchorIsoUtc).getTime();
-          if (!Number.isFinite(ms)) {
-            console.warn(
-              `${TAG} setBackdatedAnchorTestOnly invalid ISO`,
-              anchorIsoUtc,
-            );
-            return;
-          }
-          set((s) => ({
-            cycleAnchorUtc: anchorIsoUtc, // planner ISO
-            engine: {
-              ...s.engine,
-              cycleAnchorUtc: ms, // engine numeric
-              currentDueDayIndex: null, // reset per-day state
-              noDataRetryCount: 0,
-              nextRetryAtUtc: null,
-              graceAppliedForDay: null,
-            },
-            pendingWindow: undefined,
-          }));
-          if (__DEV__) {
-            console.log(`${TAG} setBackdatedAnchorTestOnly →`, {
-              cycleAnchorUtc: anchorIsoUtc,
-              engineCycleAnchorMs: ms,
-            });
-          }
-        } catch (e: any) {
+
+        const pid = get().activePostingId;
+        if (!pid) return;
+
+        const c = get().contexts[pid];
+        if (!c) return;
+
+        const ms = new Date(anchorIsoUtc).getTime();
+        if (!Number.isFinite(ms)) {
           console.warn(
-            `${TAG} setBackdatedAnchorTestOnly error`,
-            e?.message ?? e,
+            `${TAG} setBackdatedAnchorTestOnly invalid ISO`,
+            anchorIsoUtc,
           );
+          return;
         }
+
+        set((s) => ({
+          contexts: {
+            ...s.contexts,
+            [pid]: {
+              ...s.contexts[pid],
+              cycleAnchorUtc: anchorIsoUtc,
+              originalCycleAnchorUtc: anchorIsoUtc,
+              pendingWindow: undefined,
+              engine: {
+                ...s.contexts[pid].engine,
+                cycleAnchorUtc: ms,
+                currentDueDayIndex: null,
+                noDataRetryCount: 0,
+                nextRetryAtUtc: null,
+                graceAppliedForDay: null,
+              },
+            },
+          },
+        }));
       },
 
       // ── Simulation controls (used by UI in opportunities/[id].tsx) ─────────
@@ -1623,20 +1918,33 @@ export const useShareStore = create<StoreState>()(
           console.warn(`${TAG} enterSimulation ignored — not in Test Mode.`);
           return;
         }
-        if (st.engine.mode === "SIM") return;
+
+        const pid = st.activePostingId;
+        if (!pid) return;
+
+        const ctx = st.contexts[pid];
+        if (!ctx) return;
+
+        if (ctx.engine.mode === "SIM") return;
 
         set((s) => ({
-          engine: {
-            ...s.engine,
-            mode: "SIM",
-            simulationLock: false,
-            currentDueDayIndex: null,
-            noDataRetryCount: 0,
-            nextRetryAtUtc: null,
-            graceAppliedForDay: null,
+          contexts: {
+            ...s.contexts,
+            [pid]: {
+              ...s.contexts[pid],
+              engine: {
+                ...s.contexts[pid].engine,
+                mode: "SIM",
+                simulationLock: false,
+                currentDueDayIndex: null,
+                noDataRetryCount: 0,
+                nextRetryAtUtc: null,
+                graceAppliedForDay: null,
+              },
+              pendingWindow: undefined,
+            },
           },
-          restoreAnchorAtExit: s.engine.cycleAnchorUtc,
-          pendingWindow: undefined,
+          restoreAnchorAtExit: s.contexts[pid].engine.cycleAnchorUtc,
         }));
 
         if (__DEV__) console.log(`${TAG} enterSimulation → mode=SIM`);
@@ -1651,150 +1959,108 @@ export const useShareStore = create<StoreState>()(
 
         const st = get();
         if (!testFlags.TEST_MODE) return;
-        if (st.engine.mode !== "SIM") {
+
+        const pid = st.activePostingId;
+        if (!pid) return;
+
+        const ctx = st.contexts[pid];
+        if (!ctx) return;
+
+        if (ctx.engine.mode !== "SIM") {
           console.warn(`${TAG} simulateNextDay ignored — mode != SIM`);
           return;
         }
-        // Store-wide inactive — also bail
-        if (st.status !== "ACTIVE") {
-          if (__DEV__) {
-            console.log(
-              `${TAG} simulateNextDay → store not ACTIVE (status=${st.status})`,
-            );
-          }
-          return;
-        }
 
-        // If engine already finished/cancelled, bail out
-        if (st.engine.status !== "ACTIVE") {
-          if (__DEV__) {
-            console.log(
-              `${TAG} simulateNextDay → nothing to do (engineStatus=${st.engine.status})`,
-            );
-          }
-          return;
-        }
+        if (ctx.status !== "ACTIVE") return;
+        if (ctx.engine.status !== "ACTIVE") return;
 
-        if (!st.sessionId || !st.postingId || !st.userId || !st.cycleAnchorUtc)
+        if (ctx.engine.nextRetryAtUtc && nowMs() < ctx.engine.nextRetryAtUtc)
           return;
 
-        // Do not run while in a backoff/grace wait
-        if (st.engine.nextRetryAtUtc && nowMs() < st.engine.nextRetryAtUtc) {
-          if (__DEV__)
-            console.log(`${TAG} simulateNextDay → waiting backoff/grace`);
-          return;
-        }
+        const segmentsExpected = ctx.segmentsExpected ?? 0;
 
-        // const segmentsExpected = st.segmentsExpected ?? 0;
-        // const nextIdx = (st.engine.lastSentDayIndex ?? 0) + 1;
-
-        const segmentsExpected = st.segmentsExpected ?? 0;
-
-        // SIM uses calendar-midnight windows anchored to joinTimeLocalISO.
-        // First SIM step must always be "yesterday" => targetDayIndex=1.
-        const nextIdxRaw = (st.engine.lastSentDayIndex ?? 0) + 1;
+        const nextIdxRaw = (ctx.engine.lastSentDayIndex ?? 0) + 1;
         const nextIdx = Math.max(1, nextIdxRaw);
 
-        if (!st.joinTimeLocalISO) {
-          console.warn(`${TAG} simulateNextDay → missing joinTimeLocalISO`);
-          return;
-        }
-        if (!/[+-]\d{2}:\d{2}$/.test(st.joinTimeLocalISO)) {
-          console.warn(
-            `${TAG} simulateNextDay → joinTimeLocalISO missing numeric offset (±HH:MM)`,
-            {
-              joinTimeLocalISO: st.joinTimeLocalISO,
-            },
-          );
-          return;
-        }
-
-        //  extra safety: stop when all segments are sent or nextIdx exceeds expected
         if (
           segmentsExpected > 0 &&
-          ((st.engine.segmentsSent ?? 0) >= segmentsExpected ||
+          ((ctx.engine.segmentsSent ?? 0) >= segmentsExpected ||
             nextIdx > segmentsExpected)
         ) {
-          if (__DEV__)
-            console.log(
-              `${TAG} simulateNextDay → nothing to do (all segments sent)`,
-            );
           return;
         }
 
-        // // Use the immutable anchor captured at startSession (fallback to current if missing)
-        // const baseIso = st.originalCycleAnchorUtc ?? st.cycleAnchorUtc;
-        // Keep a stable ISO in ctx for compatibility/logging.
-        // (SIM window math is anchored to joinTimeLocalISO midnight in planner.ts.)
-        const baseIso = st.originalCycleAnchorUtc ?? st.cycleAnchorUtc;
+        if (!ctx.joinTimeLocalISO) return;
+        if (!/[+-]\d{2}:\d{2}$/.test(ctx.joinTimeLocalISO)) return;
 
-        if (!baseIso) {
-          console.warn(
-            `${TAG} simulateNextDay → no baseIso available (missing originalCycleAnchorUtc/cycleAnchorUtc)`,
-          );
-          return;
-        }
+        const baseIso = ctx.originalCycleAnchorUtc ?? ctx.cycleAnchorUtc;
+        if (!baseIso) return;
 
-        // Compute exact simulated window from immutable base (passive w.r.t. "now")
-        // const ctx: PlannerContext = {
-        //   joinTimeLocalISO: st.joinTimeLocalISO!,
-        //   joinTimezone: st.joinTimezone || "Local",
-        //   cycleAnchorUtc: baseIso, // <— CHANGED: pass immutable T₀
-        //   segmentsExpected,
-        //   alreadySentDayIndices:
-        //     st.engine.lastSentDayIndex != null
-        //       ? [st.engine.lastSentDayIndex]
-        //       : [],
-        //   lastSentDayIndex: st.engine.lastSentDayIndex ?? null, //
-        //   mode: "SIM",
-        // };
-        const ctx: PlannerContext = {
-          joinTimeLocalISO: st.joinTimeLocalISO,
-          joinTimezone: st.joinTimezone || "Local",
-          cycleAnchorUtc: baseIso, // kept for compatibility/logging; planner SIM ignores it
+        const plannerCtx: PlannerContext = {
+          joinTimeLocalISO: ctx.joinTimeLocalISO,
+          joinTimezone: ctx.joinTimezone || "Local",
+          cycleAnchorUtc: baseIso,
           segmentsExpected,
           alreadySentDayIndices:
-            st.engine.lastSentDayIndex != null
-              ? [st.engine.lastSentDayIndex]
+            ctx.engine.lastSentDayIndex != null
+              ? [ctx.engine.lastSentDayIndex]
               : [],
-          lastSentDayIndex: st.engine.lastSentDayIndex ?? null,
+          lastSentDayIndex: ctx.engine.lastSentDayIndex ?? null,
           mode: "SIM",
         };
 
-        const win = planSimulatedWindow(ctx, nextIdx);
+        const win = planSimulatedWindow(plannerCtx, nextIdx);
 
-        // In SIM we bypass grace for that day (process immediately)
         set((s) => ({
-          pendingWindow: win,
-          engine: {
-            ...s.engine,
-            currentDueDayIndex: win.dayIndex,
-            nextRetryAtUtc: null,
-            graceAppliedForDay: win.dayIndex,
+          contexts: {
+            ...s.contexts,
+            [pid]: {
+              ...s.contexts[pid],
+              pendingWindow: win,
+              engine: {
+                ...s.contexts[pid].engine,
+                currentDueDayIndex: win.dayIndex,
+                nextRetryAtUtc: null,
+                graceAppliedForDay: win.dayIndex,
+              },
+            },
           },
         }));
 
-        await tryProcessWindow(win);
+        await tryProcessWindow(pid, win);
       },
 
       exitSimulation() {
         const st = get();
-        if (st.engine.mode !== "SIM") return;
+        const pid = st.activePostingId;
+        if (!pid) return;
+
+        const ctx = st.contexts[pid];
+        if (!ctx) return;
+
+        if (ctx.engine.mode !== "SIM") return;
 
         set((s) => ({
-          engine: {
-            ...s.engine,
-            mode: "NORMAL",
-            simulationLock: false,
-            // Restore the real anchor if we had saved it; otherwise keep current
-            cycleAnchorUtc: s.restoreAnchorAtExit ?? s.engine.cycleAnchorUtc,
-            currentDueDayIndex: null,
-            noDataRetryCount: 0,
-            nextRetryAtUtc: null,
-            graceAppliedForDay: null,
+          contexts: {
+            ...s.contexts,
+            [pid]: {
+              ...s.contexts[pid],
+              engine: {
+                ...s.contexts[pid].engine,
+                mode: "NORMAL",
+                simulationLock: false,
+                cycleAnchorUtc:
+                  s.restoreAnchorAtExit ??
+                  s.contexts[pid].engine.cycleAnchorUtc,
+                currentDueDayIndex: null,
+                noDataRetryCount: 0,
+                nextRetryAtUtc: null,
+                graceAppliedForDay: null,
+              },
+              pendingWindow: undefined,
+            },
           },
           restoreAnchorAtExit: undefined,
-          pendingWindow: undefined,
         }));
 
         if (__DEV__) console.log(`${TAG} exitSimulation → mode=NORMAL`);
@@ -1802,22 +2068,23 @@ export const useShareStore = create<StoreState>()(
 
       async cancelCurrentSession() {
         const st = get();
+        const pid = st.activePostingId;
+        if (!pid) {
+          notifyInfo("Nothing to cancel.");
+          return;
+        }
 
-        // Must know which (posting,user) to resolve a session for
-        if (!st.postingId || !st.userId) {
-          if (__DEV__)
-            console.log(
-              `${TAG} cancelCurrentSession → missing postingId/userId`,
-            );
+        const ctx = st.contexts[pid];
+        if (!ctx?.userId) {
           notifyInfo("Nothing to cancel.");
           return;
         }
 
         // Resolve a sessionId if not present in store
-        let sid = st.sessionId;
+        let sid = ctx.sessionId;
         if (!sid) {
           try {
-            const resolved = await getSessionByPosting(st.postingId, st.userId);
+            const resolved = await getSessionByPosting(pid, ctx.userId);
             if (!resolved) {
               notifyInfo("No session found to cancel.");
               return;
@@ -1842,16 +2109,23 @@ export const useShareStore = create<StoreState>()(
           // Server says: cannot cancel because it's already COMPLETED
           if (!res.ok && res.error === "COMPLETED") {
             set((s) => ({
-              status: "COMPLETE",
-              engine: {
-                ...s.engine,
-                status: "COMPLETE",
-                currentDueDayIndex: null,
-                nextRetryAtUtc: null,
-                graceAppliedForDay: null,
+              contexts: {
+                ...s.contexts,
+                [pid]: {
+                  ...s.contexts[pid],
+                  status: "COMPLETE",
+                  pendingWindow: undefined,
+                  engine: {
+                    ...s.contexts[pid].engine,
+                    status: "COMPLETE",
+                    currentDueDayIndex: null,
+                    nextRetryAtUtc: null,
+                    graceAppliedForDay: null,
+                  },
+                },
               },
-              pendingWindow: undefined,
             }));
+
             notifyInfo("Session already completed.");
             return;
           }
@@ -1859,20 +2133,33 @@ export const useShareStore = create<StoreState>()(
           // Success → mark as CANCELLED locally and clear any pending work
           if (res.ok && res.status === "CANCELLED") {
             set((s) => ({
-              status: "CANCELLED",
-              engine: {
-                ...s.engine,
-                status: "CANCELLED",
-                currentDueDayIndex: null,
-                nextRetryAtUtc: null,
-                graceAppliedForDay: null,
+              contexts: {
+                ...s.contexts,
+                [pid]: {
+                  ...s.contexts[pid],
+                  status: "CANCELLED",
+                  pendingWindow: undefined,
+                  engine: {
+                    ...s.contexts[pid].engine,
+                    status: "CANCELLED",
+                    currentDueDayIndex: null,
+                    nextRetryAtUtc: null,
+                    graceAppliedForDay: null,
+                  },
+                },
               },
-              pendingWindow: undefined,
             }));
+
             notifyInfo("Sharing cancelled.");
             try {
-              await sendSessionCancelled(st.postingId!, "Cancelled.");
-            } catch {}
+              await sendSessionCancelled(pid, "Cancelled.");
+            } catch (e) {
+              if (__DEV__)
+                console.warn(
+                  `${TAG} cancelCurrentSession sendSessionCancelled error`,
+                  e,
+                );
+            }
             return;
           }
 
@@ -1912,11 +2199,15 @@ export const useShareStore = create<StoreState>()(
       },
 
       hydrateFromSessionSnapshot: (snap) => {
-        // Keep SIM mode untouched (do not override simulation state)
-        const st = get();
-        const isSim = st.engine?.mode === "SIM";
+        const postingId = snap.postingId;
+        if (!postingId) return;
 
-        // Map backend status into ShareStatus when possible
+        const st = get();
+        const cur = st.contexts[postingId];
+        if (!cur) return;
+
+        const isSim = cur.engine?.mode === "SIM";
+
         const serverStatus =
           snap.statusCode === "ACTIVE" ||
           snap.statusCode === "PAUSED" ||
@@ -1926,12 +2217,18 @@ export const useShareStore = create<StoreState>()(
             : null;
 
         set((s) => {
+          const c = s.contexts[postingId];
+          if (!c) return s;
+
+          const nextCtxStatus = (serverStatus ?? c.status) as ShareStatus;
+
           const nextEngine: ShareSessionState = {
-            ...s.engine,
+            ...c.engine,
 
-            // IMPORTANT: anchor is server authoritative
+            // IMPORTANT: keep engine.status aligned with ctx/server status so producer gates match
+            status: nextCtxStatus,
+
             cycleAnchorUtc: new Date(snap.cycleAnchorUtc).getTime(),
-
             segmentsExpected: Number(snap.segmentsExpected ?? 0),
             segmentsSent: Number(snap.segmentsSent ?? 0),
             lastSentDayIndex:
@@ -1940,85 +2237,59 @@ export const useShareStore = create<StoreState>()(
                 : Number(snap.lastSentDayIndex),
           };
 
-          // Do not override SIM flags
           if (isSim) {
-            nextEngine.mode = s.engine.mode;
-            nextEngine.simulationLock = s.engine.simulationLock;
+            nextEngine.mode = c.engine.mode;
+            nextEngine.simulationLock = c.engine.simulationLock;
           } else {
-            // Always normalize to NORMAL on server hydration (unless you want to preserve other modes)
-            nextEngine.mode = s.engine.mode ?? "NORMAL";
+            nextEngine.mode = c.engine.mode ?? "NORMAL";
             nextEngine.simulationLock =
-              typeof s.engine.simulationLock === "boolean"
-                ? s.engine.simulationLock
+              typeof c.engine.simulationLock === "boolean"
+                ? c.engine.simulationLock
                 : false;
           }
 
-          const nextStoreStatus = serverStatus ?? s.status;
-
           const shouldClearPending =
-            nextStoreStatus === "CANCELLED" || nextStoreStatus === "COMPLETE";
+            nextCtxStatus === "CANCELLED" || nextCtxStatus === "COMPLETE";
 
-          // return {
-          //   // planner/meta fields (authoritative)
-          //   cycleAnchorUtc: snap.cycleAnchorUtc,
-          //   joinTimeLocalISO: snap.joinTimeLocalISO,
-          //   joinTimezone: snap.joinTimezone,
-          //   segmentsExpected: Number(snap.segmentsExpected ?? 0),
+          const joinTimeLocalISO = (() => {
+            const j = snap.joinTimeLocalISO;
+            if (!/[+-]\d{2}:\d{2}$/.test(j)) {
+              throw new Error(
+                `${TAG} hydrateFromSessionSnapshot: joinTimeLocalISO missing numeric offset (±HH:MM): ${j}`,
+              );
+            }
+            return j;
+          })();
 
-          //   // engine mirror
-          //   engine: nextEngine,
-
-          //   // align top-level status if server provides it
-          //   ...(s.status !== nextStoreStatus
-          //     ? { status: nextStoreStatus }
-          //     : {}),
-
-          //   // terminal server state should stop local work
-          //   ...(shouldClearPending ? { pendingWindow: undefined } : {}),
-          // };
-          const nextState = {
-            // planner/meta fields (authoritative)
-            cycleAnchorUtc: snap.cycleAnchorUtc,
-            joinTimeLocalISO: (() => {
-              const j = snap.joinTimeLocalISO;
-              if (!/[+-]\d{2}:\d{2}$/.test(j)) {
-                throw new Error(
-                  `${TAG} hydrateFromSessionSnapshot: joinTimeLocalISO missing numeric offset (±HH:MM): ${j}`,
-                );
-              }
-              return j;
-            })(),
-            joinTimezone: snap.joinTimezone,
-
-            segmentsExpected: Number(snap.segmentsExpected ?? 0),
-
-            // engine mirror
+          const computedCatchUp = computeCatchUpStatusFromState({
+            status: nextCtxStatus,
             engine: nextEngine,
-
-            // align top-level status if server provides it
-            ...(s.status !== nextStoreStatus
-              ? { status: nextStoreStatus }
-              : {}),
-
-            // terminal server state should stop local work
-            ...(shouldClearPending ? { pendingWindow: undefined } : {}),
-          } as Partial<StoreState>;
-
-          const mergedForCatchUp = {
-            ...s,
-            ...nextState,
-            status: (nextState.status ?? s.status) as ShareStatus,
-            engine: (nextState.engine ?? s.engine) as ShareSessionState,
-          };
+            snapshot: snap,
+          });
 
           return {
-            ...nextState,
-            // catchUpStatus: computeCatchUpStatusFromState(mergedForCatchUp),
-            catchUpStatus: computeCatchUpStatusFromState({
-              status: (mergedForCatchUp as any).status,
-              engine: (mergedForCatchUp as any).engine,
-              snapshot: (mergedForCatchUp as any).snapshot,
-            }),
+            ...s,
+            contexts: {
+              ...s.contexts,
+              [postingId]: {
+                ...c,
+
+                sessionId: snap.sessionId,
+                userId: snap.userId,
+
+                cycleAnchorUtc: snap.cycleAnchorUtc,
+                joinTimezone: snap.joinTimezone,
+                joinTimeLocalISO,
+                segmentsExpected: Number(snap.segmentsExpected ?? 0),
+                snapshot: snap,
+                engine: nextEngine,
+                ...(c.status !== nextCtxStatus
+                  ? { status: nextCtxStatus }
+                  : {}),
+                ...(shouldClearPending ? { pendingWindow: undefined } : {}),
+                catchUpStatus: computedCatchUp,
+              },
+            },
           };
         });
       },
@@ -2073,7 +2344,7 @@ export const useShareStore = create<StoreState>()(
           const r = res.session;
 
           if (!r) {
-            set({ snapshot: null });
+            get().setContext(postingId, { snapshot: null });
             return;
           }
 
@@ -2152,8 +2423,21 @@ export const useShareStore = create<StoreState>()(
             lastWindowToUtc: r.last_window_to_utc,
           } satisfies NonNullable<StoreState["snapshot"]>;
 
-          // 1) store snapshot for UI/debug
-          set({ snapshot: snap });
+          // 1) store snapshot + identity fields onto this posting context
+          get().setContext(postingId, {
+            snapshot: snap,
+            sessionId: snap.sessionId,
+            userId: snap.userId,
+            segmentsExpected: Number(snap.segmentsExpected ?? 0),
+            // keep status aligned as best-effort; hydrateFromSessionSnapshot will finalize it
+            status:
+              snap.statusCode === "ACTIVE" ||
+              snap.statusCode === "PAUSED" ||
+              snap.statusCode === "CANCELLED" ||
+              snap.statusCode === "COMPLETE"
+                ? (snap.statusCode as ShareStatus)
+                : "PAUSED",
+          });
 
           // 2) hydrate live timeline + engine (single source of truth)
           get().hydrateFromSessionSnapshot(snap);
@@ -2172,7 +2456,7 @@ export const useShareStore = create<StoreState>()(
         } catch (e) {
           if (__DEV__)
             console.warn("[ShareStore] fetchSessionSnapshot error", e);
-          set({ snapshot: null });
+          get().setContext(postingId, { snapshot: null });
         }
       },
 
@@ -2306,137 +2590,64 @@ export const useShareStore = create<StoreState>()(
 
       resetForLogout() {
         set(() => ({
-          // core session identity
-          sessionId: undefined,
-          postingId: undefined,
-          userId: undefined,
-          segmentsExpected: undefined,
-          status: "PAUSED",
-
-          // planner/meta
-          cycleAnchorUtc: undefined,
-          originalCycleAnchorUtc: undefined,
-          joinTimezone: undefined,
-          joinTimeLocalISO: undefined,
-
-          // engine + pending window
-          engine: { ...initialEngine },
-          pendingWindow: undefined,
-
-          // metric mapping + snapshots
+          contexts: {},
+          activePostingId: undefined,
           metricMap: {},
-          snapshot: null,
-
-          // simulation / diagnostics
-          restoreAnchorAtExit: undefined,
-          lastWindowDiag: undefined,
-
-          // active sessions list
+          dashboard: undefined,
+          rewards: null,
           activeSessions: null,
+          shareEnabled: false,
+          restoreAnchorAtExit: undefined,
         }));
       },
 
       hydrateFromServer(payload: UserLoginShareHydrationResponse) {
-        const sessions = payload.sessions ?? [];
+        const sessions = payload.sessions ?? {};
 
-        // If no active sessions, clear session-specific state and keep store in a clean PAUSED state.
-        if (sessions.length === 0) {
-          set(() => ({
-            sessionId: undefined,
-            postingId: undefined,
-            userId: payload.userId ?? undefined,
-            segmentsExpected: undefined,
-            status: "PAUSED",
+        const newContexts: Record<number, PostingContext> = {};
 
-            cycleAnchorUtc: undefined,
-            originalCycleAnchorUtc: undefined,
-            joinTimezone: undefined,
-            joinTimeLocalISO: undefined,
+        for (const primary of sessions) {
+          const engine: ShareSessionState = {
+            ...initialEngine,
+            status: "ACTIVE",
+            cycleAnchorUtc: new Date(primary.cycleAnchorUtc).getTime(),
+            segmentsExpected: primary.segmentsExpected ?? 0,
+            segmentsSent: primary.segmentsSent ?? 0,
+            lastSentDayIndex: primary.lastSentDayIndex ?? null,
+          };
 
-            engine: { ...initialEngine },
-            pendingWindow: undefined,
-            metricMap: {},
-            snapshot: null,
-            restoreAnchorAtExit: undefined,
-            lastWindowDiag: undefined,
-          }));
-          return;
-        }
-
-        // For now, choose the first ACTIVE session as the "primary" one for the engine + snapshot.
-        // Server already guarantees sessions are ACTIVE only.
-        const primary = sessions[0];
-
-        const engine: ShareSessionState = {
-          ...initialEngine,
-          status: "ACTIVE",
-          cycleAnchorUtc: new Date(primary.cycleAnchorUtc).getTime(),
-          segmentsExpected: primary.segmentsExpected ?? 0,
-          segmentsSent: primary.segmentsSent ?? 0,
-          lastSentDayIndex: primary.lastSentDayIndex ?? null,
-        };
-
-        set(() => ({
-          // top-level session identity
-          sessionId: primary.sessionId,
-          postingId: primary.postingId,
-          userId: primary.userId,
-          segmentsExpected: primary.segmentsExpected,
-          status: "ACTIVE",
-
-          // planner/meta
-          cycleAnchorUtc: primary.cycleAnchorUtc,
-          originalCycleAnchorUtc: primary.cycleAnchorUtc,
-          joinTimezone: primary.joinTimezone,
-          joinTimeLocalISO: primary.joinTimeLocalISO,
-
-          // engine and pending
-          engine,
-          pendingWindow: undefined,
-
-          // metric map from backend (MetricCode → MetricId)
-          metricMap: primary.metricMap as Partial<Record<MetricCode, number>>,
-
-          // snapshot mirrors the session payload for UI / debug
-          snapshot: {
+          newContexts[primary.postingId] = {
             sessionId: primary.sessionId,
             postingId: primary.postingId,
             userId: primary.userId,
-            statusCode: primary.statusCode,
-            statusName: primary.statusName,
             segmentsExpected: primary.segmentsExpected,
-            segmentsSent: primary.segmentsSent,
-            lastSentDayIndex: primary.lastSentDayIndex,
+            status: "ACTIVE",
             cycleAnchorUtc: primary.cycleAnchorUtc,
-            joinTimeLocalISO: primary.joinTimeLocalISO,
+            originalCycleAnchorUtc: primary.cycleAnchorUtc,
             joinTimezone: primary.joinTimezone,
+            joinTimeLocalISO: primary.joinTimeLocalISO,
+            engine,
+            metricMap: {}, // explicit: prevents accidental undefined fallthrough
+            snapshot: null,
+          };
+        }
 
-            // NEW (calendar day model)
-            // If login hydration doesn’t include these yet, keep them null/undefined safely.
-            joinLocalDate: (primary as any).joinLocalDate ?? null,
-            graceMinutes: (primary as any).graceMinutes ?? undefined,
-            nextDue: (primary as any).nextDue ?? null,
-
-            lastUploadedAt: primary.lastUploadedAt,
-            lastWindowFromUtc: primary.lastWindowFromUtc,
-            lastWindowToUtc: primary.lastWindowToUtc,
-          },
-
-          // we leave rewards/dashboard as-is; they are managed by their own fetchers
-          restoreAnchorAtExit: undefined,
-          lastWindowDiag: undefined,
-        }));
+        set({
+          contexts: newContexts,
+          activePostingId:
+            sessions.length > 0 ? sessions[0].postingId : undefined,
+          shareEnabled: sessions.length > 0, // IMPORTANT: enable readiness after login hydration
+        });
       },
     }),
-
     {
       name: STORE_NAME,
       version,
       storage: createJSONStorage(() => AsyncStorage),
       partialize: (s) => ({
         ...basePartialize(s),
-        dashboard: s.dashboard, // <-- persist dashboard too
       }),
+
       migrate,
       onRehydrateStorage: () => (_rehydratedState, error) => {
         if (error) {
@@ -2450,50 +2661,85 @@ export const useShareStore = create<StoreState>()(
           if (SHARE_DEBUG) {
             console.log(`${TAG} rehydrated`, {
               ok: true,
-              sessionId: s?.sessionId,
-              status: s?.status,
-              engine: s?.engine && {
-                status: s.engine.status,
-                mode: s.engine.mode,
-                cycleAnchorUtc: s.engine.cycleAnchorUtc,
-                lastSentDayIndex: s.engine.lastSentDayIndex,
-                nextRetryAtUtc: s.engine.nextRetryAtUtc,
-                noDataRetryCount: s.engine.noDataRetryCount,
-                graceAppliedForDay: s.engine.graceAppliedForDay,
-              },
-              originalCycleAnchorUtc: s?.originalCycleAnchorUtc,
+              activePostingId: s?.activePostingId,
+              contextsCount: s?.contexts ? Object.keys(s.contexts).length : 0,
             });
           }
 
-          // Backfill defaults for older persisted engines
-          if (!s.engine.mode || typeof s.engine.simulationLock !== "boolean") {
-            useShareStore.setState({
-              engine: {
-                ...s.engine,
-                mode: s.engine.mode ?? "NORMAL",
-                simulationLock:
-                  typeof s.engine.simulationLock === "boolean"
-                    ? s.engine.simulationLock
-                    : false,
-              },
-            });
-          }
+          // Backfill defaults for older persisted engines (ALL postings)
+          try {
+            const ctxs = s.contexts ?? {};
+            for (const [k, c] of Object.entries(ctxs)) {
+              const pid = Number(k);
+              if (!Number.isFinite(pid) || !c?.engine) continue;
 
-          // If engine is ACTIVE but shareEnabled got lost (older versions), enable it.
-          if (s.engine?.status === "ACTIVE" && s.shareEnabled !== true) {
+              const e = c.engine;
+              const needs =
+                !e.mode ||
+                typeof e.simulationLock !== "boolean" ||
+                typeof e.cycleAnchorUtc !== "number" ||
+                (e.nextRetryAtUtc != null &&
+                  typeof e.nextRetryAtUtc !== "number");
+
+              if (!needs) continue;
+
+              useShareStore.setState((st) => {
+                const cur = st.contexts?.[pid];
+                if (!cur?.engine) return st;
+
+                const nextRetry =
+                  cur.engine.nextRetryAtUtc != null &&
+                  typeof cur.engine.nextRetryAtUtc !== "number"
+                    ? null
+                    : cur.engine.nextRetryAtUtc;
+
+                return {
+                  contexts: {
+                    ...st.contexts,
+                    [pid]: {
+                      ...cur,
+                      engine: {
+                        ...cur.engine,
+                        mode: cur.engine.mode ?? "NORMAL",
+                        simulationLock:
+                          typeof cur.engine.simulationLock === "boolean"
+                            ? cur.engine.simulationLock
+                            : false,
+                        cycleAnchorUtc:
+                          typeof cur.engine.cycleAnchorUtc === "number"
+                            ? cur.engine.cycleAnchorUtc
+                            : Date.now(),
+                        nextRetryAtUtc: nextRetry,
+                      },
+                    },
+                  },
+                };
+              });
+            }
+          } catch {}
+
+          // Enable only if we have at least one ACTIVE context after rehydrate.
+          const hasActive =
+            !!s.contexts &&
+            Object.values(s.contexts).some((c) => c?.status === "ACTIVE");
+
+          if (hasActive && s.shareEnabled !== true) {
             useShareStore.setState({ shareEnabled: true });
+          }
+          if (!hasActive && s.shareEnabled === true) {
+            useShareStore.setState({ shareEnabled: false });
           }
 
           // If engine ACTIVE but missing meta, pause
-          if (
-            s.engine?.status === "ACTIVE" &&
-            (!s.sessionId || !s.postingId || !s.userId || !s.cycleAnchorUtc)
-          ) {
-            useShareStore.setState({
-              status: "PAUSED",
-              engine: { ...s.engine, status: "PAUSED" },
-            });
-          }
+          // if (
+          //   s.engine?.status === "ACTIVE" &&
+          //   (!s.sessionId || !s.postingId || !s.userId || !s.cycleAnchorUtc)
+          // ) {
+          //   useShareStore.setState({
+          //     status: "PAUSED",
+          //     engine: { ...s.engine, status: "PAUSED" },
+          //   });
+          // }
         } catch (e: any) {
           console.warn(`${TAG} rehydrate → post-fix error`, e?.message ?? e);
         }
@@ -2505,34 +2751,41 @@ export const isShareReady = () =>
   useShareStore.getState().shareEnabled === true;
 
 /** Helper: hand a window to the engine and persist the updated engine state. */
-async function tryProcessWindow(win: WindowRef) {
+async function tryProcessWindow(postingId: number, win: WindowRef) {
   const st = useShareStore.getState();
-  const preEngine = { ...st.engine };
+
+  const pid = postingId;
+  if (!pid) return;
+
+  const pctx = st.contexts[pid];
+  if (!pctx?.sessionId || !pctx?.userId) return;
+
+  const preEngine = { ...pctx.engine };
   const preSegmentsSent = preEngine.segmentsSent ?? 0;
   const preLastIdx = preEngine.lastSentDayIndex ?? null;
 
   if (__DEV__) {
     console.log(`${TAG} tryProcessWindow → start`, {
+      postingId: pid,
       dayIndex: win.dayIndex,
       fromUtc: win.fromUtc,
       toUtc: win.toUtc,
-      eng: st.engine,
+      eng: pctx.engine,
     });
   }
 
   const ctx = {
-    sessionId: st.sessionId!,
-    postingId: st.postingId!,
-    userId: st.userId!,
-    metricMap: st.metricMap as Record<MetricCode, number>,
+    sessionId: pctx.sessionId,
+    postingId: pid,
+    userId: pctx.userId,
+    metricMap: (pctx.metricMap ?? st.metricMap) as Record<MetricCode, number>,
   };
 
   try {
-    // ⬇️ NEW: processDueWindow now returns { state, diag }
     const { state: nextState, diag } = await processDueWindow(
       win,
       ctx,
-      st.engine,
+      pctx.engine,
     );
 
     useShareStore.setState((s) => {
@@ -2541,20 +2794,21 @@ async function tryProcessWindow(win: WindowRef) {
         nextState.status === "COMPLETE" ||
         (nextState.lastSentDayIndex != null &&
           nextState.lastSentDayIndex >= win.dayIndex);
-
-      // Refresh session snapshot after processing
-      try {
-        const { userId, postingId } = useShareStore.getState();
-        if (userId && postingId) {
-          void useShareStore.getState().fetchSessionSnapshot(userId, postingId);
-        }
-      } catch (e) {
-        if (__DEV__)
-          console.warn("[ShareStore] post-window snapshot refresh failed", e);
-      }
+      // // Refresh server snapshot for THIS posting/user (async fire-and-forget)
+      // try {
+      //   const st2 = useShareStore.getState();
+      //   const c2 = st2.contexts[pid];
+      //   if (c2?.userId) {
+      //     void st2.fetchSessionSnapshot(c2.userId, pid);
+      //   }
+      // } catch (e) {
+      //   if (__DEV__)
+      //     console.warn("[ShareStore] post-window snapshot refresh failed", e);
+      // }
 
       if (__DEV__) {
         console.log(`${TAG} tryProcessWindow → done`, {
+          postingId: pid,
           dayIndex: win.dayIndex,
           updatedStatus: nextState.status,
           lastSentDayIndex: nextState.lastSentDayIndex,
@@ -2565,138 +2819,131 @@ async function tryProcessWindow(win: WindowRef) {
       }
 
       return {
-        engine: nextState,
-        ...(shouldDrop ? { pendingWindow: undefined } : {}),
-        ...(s.status !== nextState.status ? { status: nextState.status } : {}),
-        ...(diag
-          ? {
-              lastWindowDiag: {
-                dayIndex: win.dayIndex,
-                unavailable: diag.unavailable ?? [],
-                zeroData: diag.zeroData ?? [],
-                hadAnyData: !!diag.hadAnyData,
-              },
-            }
-          : {}),
+        contexts: {
+          ...s.contexts,
+          [pid]: {
+            ...s.contexts[pid],
+
+            // Always commit engine
+            engine: {
+              ...nextState,
+
+              // Defensive: ensure we do not remain "in-flight" after a successful send for this window.
+              // If processDueWindow already clears these, this is harmless.
+              ...(nextState.lastSentDayIndex != null &&
+              nextState.lastSentDayIndex >= win.dayIndex
+                ? {
+                    currentDueDayIndex: null,
+                    nextRetryAtUtc: null,
+                  }
+                : {}),
+            },
+
+            // Clear stashed window if terminal OR if we successfully advanced past this day
+            ...(shouldDrop ? { pendingWindow: undefined } : {}),
+            ...(nextState.lastSentDayIndex != null &&
+            nextState.lastSentDayIndex >= win.dayIndex
+              ? { pendingWindow: undefined }
+              : {}),
+
+            ...(s.contexts[pid].status !== nextState.status
+              ? { status: nextState.status }
+              : {}),
+
+            ...(diag
+              ? {
+                  lastWindowDiag: {
+                    dayIndex: win.dayIndex,
+                    unavailable: diag.unavailable ?? [],
+                    zeroData: diag.zeroData ?? [],
+                    hadAnyData: !!diag.hadAnyData,
+                  },
+                }
+              : {}),
+          },
+        },
       };
     });
 
-    // User notifications (lightweight toasts/alerts only when app is active)
+    // Refresh server snapshot for THIS posting/user (async fire-and-forget)
+    try {
+      const st2 = useShareStore.getState();
+      const c2 = st2.contexts[pid];
+      if (c2?.userId) {
+        void st2.fetchSessionSnapshot(c2.userId, pid);
+      }
+    } catch (e) {
+      if (__DEV__)
+        console.warn("[ShareStore] post-window snapshot refresh failed", e);
+    }
+
+    // --- notifications strictly follow the posting that was processed ---
     const after = useShareStore.getState();
-    const afterEngine = after.engine;
+
+    const ctx2 = after.contexts[pid];
+    if (!ctx2) return;
+
+    const afterEngine = ctx2.engine;
     const postSegmentsSent = afterEngine?.segmentsSent ?? 0;
 
-    const pid = after.postingId;
-    if (pid != null) {
-      // Fire per-day success only if the count increased and the processed day became (or is <=) the last sent
-      if (
-        postSegmentsSent > preSegmentsSent &&
-        (afterEngine?.lastSentDayIndex ?? 0) >= win.dayIndex
-      ) {
-        try {
-          await sendSegmentSuccess(pid, win.dayIndex);
-        } catch {}
-      }
+    if (
+      postSegmentsSent > preSegmentsSent &&
+      (afterEngine?.lastSentDayIndex ?? 0) >= win.dayIndex
+    ) {
+      try {
+        await sendSegmentSuccess(pid, win.dayIndex);
+      } catch {}
+    }
 
-      // Terminal states → one-shot notifications + backend sync
-      if (after.status === "CANCELLED") {
-        const diag = after.lastWindowDiag;
-        const reason =
-          (diag?.unavailable?.length ?? 0) > 0
-            ? "Missing permission for some metrics."
-            : diag?.hadAnyData
-              ? "Sync stopped by system."
-              : "No data found after multiple checks.";
+    if (ctx2.status === "CANCELLED") {
+      const diag2 = after.contexts[pid]?.lastWindowDiag;
 
-        // NEW: attempt to sync auto-cancel to backend so server status matches engine
-        try {
-          let sid = after.sessionId;
+      const reason =
+        (diag2?.unavailable?.length ?? 0) > 0
+          ? "Missing permission for some metrics."
+          : diag2?.hadAnyData
+            ? "Sync stopped by system."
+            : "No data found after multiple checks.";
 
-          // Fallback resolver if sessionId is missing for some reason
-          if (!sid && after.userId && pid != null) {
-            try {
-              const resolved = await getSessionByPosting(pid, after.userId);
-              if (resolved) {
-                sid = resolved.sessionId;
-                if (__DEV__) {
-                  console.log(
-                    `${TAG} tryProcessWindow → auto cancel resolved sid=${sid}`,
-                  );
-                }
-              } else if (__DEV__) {
-                console.warn(
-                  `${TAG} tryProcessWindow → auto cancel resolver returned null`,
-                );
-              }
-            } catch (e: any) {
-              if (__DEV__) {
-                console.warn(
-                  `${TAG} tryProcessWindow → auto cancel resolver error`,
-                  e?.message ?? e,
-                );
-              }
-            }
-          }
+      try {
+        let sid = ctx2.sessionId;
 
-          if (sid) {
-            try {
-              const res = await cancelShareSession(sid);
-              if (!res.ok) {
-                if (__DEV__) {
-                  console.warn(
-                    `${TAG} tryProcessWindow → auto cancel backend error`,
-                    res.error,
-                  );
-                }
-              } else if (__DEV__) {
-                console.log(
-                  `${TAG} tryProcessWindow → auto cancel synced to backend`,
-                  { sessionId: sid, backendStatus: res.status },
-                );
-              }
-            } catch (e: any) {
-              if (__DEV__) {
-                console.warn(
-                  `${TAG} tryProcessWindow → auto cancel backend exception`,
-                  e?.message ?? e,
-                );
-              }
-            }
-          } else if (__DEV__) {
-            console.warn(
-              `${TAG} tryProcessWindow → auto cancel missing sessionId; backend not called`,
-            );
-          }
-        } finally {
-          // Preserve existing behavior: always send the user-visible cancellation notification
+        if (!sid && ctx2.userId != null) {
           try {
-            await sendSessionCancelled(pid, reason);
+            const resolved = await getSessionByPosting(pid, ctx2.userId);
+            if (resolved) sid = resolved.sessionId;
           } catch {}
         }
 
-        return;
-      } else if (after.status === "COMPLETE") {
+        if (sid) {
+          try {
+            const res = await cancelShareSession(sid);
+            if (!res.ok && __DEV__) {
+              console.warn(
+                `${TAG} tryProcessWindow → auto cancel backend error`,
+                res.error,
+              );
+            }
+          } catch {}
+        }
+      } finally {
         try {
-          await sendSessionCompleted(pid);
+          await sendSessionCancelled(pid, reason);
         } catch {}
-        return;
       }
+
+      return;
+    } else if (ctx2.status === "COMPLETE") {
+      try {
+        await sendSessionCompleted(pid);
+      } catch {}
+      return;
     }
 
-    // // Terminal statuses
-    // if (after.status === "CANCELLED") {
-    //   notifyInfo("No data after 3 checks. Sharing was cancelled.");
-    //   return;
-    // } else if (after.status === "COMPLETE") {
-    //   notifyInfo("All segments sent. Sharing complete!");
-    //   return;
-    // }
+    if (after.contexts[pid]?.lastWindowDiag) {
+      const { unavailable, zeroData, hadAnyData } =
+        after.contexts[pid].lastWindowDiag;
 
-    // Non-terminal diagnostic messages
-    if (after.lastWindowDiag) {
-      const { unavailable, zeroData, hadAnyData } = after.lastWindowDiag;
-
-      // Permission/unavailable warning
       if (unavailable.length > 0) {
         const list = unavailable.map(labelOfMetric).join(", ");
         notifyInfo(
@@ -2704,10 +2951,8 @@ async function tryProcessWindow(win: WindowRef) {
         );
       }
 
-      // Explicit “no data in window” message for specific metrics
       if (zeroData.length > 0) {
         const list = zeroData.map(labelOfMetric).join(", ");
-        // If at least one metric had data, call it a partial sync; otherwise a no-data-yet info.
         if (hadAnyData) {
           notifyInfo(`Synced. No data in this window for: ${list}`);
         } else {
