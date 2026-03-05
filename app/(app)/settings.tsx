@@ -8,6 +8,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import React from "react";
 import {
   ActivityIndicator,
+  Linking,
   Platform,
   Pressable,
   Text,
@@ -21,6 +22,11 @@ export default function SettingsScreen() {
   const { signOut } = useAuth();
   const { user, isLoaded } = useUser();
 
+  const FEEDBACK_FORM_URL = "https://forms.gle/BeE8oLpKHrQB8N2s6";
+
+  const onSendFeedback = () => {
+    Linking.openURL(FEEDBACK_FORM_URL).catch(() => {});
+  };
 
   // const onLogout = async () => {
   //   try {
@@ -43,8 +49,7 @@ export default function SettingsScreen() {
   //   }
   // };
 
-
-    const onLogout = async () => {
+  const onLogout = async () => {
     if (__DEV__) {
       console.log("[Settings] onLogout → begin");
     }
@@ -99,16 +104,11 @@ export default function SettingsScreen() {
           }
           resetForLogout();
         } else if (__DEV__) {
-          console.log(
-            "[Settings] onLogout → no resetForLogout on share store",
-          );
+          console.log("[Settings] onLogout → no resetForLogout on share store");
         }
       } catch (e) {
         if (__DEV__) {
-          console.warn(
-            "[Settings] onLogout → resetForLogout error",
-            e,
-          );
+          console.warn("[Settings] onLogout → resetForLogout error", e);
         }
       }
 
@@ -136,6 +136,30 @@ export default function SettingsScreen() {
             value={appearanceOverride as "system" | "light" | "dark"}
             onChange={(v) => setAppearanceOverride(v)}
           />
+        </Section>
+
+        <Section title="Support">
+          <View style={{ paddingHorizontal: 12, paddingBottom: 4 }}>
+            <Text
+              style={{
+                color: c.text.secondary,
+                fontSize: 13,
+                lineHeight: 18,
+              }}
+            >
+              You can share suggestions, report issues, or provide feedback
+              about your experience using the Web3Health app. Your input helps
+              us improve the platform.
+            </Text>
+          </View>
+
+          <View style={{ paddingHorizontal: 8, gap: 8 }}>
+            <SettingRow
+              icon="chatbox-ellipses-outline"
+              label="Send feedback"
+              onPress={onSendFeedback}
+            />
+          </View>
         </Section>
 
         <Section title="Account">
