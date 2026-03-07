@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "808380718771",
+    "project_id": "android-expo-notifications",
+    "storage_bucket": "android-expo-notifications.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:808380718771:android:95060115b5c2f1b1df9ac6",
+        "android_client_info": {
+          "package_name": "com.mohitnaik21.Web3Health"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD_B3XXkpUxmaWRgL7H2QhsDthroNb6VD4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
