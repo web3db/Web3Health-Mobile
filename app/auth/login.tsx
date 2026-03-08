@@ -26,6 +26,17 @@ export default function LoginScreen() {
   const router = useRouter();
   const passwordRef = useRef<TextInput | null>(null);
   const confirmPasswordRef = useRef<TextInput | null>(null);
+  const scrollViewRef = useRef<ScrollView | null>(null);
+
+  const scrollToInput = useCallback((extraOffset = 0) => {
+    if (Platform.OS !== "android") return;
+    setTimeout(() => {
+      scrollViewRef.current?.scrollTo({
+        y: extraOffset,
+        animated: true,
+      });
+    }, 100);
+  }, []);
   const logoSource =
     c.bg === "#0B0B0B"
       ? require("../../assets/images/Web3Health-dark.png")
@@ -739,10 +750,11 @@ export default function LoginScreen() {
     <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={Platform.OS === "ios" ? 16 : 0}
       >
         <ScrollView
+          ref={scrollViewRef}
           contentContainerStyle={{
             flexGrow: 1,
             paddingHorizontal: 20,
@@ -882,6 +894,7 @@ export default function LoginScreen() {
                       }
                     }}
                     editable={!(submitting || isEmailLocked)}
+                    onFocus={() => scrollToInput(0)}
                     style={{
                       flex: 1,
                       color: isEmailLocked ? c.text.secondary : c.text.primary,
@@ -924,6 +937,7 @@ export default function LoginScreen() {
                           placeholderTextColor={c.text.muted}
                           secureTextEntry={!showPassword}
                           textContentType="password"
+                          onFocus={() => scrollToInput(200)}
                           returnKeyType={
                             mode === "signUp" && !pendingVerification
                               ? "next"
@@ -996,6 +1010,7 @@ export default function LoginScreen() {
                               secureTextEntry={!showConfirmPassword}
                               textContentType="password"
                               returnKeyType="done"
+                              onFocus={() => scrollToInput(220)}
                               editable={!(submitting || postAuthPending)}
                               style={{
                                 flex: 1,
@@ -1196,6 +1211,7 @@ export default function LoginScreen() {
                         placeholderTextColor={c.text.muted}
                         keyboardType="number-pad"
                         autoCapitalize="none"
+                        onFocus={() => scrollToInput(120)}
                         editable={!(submitting || postAuthPending)}
                         style={{
                           flex: 1,
@@ -1384,6 +1400,7 @@ export default function LoginScreen() {
                         placeholderTextColor={c.text.muted}
                         keyboardType="number-pad"
                         autoCapitalize="none"
+                        onFocus={() => scrollToInput(120)}
                         editable={!(submitting || postAuthPending)}
                         style={{
                           flex: 1,
@@ -1420,6 +1437,7 @@ export default function LoginScreen() {
                         placeholder="New password"
                         placeholderTextColor={c.text.muted}
                         secureTextEntry={!showNewPassword}
+                        onFocus={() => scrollToInput(220)}
                         editable={!(submitting || postAuthPending)}
                         style={{
                           flex: 1,
@@ -1479,6 +1497,7 @@ export default function LoginScreen() {
                         placeholder="Confirm new password"
                         placeholderTextColor={c.text.muted}
                         secureTextEntry={!showConfirmNewPassword}
+                        onFocus={() => scrollToInput(320)}
                         editable={!(submitting || postAuthPending)}
                         style={{
                           flex: 1,
@@ -1755,6 +1774,7 @@ export default function LoginScreen() {
                       placeholderTextColor={c.text.muted}
                       keyboardType="number-pad"
                       autoCapitalize="none"
+                      onFocus={() => scrollToInput(120)}
                       editable={!(submitting || postAuthPending)}
                       style={{
                         flex: 1,

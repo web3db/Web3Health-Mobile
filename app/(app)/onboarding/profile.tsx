@@ -1,23 +1,31 @@
 // app/(app)/onboarding/profile.tsx
 import { useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Pressable,
-    ScrollView,
-    Text,
-    View,
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import CompleteProfileForm from "@/src/components/composite/profile/CompleteProfileForm";
 import { useCurrentUserId } from "@/src/hooks/useCurrentUserId";
 import {
-    getUserProfileStatus,
-    patchUser,
-    ProfileEdit,
-    ProfileEditSchema,
+  getUserProfileStatus,
+  patchUser,
+  ProfileEdit,
+  ProfileEditSchema,
 } from "@/src/services/profile/api";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 
@@ -27,27 +35,6 @@ type StatusState =
   | { kind: "done" }
   | { kind: "error"; message: string };
 
-const PROFILE_FIELD_LABELS: Record<string, string> = {
-  BirthYear: "Birth year",
-  RaceId: "Race",
-  SexId: "Sex",
-  HeightNum: "Height",
-  HeightUnitId: "Height unit",
-  WeightNum: "Weight",
-  WeightUnitId: "Weight unit",
-  MeasurementSystemId: "Measurement system",
-};
-
-function humanizeMissingFields(raw: string[]) {
-  const mapped = raw
-    .map((k) => PROFILE_FIELD_LABELS[k] ?? null)
-    .filter((x): x is string => !!x);
-
-  // If backend returns unexpected keys, don't show them.
-  // (We can’t reliably label unknown keys without backend documentation.)
-  return Array.from(new Set(mapped));
-}
-
 export default function OnboardingProfileScreen() {
   const c = useThemeColors();
   const router = useRouter();
@@ -56,8 +43,18 @@ export default function OnboardingProfileScreen() {
   const [status, setStatus] = useState<StatusState>({ kind: "loading" });
   const [saving, setSaving] = useState(false);
 
-  // If you want to show backend-missing fields as hints in UI later
-  const [missingFields, setMissingFields] = useState<string[]>([]);
+  const scrollViewRef = useRef<ScrollView | null>(null);
+
+  const scrollToInput = useCallback((extraOffset = 0) => {
+    if (Platform.OS !== "android") return;
+
+    setTimeout(() => {
+      scrollViewRef.current?.scrollTo({
+        y: extraOffset,
+        animated: true,
+      });
+    }, 100);
+  }, []);
 
   const canLoad = typeof userId === "number";
 
@@ -69,17 +66,12 @@ export default function OnboardingProfileScreen() {
       const s = await getUserProfileStatus(userId);
 
       if (s.needsProfile) {
-        setMissingFields(s.missingProfileFields ?? []);
-
         setStatus({ kind: "needsProfile" });
         return;
       }
 
-      setMissingFields([]);
       setStatus({ kind: "done" });
 
-      // ✅ Route away if profile is already complete.
-      // Adjust route if you want to go somewhere else.
       router.replace("/(app)/(tabs)");
     } catch (e: any) {
       setStatus({
@@ -103,7 +95,6 @@ export default function OnboardingProfileScreen() {
 
       setSaving(true);
       try {
-        // Map from UI draft shape → PATCH shape (PascalCase + HealthConditions)
         const payload: any = { userId };
 
         if (typeof values.Name === "string") payload.Name = values.Name.trim();
@@ -130,15 +121,12 @@ export default function OnboardingProfileScreen() {
 
         if (values.RoleId !== undefined) payload.RoleId = values.RoleId ?? null;
 
-        // ✅ Health conditions: if empty, you said it can be empty (so send []).
-        // If you ever want “no change” semantics, then omit when undefined.
         if (Array.isArray(values.selectedHealthConditionIds)) {
           payload.HealthConditions = values.selectedHealthConditionIds;
         }
 
         await patchUser(payload);
 
-        // After save, re-check status and route away if now complete
         await loadStatus();
       } catch (e: any) {
         Alert.alert(
@@ -204,32 +192,52 @@ export default function OnboardingProfileScreen() {
 
     if (status.kind === "needsProfile") {
       return (
-        <ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
-          <Text
-            style={{ color: c.text.primary, fontSize: 22, fontWeight: "700" }}
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 16 : 0}
+        >
+          <ScrollView
+            ref={scrollViewRef}
+            contentContainerStyle={{
+              flexGrow: 1,
+              padding: 16,
+              gap: 12,
+              paddingBottom: 180,
+            }}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === "ios" ? "on-drag" : "none"}
+            automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
           >
-            Complete your profile
-          </Text>
-          <CompleteProfileForm onSubmit={onSubmit} disabled={saving} />
+            <Text
+              style={{ color: c.text.primary, fontSize: 22, fontWeight: "700" }}
+              onLayout={() => {
+                scrollToInput(0);
+              }}
+            >
+              Complete your profile
+            </Text>
 
-          {saving && (
-            <Text style={{ color: c.muted, marginTop: 8 }}>Saving…</Text>
-          )}
-        </ScrollView>
+            <CompleteProfileForm onSubmit={onSubmit} disabled={saving} />
+
+            {saving && (
+              <Text style={{ color: c.muted, marginTop: 8 }}>Saving…</Text>
+            )}
+          </ScrollView>
+        </KeyboardAvoidingView>
       );
     }
 
-    // status.kind === "done" case is handled by router.replace in loadStatus()
     return null;
   }, [
     canLoad,
     c.muted,
     c.text,
     loadStatus,
-    missingFields,
     onSubmit,
     saving,
     status,
+    scrollToInput,
   ]);
 
   return (
