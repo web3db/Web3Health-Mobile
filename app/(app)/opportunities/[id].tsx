@@ -14,7 +14,7 @@ import { useMarketStore as useMarketplaceStore } from "@/src/store/useMarketStor
 import { formatTimeLeftLabel, useShareStore } from "@/src/store/useShareStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import { useFocusEffect } from "@react-navigation/native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import React, {
   useCallback,
   useEffect,
@@ -22,7 +22,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Alert, Linking, Platform, ScrollView, Text, View } from "react-native";
+import { Alert, Linking, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import {
@@ -382,6 +382,22 @@ export default function OpportunityDetails() {
     [getByIdSafe, id],
   );
   const [item, setItem] = useState(cached);
+
+  const handleBackNavigation = useCallback(() => {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+    router.replace("/(app)/opportunities");
+  }, [router]);
+
+  const headerTitle = useMemo(() => {
+    const title = item?.title;
+    if (typeof title === "string" && title.trim().length > 0) {
+      return title.trim();
+    }
+    return "Opportunity";
+  }, [item]);
 
   const postingId = useMemo(() => {
     if (!item) return 0;
@@ -1224,124 +1240,67 @@ export default function OpportunityDetails() {
 
   if (!item) {
     return (
-      <SafeAreaView
-        style={{ flex: 1, backgroundColor: c.bg }}
-        edges={["top", "left", "right", "bottom"]}
-      >
-        <ScrollView
-          style={{ backgroundColor: c.bg }}
-          contentContainerStyle={{ padding: 16, paddingBottom: 32 }}
-          keyboardShouldPersistTaps="handled"
+      <>
+        <Stack.Screen options={{ title: "Opportunity" }} />
+        <SafeAreaView
+          style={{ flex: 1, backgroundColor: c.bg }}
+          edges={["bottom"]}
         >
-          <Text
-            style={{ color: c.text.primary, fontSize: 20, fontWeight: "800" }}
+          <ScrollView
+            style={{ backgroundColor: c.bg }}
+            contentContainerStyle={{ padding: 16, paddingBottom: 32 }}
+            keyboardShouldPersistTaps="handled"
           >
-            {loading ? "Loading…" : "Opportunity not found"}
-          </Text>
-          {!loading && (
-            <>
-              <Text style={{ color: c.text.secondary, marginTop: 8 }}>
-                The opportunity you’re looking for isn’t available.
-              </Text>
-              <View style={{ marginTop: 16 }}>
-                <Button
-                  title="Back"
-                  onPress={() => router.back()}
-                  variant="secondary"
-                />
-              </View>
-            </>
-          )}
-        </ScrollView>
-      </SafeAreaView>
+            <Text
+              style={{ color: c.text.primary, fontSize: 20, fontWeight: "800" }}
+            >
+              {loading ? "Loading…" : "Opportunity not found"}
+            </Text>
+            {!loading && (
+              <>
+                <Text style={{ color: c.text.secondary, marginTop: 8 }}>
+                  The opportunity you’re looking for isn’t available.
+                </Text>
+                <View style={{ marginTop: 16 }}>
+                  <Button
+                    title="Back"
+                    onPress={handleBackNavigation}
+                    variant="secondary"
+                  />
+                </View>
+              </>
+            )}
+          </ScrollView>
+        </SafeAreaView>
+      </>
     );
   }
 
   return (
-    <SafeAreaView
-      style={{ flex: 1, backgroundColor: c.bg }}
-      edges={["top", "left", "right", "bottom"]}
-    >
-      <ScrollView
-        style={{ backgroundColor: c.bg }}
-        contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 12 }}
-        keyboardShouldPersistTaps="handled"
+    <>
+      <Stack.Screen options={{ title: headerTitle }} />
+      <SafeAreaView
+        style={{ flex: 1, backgroundColor: c.bg }}
+        edges={["bottom"]}
       >
-        {/* Title + Sponsor */}
-        <View style={{ gap: 6 }}>
-          <Text
-            style={{ color: c.text.primary, fontSize: 22, fontWeight: "800" }}
-          >
-            {item.title}
-          </Text>
-          {item.sponsor ? (
-            <Text style={{ color: c.text.secondary }}>{item.sponsor}</Text>
-          ) : null}
-        </View>
-
-        {/* Quick facts */}
-        <View
-          style={{
-            backgroundColor: c.surface,
-            borderColor: c.border,
-            borderWidth: 1,
-            borderRadius: 12,
-            padding: 12,
-            gap: 8,
-          }}
+        <ScrollView
+          style={{ backgroundColor: c.bg }}
+          contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 12 }}
+          keyboardShouldPersistTaps="handled"
         >
-          <SectionHeader
-            title="At a glance"
-            subtitle="Key information for a quick review."
-          />
-
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-            {typeof item.reward?.credits === "number" ? (
-              <Chip label={`Reward total: +${item.reward.credits}`} />
-            ) : null}
-            {item.createdAt ? (
-              <Chip
-                label={`Posted: ${new Date(item.createdAt).toLocaleDateString()}`}
-              />
-            ) : null}
-            {item.applyOpenAt && item.applyCloseAt ? (
-              <Chip
-                label={`Apply window: ${new Date(item.applyOpenAt).toLocaleDateString()} → ${new Date(
-                  item.applyCloseAt,
-                ).toLocaleDateString()}`}
-              />
-            ) : null}
-            {typeof item.daysRemaining === "number" ? (
-              <Chip label={`Days left to apply: ${item.daysRemaining}`} />
-            ) : null}
-            {typeof item.dataCoverageDaysRequired === "number" ? (
-              <Chip
-                label={`Sharing duration: ${item.dataCoverageDaysRequired} days`}
-              />
-            ) : null}
-            {(item as any).postingStatusCode ? (
-              <Chip
-                label={`Study status: ${(item as any).postingStatusCode}`}
-              />
-            ) : null}
-            {item.reward?.typeName ? (
-              <Chip label={item.reward.typeName} />
-            ) : null}
-            {apiStatusUpper === "ACTIVE" ? (
-              <Chip label="Sharing status: Active" />
-            ) : null}
-            {apiStatusUpper === "COMPLETED" ? (
-              <Chip label="Sharing status: Completed" />
-            ) : null}
-            {apiStatusUpper === "CANCELLED" ? (
-              <Chip label="Sharing status: Cancelled" />
+          {/* Title + Sponsor */}
+          <View style={{ gap: 6 }}>
+            <Text
+              style={{ color: c.text.primary, fontSize: 22, fontWeight: "800" }}
+            >
+              {item.title}
+            </Text>
+            {item.sponsor ? (
+              <Text style={{ color: c.text.secondary }}>{item.sponsor}</Text>
             ) : null}
           </View>
-        </View>
 
-        {/* Overview */}
-        {hasText(item.description) && (
-          // === [SECTION_ABOUT]
+          {/* Quick facts */}
           <View
             style={{
               backgroundColor: c.surface,
@@ -1353,52 +1312,57 @@ export default function OpportunityDetails() {
             }}
           >
             <SectionHeader
-              title="About this opportunity"
-              subtitle="Purpose and overview provided by the organizer."
+              title="At a glance"
+              subtitle="Key information for a quick review."
             />
-            <Text style={{ color: c.text.secondary }}>{item.description}</Text>
+
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+              {typeof item.reward?.credits === "number" ? (
+                <Chip label={`Reward total: +${item.reward.credits}`} />
+              ) : null}
+              {item.createdAt ? (
+                <Chip
+                  label={`Posted: ${new Date(item.createdAt).toLocaleDateString()}`}
+                />
+              ) : null}
+              {item.applyOpenAt && item.applyCloseAt ? (
+                <Chip
+                  label={`Apply window: ${new Date(item.applyOpenAt).toLocaleDateString()} → ${new Date(
+                    item.applyCloseAt,
+                  ).toLocaleDateString()}`}
+                />
+              ) : null}
+              {typeof item.daysRemaining === "number" ? (
+                <Chip label={`Days left to apply: ${item.daysRemaining}`} />
+              ) : null}
+              {typeof item.dataCoverageDaysRequired === "number" ? (
+                <Chip
+                  label={`Sharing duration: ${item.dataCoverageDaysRequired} days`}
+                />
+              ) : null}
+              {(item as any).postingStatusCode ? (
+                <Chip
+                  label={`Study status: ${(item as any).postingStatusCode}`}
+                />
+              ) : null}
+              {item.reward?.typeName ? (
+                <Chip label={item.reward.typeName} />
+              ) : null}
+              {apiStatusUpper === "ACTIVE" ? (
+                <Chip label="Sharing status: Active" />
+              ) : null}
+              {apiStatusUpper === "COMPLETED" ? (
+                <Chip label="Sharing status: Completed" />
+              ) : null}
+              {apiStatusUpper === "CANCELLED" ? (
+                <Chip label="Sharing status: Cancelled" />
+              ) : null}
+            </View>
           </View>
-        )}
 
-        {/* Requested Data */}
-        {(() => {
-          const metricsArr: AnyMetricRow[] = Array.isArray(item?.metrics)
-            ? (item.metrics as AnyMetricRow[])
-            : [];
-
-          const metricIdsArr: number[] = Array.isArray(item?.metricIds)
-            ? (item.metricIds as number[])
-            : metricsArr
-                .map((m) => Number(m.metricId ?? m.id))
-                .filter((n) => Number.isFinite(n));
-
-          if (__DEV__) {
-            console.log("[OppDetails][UI] metricsArr=", metricsArr);
-            console.log("[OppDetails][UI] metricIdsArr=", metricIdsArr);
-          }
-
-          if (metricsArr.length === 0 && metricIdsArr.length === 0) return null;
-
-          const deduped: Array<{ id: number; label: string; idx: number }> = [];
-          const seen = new Set<string>();
-          metricsArr.forEach((m, idx) => {
-            const id = (m.id ?? m.metricId ?? idx) as number;
-            const label = String(
-              m.displayName ??
-                m.name ??
-                m.code ??
-                m.id ??
-                m.metricId ??
-                "metric",
-            ); // ← force to string
-            const sig = `${id}|${label}`;
-            if (!seen.has(sig)) {
-              seen.add(sig);
-              deduped.push({ id, label, idx });
-            }
-          });
-
-          return (
+          {/* Overview */}
+          {hasText(item.description) && (
+            // === [SECTION_ABOUT]
             <View
               style={{
                 backgroundColor: c.surface,
@@ -1410,68 +1374,247 @@ export default function OpportunityDetails() {
               }}
             >
               <SectionHeader
-                title="Data requested for sharing"
-                subtitle="Health metrics the organizer asks you to share."
+                title="About this opportunity"
+                subtitle="Purpose and overview provided by the organizer."
               />
+              <Text style={{ color: c.text.secondary }}>
+                {item.description}
+              </Text>
+            </View>
+          )}
 
-              {deduped.length > 0 ? (
+          {/* Requested Data */}
+          {(() => {
+            const metricsArr: AnyMetricRow[] = Array.isArray(item?.metrics)
+              ? (item.metrics as AnyMetricRow[])
+              : [];
+
+            const metricIdsArr: number[] = Array.isArray(item?.metricIds)
+              ? (item.metricIds as number[])
+              : metricsArr
+                  .map((m) => Number(m.metricId ?? m.id))
+                  .filter((n) => Number.isFinite(n));
+
+            if (__DEV__) {
+              console.log("[OppDetails][UI] metricsArr=", metricsArr);
+              console.log("[OppDetails][UI] metricIdsArr=", metricIdsArr);
+            }
+
+            if (metricsArr.length === 0 && metricIdsArr.length === 0)
+              return null;
+
+            const deduped: Array<{ id: number; label: string; idx: number }> =
+              [];
+            const seen = new Set<string>();
+            metricsArr.forEach((m, idx) => {
+              const id = (m.id ?? m.metricId ?? idx) as number;
+              const label = String(
+                m.displayName ??
+                  m.name ??
+                  m.code ??
+                  m.id ??
+                  m.metricId ??
+                  "metric",
+              ); // ← force to string
+              const sig = `${id}|${label}`;
+              if (!seen.has(sig)) {
+                seen.add(sig);
+                deduped.push({ id, label, idx });
+              }
+            });
+
+            return (
+              <View
+                style={{
+                  backgroundColor: c.surface,
+                  borderColor: c.border,
+                  borderWidth: 1,
+                  borderRadius: 12,
+                  padding: 12,
+                  gap: 8,
+                }}
+              >
+                <SectionHeader
+                  title="Data requested for sharing"
+                  subtitle="Health metrics the organizer asks you to share."
+                />
+
+                {deduped.length > 0 ? (
+                  <View
+                    style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}
+                  >
+                    {deduped.map(({ id, label, idx }) => (
+                      <Chip key={`met-${id}-${idx}`} label={label} />
+                    ))}
+                  </View>
+                ) : (
+                  <Text style={{ color: c.text.secondary }}>
+                    Metrics:{" "}
+                    {metricIdsArr.length ? metricIdsArr.join(", ") : "—"}
+                  </Text>
+                )}
+              </View>
+            );
+          })()}
+
+          {/* Eligibility */}
+          {(item.minAge != null ||
+            item.maxAge != null ||
+            hasAny(item.healthConditions) ||
+            hasAny(item.healthConditionIds)) && (
+            <View
+              style={{
+                backgroundColor: c.surface,
+                borderColor: c.border,
+                borderWidth: 1,
+                borderRadius: 12,
+                padding: 12,
+                gap: 8,
+              }}
+            >
+              <SectionHeader
+                title="Who can participate"
+                subtitle="Participation criteria such as age range and health conditions."
+              />
+              {formatAgeRange(item.minAge, item.maxAge) ? (
+                <Text style={{ color: c.text.secondary }}>
+                  Age range: {formatAgeRange(item.minAge, item.maxAge)}
+                </Text>
+              ) : null}
+
+              {hasAny(item.healthConditions) ? (
                 <View
                   style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}
                 >
-                  {deduped.map(({ id, label, idx }) => (
-                    <Chip key={`met-${id}-${idx}`} label={label} />
+                  {item.healthConditions!.map((h) => (
+                    <Chip key={`hc-${h.id}`} label={h.name} />
                   ))}
                 </View>
-              ) : (
+              ) : hasAny(item.healthConditionIds) ? (
                 <Text style={{ color: c.text.secondary }}>
-                  Metrics: {metricIdsArr.length ? metricIdsArr.join(", ") : "—"}
+                  Health conditions: {item.healthConditionIds!.join(", ")}
                 </Text>
-              )}
+              ) : null}
             </View>
-          );
-        })()}
+          )}
 
-        {/* Eligibility */}
-        {(item.minAge != null ||
-          item.maxAge != null ||
-          hasAny(item.healthConditions) ||
-          hasAny(item.healthConditionIds)) && (
-          <View
-            style={{
-              backgroundColor: c.surface,
-              borderColor: c.border,
-              borderWidth: 1,
-              borderRadius: 12,
-              padding: 12,
-              gap: 8,
-            }}
-          >
-            <SectionHeader
-              title="Who can participate"
-              subtitle="Participation criteria such as age range and health conditions."
-            />
-            {formatAgeRange(item.minAge, item.maxAge) ? (
-              <Text style={{ color: c.text.secondary }}>
-                Age range: {formatAgeRange(item.minAge, item.maxAge)}
-              </Text>
-            ) : null}
+          {/* Policies */}
+          {(hasAny(item.viewPolicies) || hasAny(item.viewPolicyIds)) && (
+            <View
+              style={{
+                backgroundColor: c.surface,
+                borderColor: c.border,
+                borderWidth: 1,
+                borderRadius: 12,
+                padding: 12,
+                gap: 8,
+              }}
+            >
+              <SectionHeader
+                title="Data use and privacy"
+                subtitle="Organizer-provided policies describing what is collected, why, how it is stored, and who may access it."
+              />
+              {hasAny(item.viewPolicies) ? (
+                <View
+                  style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}
+                >
+                  {item.viewPolicies!.map((p, idx) => {
+                    const key = `vp-${(p as any).id ?? (p as any).viewPolicyId ?? idx}`;
+                    const label = String(
+                      (p as any).name ??
+                        (p as any).displayName ??
+                        (p as any).id ??
+                        (p as any).viewPolicyId ??
+                        "Policy",
+                    );
+                    return <Chip key={key} label={label} />;
+                  })}
+                </View>
+              ) : hasAny(item.viewPolicyIds) ? (
+                <Text style={{ color: c.text.secondary }}>
+                  Policy IDs: {item.viewPolicyIds!.join(", ")}
+                </Text>
+              ) : null}
+            </View>
+          )}
 
-            {hasAny(item.healthConditions) ? (
+          {/* Tags */}
+          {hasAny(item.tags) && (
+            <View
+              style={{
+                backgroundColor: c.surface,
+                borderColor: c.border,
+                borderWidth: 1,
+                borderRadius: 12,
+                padding: 12,
+                gap: 8,
+              }}
+            >
+              <SectionHeader
+                title="Labels"
+                subtitle="Labels that describe this study."
+              />
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-                {item.healthConditions!.map((h) => (
-                  <Chip key={`hc-${h.id}`} label={h.name} />
+                {item.tags!.map((t) => (
+                  <Chip key={t} label={`#${t}`} />
                 ))}
               </View>
-            ) : hasAny(item.healthConditionIds) ? (
-              <Text style={{ color: c.text.secondary }}>
-                Health conditions: {item.healthConditionIds!.join(", ")}
-              </Text>
-            ) : null}
-          </View>
-        )}
+            </View>
+          )}
 
-        {/* Policies */}
-        {(hasAny(item.viewPolicies) || hasAny(item.viewPolicyIds)) && (
+          {/* Links (optional) */}
+          {(item.privacyUrl || item.termsUrl) && (
+            <View
+              style={{
+                backgroundColor: c.surface,
+                borderColor: c.border,
+                borderWidth: 1,
+                borderRadius: 12,
+                padding: 12,
+                gap: 8,
+              }}
+            >
+              <SectionHeader
+                title="Official documents"
+                subtitle="Links provided by the organizer (e.g., Privacy Policy, Terms & Conditions)."
+              />
+              {item.privacyUrl ? (
+                <Text
+                  style={{ color: c.primary }}
+                  onPress={() => Linking.openURL(item.privacyUrl!)}
+                >
+                  Privacy Policy
+                </Text>
+              ) : null}
+              {item.termsUrl ? (
+                <Text
+                  style={{ color: c.primary }}
+                  onPress={() => Linking.openURL(item.termsUrl!)}
+                >
+                  Terms & Conditions
+                </Text>
+              ) : null}
+            </View>
+          )}
+
+          {userId == null && (
+            <View
+              style={{
+                backgroundColor: c.surface,
+                borderColor: c.border,
+                borderWidth: 1,
+                borderRadius: 12,
+                padding: 12,
+              }}
+            >
+              <SectionHeader
+                title="Sign in required"
+                subtitle="Sign in to check your session and apply."
+              />
+            </View>
+          )}
+
+          {/* Apply disclosure + primary CTA */}
           <View
             style={{
               backgroundColor: c.surface,
@@ -1479,221 +1622,111 @@ export default function OpportunityDetails() {
               borderWidth: 1,
               borderRadius: 12,
               padding: 12,
-              gap: 8,
+              gap: 12,
+              marginTop: 4,
             }}
           >
             <SectionHeader
-              title="Data use and privacy"
-              subtitle="Organizer-provided policies describing what is collected, why, how it is stored, and who may access it."
+              title="Ready to apply?"
+              subtitle="Review the disclosure below, then continue with your application."
             />
-            {hasAny(item.viewPolicies) ? (
-              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-                {item.viewPolicies!.map((p, idx) => {
-                  const key = `vp-${(p as any).id ?? (p as any).viewPolicyId ?? idx}`;
-                  const label = String(
-                    (p as any).name ??
-                      (p as any).displayName ??
-                      (p as any).id ??
-                      (p as any).viewPolicyId ??
-                      "Policy",
-                  );
-                  return <Chip key={key} label={label} />;
-                })}
-              </View>
-            ) : hasAny(item.viewPolicyIds) ? (
-              <Text style={{ color: c.text.secondary }}>
-                Policy IDs: {item.viewPolicyIds!.join(", ")}
-              </Text>
-            ) : null}
-          </View>
-        )}
 
-        {/* Tags */}
-        {hasAny(item.tags) && (
-          <View
-            style={{
-              backgroundColor: c.surface,
-              borderColor: c.border,
-              borderWidth: 1,
-              borderRadius: 12,
-              padding: 12,
-              gap: 8,
-            }}
-          >
-            <SectionHeader
-              title="Labels"
-              subtitle="Labels that describe this study."
-            />
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-              {item.tags!.map((t) => (
-                <Chip key={t} label={`#${t}`} />
-              ))}
+            <Text style={{ color: c.text.secondary, lineHeight: 18 }}>
+              {applyDisclosureLine}
+            </Text>
+
+            <View style={{ marginTop: 4, alignSelf: "stretch", width: "100%" }}>
+              <Button
+                title={applyTitle}
+                onPress={handleApply}
+                disabled={applyDisabled}
+              />
             </View>
           </View>
-        )}
 
-        {/* Links (optional) */}
-        {(item.privacyUrl || item.termsUrl) && (
-          <View
-            style={{
-              backgroundColor: c.surface,
-              borderColor: c.border,
-              borderWidth: 1,
-              borderRadius: 12,
-              padding: 12,
-              gap: 8,
-            }}
-          >
-            <SectionHeader
-              title="Official documents"
-              subtitle="Links provided by the organizer (e.g., Privacy Policy, Terms & Conditions)."
-            />
-            {item.privacyUrl ? (
-              <Text
-                style={{ color: c.primary }}
-                onPress={() => Linking.openURL(item.privacyUrl!)}
-              >
-                Privacy Policy
-              </Text>
-            ) : null}
-            {item.termsUrl ? (
-              <Text
-                style={{ color: c.primary }}
-                onPress={() => Linking.openURL(item.termsUrl!)}
-              >
-                Terms & Conditions
-              </Text>
-            ) : null}
-          </View>
-        )}
+          {/* Sharing status (server snapshot) */}
+          {userId != null && (
+            <View
+              style={{
+                backgroundColor: c.surface,
+                borderColor: c.border,
+                borderWidth: 1,
+                borderRadius: 12,
+                padding: 12,
+                gap: 6,
+              }}
+            >
+              <SectionHeader
+                title="Your sharing status"
+                subtitle="Progress, last share, and your next sharing window. Times shown in your local time."
+              />
+              {(() => {
+                const s = snapshot;
+                if (!s) {
+                  return (
+                    <Text style={{ color: c.text.secondary }}>
+                      Not sharing yet for this opportunity.
+                    </Text>
+                  );
+                }
 
-        {userId == null && (
-          <View
-            style={{
-              backgroundColor: c.surface,
-              borderColor: c.border,
-              borderWidth: 1,
-              borderRadius: 12,
-              padding: 12,
-            }}
-          >
-            <SectionHeader
-              title="Sign in required"
-              subtitle="Sign in to check your session and apply."
-            />
-          </View>
-        )}
+                const snapshotCompleted = s.segmentsSent >= s.segmentsExpected;
 
-        {/* Apply disclosure (always visible before Apply) */}
-        <Text style={{ color: c.text.secondary, marginTop: 4, lineHeight: 18 }}>
-          {applyDisclosureLine}
-        </Text>
+                const nd = snapshotCompleted ? null : (s.nextDue ?? null);
 
-        {/* CTAs */}
-        <View
-          style={{
-            flexDirection: "row",
-            columnGap: 12,
-            rowGap: 12,
-            flexWrap: "wrap",
-            marginTop: 4,
-          }}
-        >
-          <Button
-            title={applyTitle}
-            onPress={handleApply}
-            disabled={applyDisabled}
-          />
-          <Button
-            title={Platform.OS === "ios" ? "Back" : "Back"}
-            onPress={() => router.back()}
-            variant="ghost"
-          />
-        </View>
+                if (__DEV__) {
+                  console.log("[OppDetails] snapshot.nextDue =", nd);
+                }
 
-        {/* Sharing status (server snapshot) */}
-        {userId != null && (
-          <View
-            style={{
-              backgroundColor: c.surface,
-              borderColor: c.border,
-              borderWidth: 1,
-              borderRadius: 12,
-              padding: 12,
-              gap: 6,
-            }}
-          >
-            <SectionHeader
-              title="Your sharing status"
-              subtitle="Progress, last share, and your next sharing window. Times shown in your local time."
-            />
-            {(() => {
-              const s = snapshot;
-              if (!s) {
+                const snapStatusUpper = String(
+                  s.statusName ?? s.statusCode ?? "",
+                ).toUpperCase();
+
+                const isEligible = !!nd?.isEligible;
+                const eligibleAtUtc = nd?.eligibleAtUtc ?? null;
+
+                const eligibilityLabel = snapshotCompleted
+                  ? "—"
+                  : isEligible
+                    ? "Ready to sync"
+                    : eligibleAtUtc
+                      ? `eligible ${formatTimeLeftLabel(eligibleAtUtc, nowTick)}`
+                      : "—";
+
+                // Server-truth backlog detection: backlog exists only if server provides an overdue missing window.
+                const backlogExists = !!s.catchUp?.next;
+
+                const catchUpEligibleNow = !!s.catchUp?.next?.isEligible;
+                const nextDueEligibleNow = !!nd?.isEligible;
+
+                const showCatchUp =
+                  snapStatusUpper === "ACTIVE" &&
+                  !!s.catchUp?.next &&
+                  engine?.mode !== "SIM" &&
+                  !isProcessing;
+
+                const showSyncNow =
+                  snapStatusUpper === "ACTIVE" &&
+                  !s.catchUp?.next &&
+                  nextDueEligibleNow &&
+                  engine?.mode !== "SIM" &&
+                  !isProcessing;
+
+                if (__DEV__) {
+                  console.log("[OppDetails][Buttons]", {
+                    snapStatusUpper,
+                    hasCatchUpNext: !!s.catchUp?.next,
+                    catchUpEligibleNow: !!s.catchUp?.next?.isEligible,
+                    nextDueEligibleNow: !!nd?.isEligible,
+                    nextDueEligibleAtUtc: nd?.eligibleAtUtc ?? null,
+                    mode: engine?.mode,
+                    processing: isProcessing,
+                  });
+                }
+
                 return (
-                  <Text style={{ color: c.text.secondary }}>
-                    Not sharing yet for this opportunity.
-                  </Text>
-                );
-              }
-
-              const snapshotCompleted = s.segmentsSent >= s.segmentsExpected;
-
-              const nd = snapshotCompleted ? null : (s.nextDue ?? null);
-
-              if (__DEV__) {
-                console.log("[OppDetails] snapshot.nextDue =", nd);
-              }
-
-              const snapStatusUpper = String(
-                s.statusName ?? s.statusCode ?? "",
-              ).toUpperCase();
-
-              const isEligible = !!nd?.isEligible;
-              const eligibleAtUtc = nd?.eligibleAtUtc ?? null;
-
-              const eligibilityLabel = snapshotCompleted
-                ? "—"
-                : isEligible
-                  ? "Ready to sync"
-                  : eligibleAtUtc
-                    ? `eligible ${formatTimeLeftLabel(eligibleAtUtc, nowTick)}`
-                    : "—";
-
-              // Server-truth backlog detection: backlog exists only if server provides an overdue missing window.
-              const backlogExists = !!s.catchUp?.next;
-
-              const catchUpEligibleNow = !!s.catchUp?.next?.isEligible;
-              const nextDueEligibleNow = !!nd?.isEligible;
-
-              const showCatchUp =
-                snapStatusUpper === "ACTIVE" &&
-                !!s.catchUp?.next &&
-                engine?.mode !== "SIM" &&
-                !isProcessing;
-
-              const showSyncNow =
-                snapStatusUpper === "ACTIVE" &&
-                !s.catchUp?.next &&
-                nextDueEligibleNow &&
-                engine?.mode !== "SIM" &&
-                !isProcessing;
-
-              if (__DEV__) {
-                console.log("[OppDetails][Buttons]", {
-                  snapStatusUpper,
-                  hasCatchUpNext: !!s.catchUp?.next,
-                  catchUpEligibleNow: !!s.catchUp?.next?.isEligible,
-                  nextDueEligibleNow: !!nd?.isEligible,
-                  nextDueEligibleAtUtc: nd?.eligibleAtUtc ?? null,
-                  mode: engine?.mode,
-                  processing: isProcessing,
-                });
-              }
-
-              return (
-                <View style={{ gap: 4 }}>
-                  {/* {showCatchUp ? (
+                  <View style={{ gap: 4 }}>
+                    {/* {showCatchUp ? (
                     <View style={{ marginTop: 6, gap: 6 }}>
                       <Text style={{ color: c.text.secondary }}>
                         You missed {catchUpInfo.missedCount} day
@@ -1717,82 +1750,90 @@ export default function OpportunityDetails() {
                     </View>
                   ) : null} */}
 
-                  {showCatchUp ? (
-                    <View style={{ marginTop: 6, gap: 6 }}>
-                      <Text style={{ color: c.text.secondary }}>
-                        {catchUpEligibleNow
-                          ? `You have ${catchUpStatus?.missedCount ?? 0} catch-up day${(catchUpStatus?.missedCount ?? 0) === 1 ? "" : "s"} eligible right now. Catch them up one at a time.`
-                          : "Catch-up is pending. The next catch-up window will become eligible soon."}
-                      </Text>
+                    {showCatchUp ? (
+                      <View style={{ marginTop: 6, gap: 6 }}>
+                        <Text style={{ color: c.text.secondary }}>
+                          {catchUpEligibleNow
+                            ? `You have ${catchUpStatus?.missedCount ?? 0} catch-up day${(catchUpStatus?.missedCount ?? 0) === 1 ? "" : "s"} eligible right now. Catch them up one at a time.`
+                            : "Catch-up is pending. The next catch-up window will become eligible soon."}
+                        </Text>
 
-                      <Button
-                        title={
-                          catchUpStatus?.nextLabel
-                            ? `Catch up ${catchUpStatus.nextLabel}`
-                            : "Catch up"
-                        }
-                        onPress={doCatchUpOne}
-                        disabled={
-                          status !== "ACTIVE" ||
-                          isProcessing ||
-                          engine?.mode === "SIM" ||
-                          !catchUpEligibleNow
-                        }
-                      />
-                    </View>
-                  ) : null}
+                        <Button
+                          title={
+                            catchUpStatus?.nextLabel
+                              ? `Catch up ${catchUpStatus.nextLabel}`
+                              : "Catch up"
+                          }
+                          onPress={doCatchUpOne}
+                          disabled={
+                            status !== "ACTIVE" ||
+                            isProcessing ||
+                            engine?.mode === "SIM" ||
+                            !catchUpEligibleNow
+                          }
+                        />
+                      </View>
+                    ) : null}
 
-                  {showSyncNow ? (
-                    <View style={{ marginTop: 6, gap: 6 }}>
-                      <Text style={{ color: c.text.secondary }}>
-                        Your next window is eligible. Sync the most recent due
-                        day now.
-                      </Text>
+                    {showSyncNow ? (
+                      <View style={{ marginTop: 6, gap: 6 }}>
+                        <Text style={{ color: c.text.secondary }}>
+                          Your next window is eligible. Sync the most recent due
+                          day now.
+                        </Text>
 
-                      <Button
-                        title="Sync now"
-                        onPress={doSyncNow}
-                        disabled={
-                          status !== "ACTIVE" ||
-                          isProcessing ||
-                          engine?.mode === "SIM"
-                        }
-                      />
-                    </View>
-                  ) : null}
+                        <Button
+                          title="Sync now"
+                          onPress={doSyncNow}
+                          disabled={
+                            status !== "ACTIVE" ||
+                            isProcessing ||
+                            engine?.mode === "SIM"
+                          }
+                        />
+                      </View>
+                    ) : null}
 
-                  <Text style={{ color: c.text.secondary }}>
-                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
-                      Started on:
-                    </Text>{" "}
-                    {fmtLocal(s.joinTimeLocalISO)}
-                  </Text>
+                    <Text style={{ color: c.text.secondary }}>
+                      <Text
+                        style={{ fontWeight: "700", color: c.text.primary }}
+                      >
+                        Started on:
+                      </Text>{" "}
+                      {fmtLocal(s.joinTimeLocalISO)}
+                    </Text>
 
-                  <Text style={{ color: c.text.secondary }}>
-                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
-                      Progress:
-                    </Text>{" "}
-                    {s.segmentsSent}/{s.segmentsExpected}
-                  </Text>
+                    <Text style={{ color: c.text.secondary }}>
+                      <Text
+                        style={{ fontWeight: "700", color: c.text.primary }}
+                      >
+                        Progress:
+                      </Text>{" "}
+                      {s.segmentsSent}/{s.segmentsExpected}
+                    </Text>
 
-                  <Text style={{ color: c.text.secondary }}>
-                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
-                      Last shared:
-                    </Text>{" "}
-                    {fmtLocal(s.lastUploadedAt)}
-                  </Text>
+                    <Text style={{ color: c.text.secondary }}>
+                      <Text
+                        style={{ fontWeight: "700", color: c.text.primary }}
+                      >
+                        Last shared:
+                      </Text>{" "}
+                      {fmtLocal(s.lastUploadedAt)}
+                    </Text>
 
-                  <Text style={{ color: c.text.secondary }}>
-                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
-                      Last window:
-                    </Text>{" "}
-                    {fmtLocalWindowIntuitive(
-                      s.lastWindowFromUtc,
-                      s.lastWindowToUtc,
-                    )}
-                  </Text>
+                    <Text style={{ color: c.text.secondary }}>
+                      <Text
+                        style={{ fontWeight: "700", color: c.text.primary }}
+                      >
+                        Last window:
+                      </Text>{" "}
+                      {fmtLocalWindowIntuitive(
+                        s.lastWindowFromUtc,
+                        s.lastWindowToUtc,
+                      )}
+                    </Text>
 
-                  {/* <Text style={{ color: c.text.secondary }}>
+                    {/* <Text style={{ color: c.text.secondary }}>
                     <Text style={{ fontWeight: "700", color: c.text.primary }}>
                       Next share:
                     </Text>{" "}
@@ -1809,222 +1850,235 @@ export default function OpportunityDetails() {
                     </Text>{" "}
                     {completed ? "—" : nextLabel}
                   </Text> */}
-                  <Text style={{ color: c.text.secondary }}>
-                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
-                      Next share window:
-                    </Text>{" "}
-                    {snapshotCompleted
-                      ? "Completed"
-                      : nd
-                        ? fmtLocalWindowIntuitive(nd.fromUtc, nd.toUtc)
-                        : "—"}
-                  </Text>
+                    <Text style={{ color: c.text.secondary }}>
+                      <Text
+                        style={{ fontWeight: "700", color: c.text.primary }}
+                      >
+                        Next share window:
+                      </Text>{" "}
+                      {snapshotCompleted
+                        ? "Completed"
+                        : nd
+                          ? fmtLocalWindowIntuitive(nd.fromUtc, nd.toUtc)
+                          : "—"}
+                    </Text>
 
-                  <Text style={{ color: c.text.secondary }}>
-                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
-                      Eligibility:
-                    </Text>{" "}
-                    {eligibilityLabel}
-                  </Text>
+                    <Text style={{ color: c.text.secondary }}>
+                      <Text
+                        style={{ fontWeight: "700", color: c.text.primary }}
+                      >
+                        Eligibility:
+                      </Text>{" "}
+                      {eligibilityLabel}
+                    </Text>
 
-                  <Text style={{ color: c.text.secondary }}>
-                    <Text style={{ fontWeight: "700", color: c.text.primary }}>
-                      Eligible at:
-                    </Text>{" "}
-                    {snapshotCompleted
-                      ? "—"
-                      : eligibleAtUtc
-                        ? fmtLocal(eligibleAtUtc)
-                        : "—"}
-                  </Text>
+                    <Text style={{ color: c.text.secondary }}>
+                      <Text
+                        style={{ fontWeight: "700", color: c.text.primary }}
+                      >
+                        Eligible at:
+                      </Text>{" "}
+                      {snapshotCompleted
+                        ? "—"
+                        : eligibleAtUtc
+                          ? fmtLocal(eligibleAtUtc)
+                          : "—"}
+                    </Text>
 
-                  <View style={{ marginTop: 4 }}>
-                    <Chip
-                      label={`Status: ${String(s.statusName ?? s.statusCode ?? "—")}`}
-                    />
+                    <View style={{ marginTop: 4 }}>
+                      <Chip
+                        label={`Status: ${String(s.statusName ?? s.statusCode ?? "—")}`}
+                      />
+                    </View>
                   </View>
-                </View>
-              );
-            })()}
-          </View>
-        )}
-
-        {/* ───────────────────────────────────────────────────────────── */}
-        {/* DEV-ONLY: Sharing Test Panel (visible only in Test Mode)     */}
-        {/* ───────────────────────────────────────────────────────────── */}
-        {testFlags.TEST_MODE && (
-          <View
-            style={{
-              marginTop: 16,
-              backgroundColor: c.surface,
-              borderColor: c.border,
-              borderWidth: 1,
-              borderRadius: 12,
-              padding: 12,
-              gap: 10,
-            }}
-          >
-            <Text
-              style={{ color: c.text.primary, fontSize: 16, fontWeight: "800" }}
-            >
-              Sharing Test Panel (DEV)
-            </Text>
-
-            {/* Runtime config snapshot */}
-            {(() => {
-              const rc = getShareRuntimeConfig();
-              return (
-                <Text style={{ color: c.text.secondary }}>
-                  TestMode: {String(rc.TEST_MODE)} | “Day” length:{" "}
-                  {rc.DAY_LENGTH_MS} ms | Grace: {rc.GRACE_WAIT_MS} ms | Retry:{" "}
-                  {rc.RETRY_INTERVAL_MS} ms
-                </Text>
-              );
-            })()}
-
-            {/* Live session + engine state */}
-            <View style={{ gap: 4 }}>
-              <Text style={{ color: c.text.secondary }}>
-                Status: {status} | Session: {sessionId ?? "—"} | Segments:{" "}
-                {engine?.segmentsSent ?? 0}/{segmentsExpected ?? "—"}
-              </Text>
-
-              <Text style={{ color: c.text.secondary }}>
-                Anchor (planner ISO): {cycleAnchorUtc ?? "—"}
-              </Text>
-              <Text style={{ color: c.text.secondary }}>
-                Engine anchor:{" "}
-                {engine?.cycleAnchorUtc
-                  ? new Date(engine.cycleAnchorUtc).toISOString()
-                  : "—"}
-              </Text>
-              <Text style={{ color: c.text.secondary }}>
-                Last sent day: {engine?.lastSentDayIndex ?? "—"} | Current due:{" "}
-                {engine?.currentDueDayIndex ?? "—"}
-              </Text>
-              <Text style={{ color: c.text.secondary }}>
-                Retries: {engine?.noDataRetryCount ?? 0} | Next retry:{" "}
-                {engine?.nextRetryAtUtc
-                  ? new Date(engine.nextRetryAtUtc).toISOString()
-                  : "—"}
-              </Text>
+                );
+              })()}
             </View>
+          )}
 
-            {/* 🔎 Latest diagnostics from last processed window */}
-            <View style={{ gap: 2, marginTop: 6 }}>
-              <Text style={{ color: c.text.primary, fontWeight: "700" }}>
-                Last Window Diagnostics
-              </Text>
-              <Text style={{ color: c.text.secondary }}>
-                Day: {lastDiag?.dayIndex ?? "—"}
-              </Text>
-              <Text style={{ color: c.text.secondary }}>
-                Unavailable (no permission/provider):{" "}
-                {(lastDiag?.unavailable ?? []).map(labelOfMetric).join(", ") ||
-                  "—"}
-              </Text>
-              <Text style={{ color: c.text.secondary }}>
-                Zero data in window:{" "}
-                {(lastDiag?.zeroData ?? []).map(labelOfMetric).join(", ") ||
-                  "—"}
-              </Text>
-              <Text style={{ color: c.text.secondary }}>
-                Had any data: {String(lastDiag?.hadAnyData ?? "—")}
-              </Text>
-            </View>
-
-            {/* NEW: Next simulated window preview */}
-            {nextWindowPreview ? (
-              <View style={{ marginTop: 6 }}>
-                <Text style={{ color: c.text.primary, fontWeight: "700" }}>
-                  Next Simulated Window (Day {nextWindowPreview.idx})
-                </Text>
-                <Text style={{ color: c.text.secondary }}>
-                  Local:{" "}
-                  {fmtLocalWindowIntuitive(
-                    nextWindowPreview.fromUtc,
-                    nextWindowPreview.toUtc,
-                  )}
-                </Text>
-
-                <Text style={{ color: c.text.secondary }}>
-                  UTC: {fmtUTC(nextWindowPreview.fromUtc)} →{" "}
-                  {fmtUTC(nextWindowPreview.toUtc)}
-                </Text>
-              </View>
-            ) : (
-              <Text style={{ color: c.text.secondary, marginTop: 6 }}>
-                Next Simulated Window: —
-              </Text>
-            )}
-
-            {/* Simulation controls */}
+          {/* ───────────────────────────────────────────────────────────── */}
+          {/* DEV-ONLY: Sharing Test Panel (visible only in Test Mode)     */}
+          {/* ───────────────────────────────────────────────────────────── */}
+          {testFlags.TEST_MODE && (
             <View
               style={{
-                flexDirection: "row",
-                flexWrap: "wrap",
-                gap: 8,
-                marginTop: 6,
+                marginTop: 16,
+                backgroundColor: c.surface,
+                borderColor: c.border,
+                borderWidth: 1,
+                borderRadius: 12,
+                padding: 12,
+                gap: 10,
               }}
             >
-              <Button
-                title="Sim next day"
-                onPress={simNextDay}
-                disabled={
-                  !sessionId ||
-                  isProcessing ||
-                  status !== "ACTIVE" ||
-                  !segmentsExpected ||
-                  (engine?.lastSentDayIndex ?? 0) >= (segmentsExpected ?? 0) ||
-                  engineCompleted ||
-                  !(
-                    (snapshot?.joinTimeLocalISO &&
-                      hasNumericOffset(snapshot.joinTimeLocalISO)) ||
-                    devJoinLocalFallback
-                  )
-                }
-              />
-
-              <Button
-                title="Sim all remaining"
-                onPress={simAllRemaining}
-                variant="secondary"
-                disabled={
-                  !sessionId ||
-                  status !== "ACTIVE" ||
-                  !segmentsExpected ||
-                  isProcessing ||
-                  engineCompleted
-                }
-              />
-
-              <Button
-                title="Tick now"
-                onPress={() => {
-                  if (postingId) setActivePosting(postingId);
-                  tick();
+              <Text
+                style={{
+                  color: c.text.primary,
+                  fontSize: 16,
+                  fontWeight: "800",
                 }}
-                variant="secondary"
-                disabled={!sessionId || status !== "ACTIVE"}
-              />
-              <Button
-                title="Catch up"
-                onPress={() => {
-                  if (postingId) setActivePosting(postingId);
-                  void useShareStore.getState().catchUpNextOne();
+              >
+                Sharing Test Panel (DEV)
+              </Text>
+
+              {/* Runtime config snapshot */}
+              {(() => {
+                const rc = getShareRuntimeConfig();
+                return (
+                  <Text style={{ color: c.text.secondary }}>
+                    TestMode: {String(rc.TEST_MODE)} | “Day” length:{" "}
+                    {rc.DAY_LENGTH_MS} ms | Grace: {rc.GRACE_WAIT_MS} ms |
+                    Retry: {rc.RETRY_INTERVAL_MS} ms
+                  </Text>
+                );
+              })()}
+
+              {/* Live session + engine state */}
+              <View style={{ gap: 4 }}>
+                <Text style={{ color: c.text.secondary }}>
+                  Status: {status} | Session: {sessionId ?? "—"} | Segments:{" "}
+                  {engine?.segmentsSent ?? 0}/{segmentsExpected ?? "—"}
+                </Text>
+
+                <Text style={{ color: c.text.secondary }}>
+                  Anchor (planner ISO): {cycleAnchorUtc ?? "—"}
+                </Text>
+                <Text style={{ color: c.text.secondary }}>
+                  Engine anchor:{" "}
+                  {engine?.cycleAnchorUtc
+                    ? new Date(engine.cycleAnchorUtc).toISOString()
+                    : "—"}
+                </Text>
+                <Text style={{ color: c.text.secondary }}>
+                  Last sent day: {engine?.lastSentDayIndex ?? "—"} | Current
+                  due: {engine?.currentDueDayIndex ?? "—"}
+                </Text>
+                <Text style={{ color: c.text.secondary }}>
+                  Retries: {engine?.noDataRetryCount ?? 0} | Next retry:{" "}
+                  {engine?.nextRetryAtUtc
+                    ? new Date(engine.nextRetryAtUtc).toISOString()
+                    : "—"}
+                </Text>
+              </View>
+
+              {/* 🔎 Latest diagnostics from last processed window */}
+              <View style={{ gap: 2, marginTop: 6 }}>
+                <Text style={{ color: c.text.primary, fontWeight: "700" }}>
+                  Last Window Diagnostics
+                </Text>
+                <Text style={{ color: c.text.secondary }}>
+                  Day: {lastDiag?.dayIndex ?? "—"}
+                </Text>
+                <Text style={{ color: c.text.secondary }}>
+                  Unavailable (no permission/provider):{" "}
+                  {(lastDiag?.unavailable ?? [])
+                    .map(labelOfMetric)
+                    .join(", ") || "—"}
+                </Text>
+                <Text style={{ color: c.text.secondary }}>
+                  Zero data in window:{" "}
+                  {(lastDiag?.zeroData ?? []).map(labelOfMetric).join(", ") ||
+                    "—"}
+                </Text>
+                <Text style={{ color: c.text.secondary }}>
+                  Had any data: {String(lastDiag?.hadAnyData ?? "—")}
+                </Text>
+              </View>
+
+              {/* NEW: Next simulated window preview */}
+              {nextWindowPreview ? (
+                <View style={{ marginTop: 6 }}>
+                  <Text style={{ color: c.text.primary, fontWeight: "700" }}>
+                    Next Simulated Window (Day {nextWindowPreview.idx})
+                  </Text>
+                  <Text style={{ color: c.text.secondary }}>
+                    Local:{" "}
+                    {fmtLocalWindowIntuitive(
+                      nextWindowPreview.fromUtc,
+                      nextWindowPreview.toUtc,
+                    )}
+                  </Text>
+
+                  <Text style={{ color: c.text.secondary }}>
+                    UTC: {fmtUTC(nextWindowPreview.fromUtc)} →{" "}
+                    {fmtUTC(nextWindowPreview.toUtc)}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={{ color: c.text.secondary, marginTop: 6 }}>
+                  Next Simulated Window: —
+                </Text>
+              )}
+
+              {/* Simulation controls */}
+              <View
+                style={{
+                  flexDirection: "row",
+                  flexWrap: "wrap",
+                  gap: 8,
+                  marginTop: 6,
                 }}
-                variant="secondary"
-                disabled={!sessionId || status !== "ACTIVE"}
-              />
+              >
+                <Button
+                  title="Sim next day"
+                  onPress={simNextDay}
+                  disabled={
+                    !sessionId ||
+                    isProcessing ||
+                    status !== "ACTIVE" ||
+                    !segmentsExpected ||
+                    (engine?.lastSentDayIndex ?? 0) >=
+                      (segmentsExpected ?? 0) ||
+                    engineCompleted ||
+                    !(
+                      (snapshot?.joinTimeLocalISO &&
+                        hasNumericOffset(snapshot.joinTimeLocalISO)) ||
+                      devJoinLocalFallback
+                    )
+                  }
+                />
+
+                <Button
+                  title="Sim all remaining"
+                  onPress={simAllRemaining}
+                  variant="secondary"
+                  disabled={
+                    !sessionId ||
+                    status !== "ACTIVE" ||
+                    !segmentsExpected ||
+                    isProcessing ||
+                    engineCompleted
+                  }
+                />
+
+                <Button
+                  title="Tick now"
+                  onPress={() => {
+                    if (postingId) setActivePosting(postingId);
+                    tick();
+                  }}
+                  variant="secondary"
+                  disabled={!sessionId || status !== "ACTIVE"}
+                />
+                <Button
+                  title="Catch up"
+                  onPress={() => {
+                    if (postingId) setActivePosting(postingId);
+                    void useShareStore.getState().catchUpNextOne();
+                  }}
+                  variant="secondary"
+                  disabled={!sessionId || status !== "ACTIVE"}
+                />
+              </View>
+
+              <Text style={{ color: c.text.secondary, fontStyle: "italic" }}>
+                Tip: Sim uses the original join time and backdates by N×24h
+                blocks so each due window is a past 24h chunk.
+              </Text>
             </View>
-
-            <Text style={{ color: c.text.secondary, fontStyle: "italic" }}>
-              Tip: Sim uses the original join time and backdates by N×24h blocks
-              so each due window is a past 24h chunk.
-            </Text>
-          </View>
-        )}
-      </ScrollView>
-    </SafeAreaView>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    </>
   );
 }

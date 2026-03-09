@@ -1,15 +1,16 @@
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useNavigation } from "@react-navigation/native";
+import { Href, router } from "expo-router";
 import React from "react";
-import { Platform, Pressable, StyleSheet, Text, ViewStyle } from "react-native";
+import { Pressable, StyleSheet, Text, ViewStyle } from "react-native";
 
 type Props = {
-  label?: string;                 // text after the chevron
-  tint?: string;                  // optional override for color
-  fallbackRoute?: string;         // if no history, navigate here
-  style?: ViewStyle;              // optional container style
-  onPress?: () => void;           // optional custom handler
+  label?: string;
+  tint?: string;
+  fallbackRoute?: Href;
+  style?: ViewStyle;
+  onPress?: () => void;
 };
 
 export default function BackButton({
@@ -19,22 +20,24 @@ export default function BackButton({
   style,
   onPress,
 }: Props) {
-  // iOS only
-  if (Platform.OS !== "ios") return null;
-
   const c = useThemeColors();
   const navigation = useNavigation();
 
-  const color =
-    tint ??
-    ((c as any).link ?? (c as any).accent ?? c.text.primary);
+  const color = tint ?? (c as any).link ?? (c as any).accent ?? c.text.primary;
 
   const handlePress = () => {
-    if (onPress) return onPress();
+    if (onPress) {
+      onPress();
+      return;
+    }
+
     if (navigation.canGoBack()) {
       navigation.goBack();
-    } else if (fallbackRoute) {
-      navigation.navigate(fallbackRoute as never);
+      return;
+    }
+
+    if (fallbackRoute) {
+      router.replace(fallbackRoute);
     }
   };
 
@@ -50,7 +53,12 @@ export default function BackButton({
         style,
       ]}
     >
-      <Ionicons name="chevron-back" size={22} color={color} style={{ marginRight: 2 }} />
+      <Ionicons
+        name="chevron-back"
+        size={22}
+        color={color}
+        style={styles.icon}
+      />
       <Text style={[styles.label, { color }]} numberOfLines={1}>
         {label}
       </Text>
@@ -65,6 +73,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
   },
-  chev: { fontSize: 28, marginRight: 2, lineHeight: 28 },
-  label: { fontSize: 17, fontWeight: "600" },
+  icon: {
+    marginRight: 2,
+  },
+  label: {
+    fontSize: 17,
+    fontWeight: "600",
+  },
 });

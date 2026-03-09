@@ -209,11 +209,7 @@ export default function AppGroupLayout() {
           options={{ drawerItemStyle: { display: "none" } }}
         />
         <Drawer.Screen
-          name="opportunities/index"
-          options={{ drawerItemStyle: { display: "none" } }}
-        />
-        <Drawer.Screen
-          name="opportunities/[id]"
+          name="opportunities"
           options={{ drawerItemStyle: { display: "none" } }}
         />
         <Drawer.Screen
