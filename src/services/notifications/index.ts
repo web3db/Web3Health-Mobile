@@ -51,10 +51,12 @@ export async function sendSegmentSuccess(postingId: number, dayIndex: number) {
   );
   if (!allow) return;
 
+  const displayDay = dayIndex + 1;
+
   await Notifications.scheduleNotificationAsync({
     content: {
-      title: `Day ${dayIndex} shared`,
-      body: `Your data for Day ${dayIndex} was sent successfully.`,
+      title: `Day ${displayDay} shared`,
+      body: `Your data for Day ${displayDay} was sent successfully.`,
       data: { type: "segment-success", postingId, dayIndex },
       ...(Platform.OS === "android" ? { channelId: SYNC_CHANNEL_ID } : {}),
     },

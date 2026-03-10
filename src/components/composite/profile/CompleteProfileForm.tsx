@@ -1,23 +1,28 @@
 // src/components/composite/profile/CompleteProfileForm.tsx
+import {
+  getIncompleteDecimalMessage,
+  getRawDecimalFormatError,
+  getRawIntegerFormatError,
+  isIncompleteDecimalInput,
+  parseOptionalDecimal,
+  parseOptionalInteger,
+  sanitizeDecimalInput,
+  sanitizeYearInput,
+  validateBirthYear,
+  validateHeight,
+  validateWeight,
+} from "@/src/components/composite/profile/profileValidation";
 import Chip from "@/src/components/ui/Chip";
 import { useMasters } from "@/src/hooks/useMasters";
+import type { ProfileEdit } from "@/src/services/profile/api";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, Pressable, Text, TextInput, View } from "react-native";
-
-import type { ProfileEdit } from "@/src/services/profile/api";
 
 type Props = {
   onSubmit: (draft: ProfileEdit) => void | Promise<void>;
   disabled?: boolean;
 };
-
-function toNumberOrNull(raw: string): number | null {
-  const s = raw.trim();
-  if (!s) return null;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
-}
 
 export default function CompleteProfileForm({ onSubmit, disabled }: Props) {
   const c = useThemeColors();
@@ -165,6 +170,98 @@ export default function CompleteProfileForm({ onSubmit, disabled }: Props) {
   // Disable body metrics until system chosen
   const bodyMetricsLocked = measurementSystemId == null;
 
+  const BirthYear = useMemo(() => {
+    return parseOptionalInteger(birthYearText);
+  }, [birthYearText]);
+
+  const HeightNum = useMemo(() => {
+    return parseOptionalDecimal(heightNumText);
+  }, [heightNumText]);
+
+  const WeightNum = useMemo(() => {
+    return parseOptionalDecimal(weightNumText);
+  }, [weightNumText]);
+
+  const isHeightIncomplete = useMemo(() => {
+    return isIncompleteDecimalInput(heightNumText);
+  }, [heightNumText]);
+
+  const isWeightIncomplete = useMemo(() => {
+    return isIncompleteDecimalInput(weightNumText);
+  }, [weightNumText]);
+
+  const heightUnitLabel = isImperial ? "in" : "cm";
+  const weightUnitLabel = isImperial ? "lb" : "kg";
+
+  const birthYearFormatError = useMemo(() => {
+    return getRawIntegerFormatError(birthYearText);
+  }, [birthYearText]);
+
+  const heightFormatError = useMemo(() => {
+    return getRawDecimalFormatError(heightNumText, heightUnitLabel);
+  }, [heightNumText, heightUnitLabel]);
+
+  const weightFormatError = useMemo(() => {
+    return getRawDecimalFormatError(weightNumText, weightUnitLabel);
+  }, [weightNumText, weightUnitLabel]);
+
+  const birthYearValidation = useMemo(() => {
+    if (birthYearFormatError) {
+      return { status: "invalid" as const, message: birthYearFormatError };
+    }
+    return validateBirthYear(BirthYear, { required: true });
+  }, [BirthYear, birthYearFormatError]);
+
+  const heightValidation = useMemo(() => {
+    if (bodyMetricsLocked) {
+      return { status: "missing" as const, message: "Height is required." };
+    }
+
+    if (heightFormatError) {
+      return { status: "invalid" as const, message: heightFormatError };
+    }
+
+    if (isHeightIncomplete) {
+      return {
+        status: "invalid" as const,
+        message: getIncompleteDecimalMessage("Height"),
+      };
+    }
+
+    return validateHeight(HeightNum, heightUnitLabel, { required: true });
+  }, [
+    bodyMetricsLocked,
+    HeightNum,
+    heightFormatError,
+    isHeightIncomplete,
+    heightUnitLabel,
+  ]);
+
+  const weightValidation = useMemo(() => {
+    if (bodyMetricsLocked) {
+      return { status: "missing" as const, message: "Weight is required." };
+    }
+
+    if (weightFormatError) {
+      return { status: "invalid" as const, message: weightFormatError };
+    }
+
+    if (isWeightIncomplete) {
+      return {
+        status: "invalid" as const,
+        message: getIncompleteDecimalMessage("Weight"),
+      };
+    }
+
+    return validateWeight(WeightNum, weightUnitLabel, { required: true });
+  }, [
+    bodyMetricsLocked,
+    WeightNum,
+    weightFormatError,
+    isWeightIncomplete,
+    weightUnitLabel,
+  ]);
+
   // Auto-pick defaults when system changes (Metric: CM+KG, Imperial: IN+LB)
   useEffect(() => {
     if (measurementSystemId == null) return;
@@ -215,76 +312,94 @@ export default function CompleteProfileForm({ onSubmit, disabled }: Props) {
   ]);
 
   const liveMissingLabels = useMemo(() => {
-    const BirthYear = toNumberOrNull(birthYearText);
-    const HeightNum = toNumberOrNull(heightNumText);
-    const WeightNum = toNumberOrNull(weightNumText);
-
-    // const missing: string[] = [];
-    // if (BirthYear == null) missing.push("Birth year");
-    // if (raceId == null) missing.push("Race");
-    // if (sexId == null) missing.push("Sex");
-    // if (HeightNum == null) missing.push("Height value");
-    // if (heightUnitId == null) missing.push("Height unit");
-    // if (WeightNum == null) missing.push("Weight value");
-    // if (weightUnitId == null) missing.push("Weight unit");
-    // if (measurementSystemId == null) missing.push("Measurement system");
     const missing: string[] = [];
+
     if (measurementSystemId == null) missing.push("Measurement system");
-    if (BirthYear == null) missing.push("Birth year");
+    if (birthYearValidation.status === "missing") missing.push("Birth year");
     if (raceId == null) missing.push("Race");
     if (sexId == null) missing.push("Sex");
 
     if (measurementSystemId != null) {
-      if (HeightNum == null) missing.push("Height value");
+      if (heightValidation.status === "missing") missing.push("Height value");
       if (heightUnitId == null) missing.push("Height unit");
-      if (WeightNum == null) missing.push("Weight value");
+      if (weightValidation.status === "missing") missing.push("Weight value");
       if (weightUnitId == null) missing.push("Weight unit");
     }
 
     return missing;
   }, [
-    birthYearText,
-    heightNumText,
-    weightNumText,
+    measurementSystemId,
+    birthYearValidation,
     raceId,
     sexId,
+    heightValidation,
     heightUnitId,
+    weightValidation,
     weightUnitId,
-    measurementSystemId,
   ]);
 
-  const canSubmit = liveMissingLabels.length === 0 && !isDisabled;
+  const liveInvalidLabels = useMemo(() => {
+    const invalid: string[] = [];
+
+    if (birthYearValidation.status === "invalid") invalid.push("Birth year");
+
+    if (measurementSystemId != null) {
+      if (heightValidation.status === "invalid") invalid.push("Height value");
+      if (weightValidation.status === "invalid") invalid.push("Weight value");
+    }
+
+    return invalid;
+  }, [
+    birthYearValidation,
+    measurementSystemId,
+    heightValidation,
+    weightValidation,
+  ]);
+
+  const canSubmit =
+    liveMissingLabels.length === 0 &&
+    liveInvalidLabels.length === 0 &&
+    !isDisabled;
 
   const handleSubmit = useCallback(async () => {
-    const BirthYear = toNumberOrNull(birthYearText);
-    const HeightNum = toNumberOrNull(heightNumText);
-    const WeightNum = toNumberOrNull(weightNumText);
-
-    // const missing: string[] = [];
-    // if (BirthYear == null) missing.push("BirthYear");
-    // if (raceId == null) missing.push("RaceId");
-    // if (sexId == null) missing.push("SexId");
-    // if (HeightNum == null) missing.push("HeightNum");
-    // if (heightUnitId == null) missing.push("HeightUnitId");
-    // if (WeightNum == null) missing.push("WeightNum");
-    // if (weightUnitId == null) missing.push("WeightUnitId");
-    // if (measurementSystemId == null) missing.push("MeasurementSystemId");
-
     const missing: string[] = [];
+    const invalid: string[] = [];
+
     if (measurementSystemId == null) missing.push("Measurement system");
-    if (BirthYear == null) missing.push("Birth year");
+    if (birthYearValidation.status === "missing") missing.push("Birth year");
     if (raceId == null) missing.push("Race");
     if (sexId == null) missing.push("Sex");
 
     if (measurementSystemId != null) {
-      if (HeightNum == null) missing.push("Height value");
+      if (heightValidation.status === "missing") missing.push("Height value");
       if (heightUnitId == null) missing.push("Height unit");
-      if (WeightNum == null) missing.push("Weight value");
+      if (weightValidation.status === "missing") missing.push("Weight value");
       if (weightUnitId == null) missing.push("Weight unit");
+    }
+
+    if (
+      birthYearValidation.status === "invalid" &&
+      birthYearValidation.message
+    ) {
+      invalid.push(birthYearValidation.message);
+    }
+
+    if (measurementSystemId != null) {
+      if (heightValidation.status === "invalid" && heightValidation.message) {
+        invalid.push(heightValidation.message);
+      }
+      if (weightValidation.status === "invalid" && weightValidation.message) {
+        invalid.push(weightValidation.message);
+      }
     }
 
     if (missing.length) {
       Alert.alert("Missing info", `Please fill: ${missing.join(", ")}`);
+      return;
+    }
+
+    if (invalid.length) {
+      Alert.alert("Invalid values", invalid.join("\n"));
       return;
     }
 
@@ -297,23 +412,25 @@ export default function CompleteProfileForm({ onSubmit, disabled }: Props) {
       WeightNum: WeightNum!,
       WeightUnitId: weightUnitId,
       MeasurementSystemId: measurementSystemId,
-      selectedHealthConditionIds, // can be []
+      selectedHealthConditionIds,
     };
 
     await onSubmit(draft);
   }, [
-    birthYearText,
-    heightNumText,
     measurementSystemId,
-    onSubmit,
+    birthYearValidation,
     raceId,
-    selectedHealthConditionIds,
     sexId,
+    heightValidation,
     heightUnitId,
-    weightNumText,
+    weightValidation,
     weightUnitId,
+    BirthYear,
+    HeightNum,
+    WeightNum,
+    onSubmit,
+    selectedHealthConditionIds,
   ]);
-
   return (
     <View style={{ gap: 14 }}>
       <View
@@ -330,18 +447,39 @@ export default function CompleteProfileForm({ onSubmit, disabled }: Props) {
           Required to apply
         </Text>
 
-        {liveMissingLabels.length === 0 ? (
+        {liveMissingLabels.length === 0 && liveInvalidLabels.length === 0 ? (
           <Text style={{ color: c.text.secondary }}>
             All required fields completed.
           </Text>
         ) : (
           <>
-            <Text style={{ color: c.text.secondary }}>Please complete:</Text>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-              {liveMissingLabels.map((label) => (
-                <Chip key={label} label={label} />
-              ))}
-            </View>
+            {liveMissingLabels.length > 0 ? (
+              <>
+                <Text style={{ color: c.text.secondary }}>
+                  Please complete:
+                </Text>
+                <View
+                  style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}
+                >
+                  {liveMissingLabels.map((label) => (
+                    <Chip key={`missing-${label}`} label={label} />
+                  ))}
+                </View>
+              </>
+            ) : null}
+
+            {liveInvalidLabels.length > 0 ? (
+              <>
+                <Text style={{ color: c.text.secondary }}>Please correct:</Text>
+                <View
+                  style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}
+                >
+                  {liveInvalidLabels.map((label) => (
+                    <Chip key={`invalid-${label}`} label={label} />
+                  ))}
+                </View>
+              </>
+            ) : null}
           </>
         )}
       </View>
@@ -352,13 +490,17 @@ export default function CompleteProfileForm({ onSubmit, disabled }: Props) {
         </Text>
         <TextInput
           value={birthYearText}
-          onChangeText={setBirthYearText}
-          placeholder="e.g., 1999"
+          onChangeText={(t) => setBirthYearText(sanitizeYearInput(t))}
+          placeholder="Example: 1999"
           keyboardType="number-pad"
+          inputMode="numeric"
+          maxLength={4}
           editable={!isDisabled}
+          placeholderTextColor={c.text.secondary}
           style={{
             borderWidth: 1,
-            borderColor: c.border,
+            borderColor:
+              birthYearValidation.status === "invalid" ? c.danger : c.border,
             borderRadius: 10,
             paddingHorizontal: 12,
             paddingVertical: 10,
@@ -366,6 +508,20 @@ export default function CompleteProfileForm({ onSubmit, disabled }: Props) {
             backgroundColor: c.surface,
           }}
         />
+        {birthYearValidation.status !== "valid" &&
+        birthYearValidation.message ? (
+          <Text
+            style={{
+              color:
+                birthYearValidation.status === "invalid"
+                  ? c.danger
+                  : c.text.muted,
+              fontSize: 12,
+            }}
+          >
+            {birthYearValidation.message}
+          </Text>
+        ) : null}
       </View>
 
       <View style={{ gap: 6 }}>
@@ -512,93 +668,143 @@ export default function CompleteProfileForm({ onSubmit, disabled }: Props) {
         )}
       </View>
 
-      <View style={{ flexDirection: "row", gap: 12 }}>
-        {/* Height */}
-        <View style={{ flex: 1, gap: 6, opacity: bodyMetricsLocked ? 0.5 : 1 }}>
-          <Text style={{ color: c.text.primary, fontWeight: "600" }}>
-            Height
+      <View style={{ gap: 6 }}>
+        {bodyMetricsLocked ? (
+          <Text style={{ color: c.text.muted, fontSize: 12 }}>
+            Select a measurement system first to enter height and weight.
           </Text>
+        ) : null}
 
-          <TextInput
-            value={heightNumText}
-            onChangeText={setHeightNumText}
-            placeholder="Value"
-            keyboardType="decimal-pad"
-            editable={!isDisabled && !bodyMetricsLocked}
-            style={{
-              borderWidth: 1,
-              borderColor: c.border,
-              borderRadius: 10,
-              paddingHorizontal: 12,
-              paddingVertical: 10,
-              color: c.text.primary,
-              backgroundColor: c.surface,
-            }}
-          />
+        <View style={{ flexDirection: "row", gap: 12 }}>
+          {/* Height */}
+          <View
+            style={{ flex: 1, gap: 6, opacity: bodyMetricsLocked ? 0.5 : 1 }}
+          >
+            <Text style={{ color: c.text.primary, fontWeight: "600" }}>
+              Height
+            </Text>
 
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-            {(heightUnits ?? []).map((u: any) => (
-              <Chip
-                key={u.id}
-                label={u.label}
-                selected={heightUnitId === u.id}
-                onPress={() => {
-                  if (isDisabled || bodyMetricsLocked) return;
-                  setHeightUnitId(u.id);
+            <TextInput
+              value={heightNumText}
+              onChangeText={(t) => setHeightNumText(sanitizeDecimalInput(t))}
+              placeholder={isImperial ? "Example: 68.5" : "Example: 174.5"}
+              keyboardType="decimal-pad"
+              inputMode="decimal"
+              editable={!isDisabled && !bodyMetricsLocked}
+              placeholderTextColor={c.text.secondary}
+              style={{
+                borderWidth: 1,
+                borderColor:
+                  heightValidation.status === "invalid" ? c.danger : c.border,
+                borderRadius: 10,
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                color: c.text.primary,
+                backgroundColor: c.surface,
+              }}
+            />
+
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+              {(heightUnits ?? []).map((u: any) => (
+                <Chip
+                  key={u.id}
+                  label={u.label}
+                  selected={heightUnitId === u.id}
+                  onPress={() => {
+                    if (isDisabled || bodyMetricsLocked) return;
+                    setHeightUnitId(u.id);
+                  }}
+                />
+              ))}
+            </View>
+
+            {!bodyMetricsLocked && (heightUnits ?? []).length === 0 ? (
+              <Text style={{ color: c.text.muted }}>
+                No height units available.
+              </Text>
+            ) : null}
+
+            {measurementSystemId != null ? (
+              <Text
+                style={{
+                  color:
+                    heightValidation.status === "invalid"
+                      ? c.danger
+                      : c.text.muted,
+                  fontSize: 12,
                 }}
-              />
-            ))}
+              >
+                {heightValidation.status === "valid"
+                  ? `Enter height in ${heightUnitLabel}. Decimals are allowed.`
+                  : heightValidation.message}
+              </Text>
+            ) : null}
           </View>
 
-          {!bodyMetricsLocked && (heightUnits ?? []).length === 0 ? (
-            <Text style={{ color: c.text.muted }}>
-              No height units available.
+          {/* Weight */}
+          <View
+            style={{ flex: 1, gap: 6, opacity: bodyMetricsLocked ? 0.5 : 1 }}
+          >
+            <Text style={{ color: c.text.primary, fontWeight: "600" }}>
+              Weight
             </Text>
-          ) : null}
-        </View>
 
-        {/* Weight */}
-        <View style={{ flex: 1, gap: 6, opacity: bodyMetricsLocked ? 0.5 : 1 }}>
-          <Text style={{ color: c.text.primary, fontWeight: "600" }}>
-            Weight
-          </Text>
+            <TextInput
+              value={weightNumText}
+              onChangeText={(t) => setWeightNumText(sanitizeDecimalInput(t))}
+              placeholder={isImperial ? "Example: 159.5" : "Example: 72.5"}
+              keyboardType="decimal-pad"
+              inputMode="decimal"
+              editable={!isDisabled && !bodyMetricsLocked}
+              placeholderTextColor={c.text.secondary}
+              style={{
+                borderWidth: 1,
+                borderColor:
+                  weightValidation.status === "invalid" ? c.danger : c.border,
+                borderRadius: 10,
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                color: c.text.primary,
+                backgroundColor: c.surface,
+              }}
+            />
 
-          <TextInput
-            value={weightNumText}
-            onChangeText={setWeightNumText}
-            placeholder="Value"
-            keyboardType="decimal-pad"
-            editable={!isDisabled && !bodyMetricsLocked}
-            style={{
-              borderWidth: 1,
-              borderColor: c.border,
-              borderRadius: 10,
-              paddingHorizontal: 12,
-              paddingVertical: 10,
-              color: c.text.primary,
-              backgroundColor: c.surface,
-            }}
-          />
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+              {(weightUnits ?? []).map((u: any) => (
+                <Chip
+                  key={u.id}
+                  label={u.label}
+                  selected={weightUnitId === u.id}
+                  onPress={() => {
+                    if (isDisabled || bodyMetricsLocked) return;
+                    setWeightUnitId(u.id);
+                  }}
+                />
+              ))}
+            </View>
 
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-            {(weightUnits ?? []).map((u: any) => (
-              <Chip
-                key={u.id}
-                label={u.label}
-                selected={weightUnitId === u.id}
-                onPress={() => {
-                  if (isDisabled || bodyMetricsLocked) return;
-                  setWeightUnitId(u.id);
+            {!bodyMetricsLocked && (weightUnits ?? []).length === 0 ? (
+              <Text style={{ color: c.text.muted }}>
+                No weight units available.
+              </Text>
+            ) : null}
+
+            {measurementSystemId != null ? (
+              <Text
+                style={{
+                  color:
+                    weightValidation.status === "invalid"
+                      ? c.danger
+                      : c.text.muted,
+                  fontSize: 12,
                 }}
-              />
-            ))}
+              >
+                {weightValidation.status === "valid"
+                  ? `Enter weight in ${weightUnitLabel}. Decimals are allowed.`
+                  : weightValidation.message}
+              </Text>
+            ) : null}
           </View>
-
-          {!bodyMetricsLocked && (weightUnits ?? []).length === 0 ? (
-            <Text style={{ color: c.text.muted }}>
-              No weight units available.
-            </Text>
-          ) : null}
         </View>
       </View>
 

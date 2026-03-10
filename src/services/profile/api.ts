@@ -1,38 +1,6 @@
 import { z } from "zod";
 import { buildUrl, fetchJson } from "../http/base";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Zod schemas for masters (align with your table columns)
-// ─────────────────────────────────────────────────────────────────────────────
-// const RaceSchema = z.object({
-//   RaceId: z.number().int(),
-//   RaceCode: z.string().nullable().optional(),
-//   DisplayName: z.string().nullable().optional(),
-// });
-// const SexSchema = z.object({
-//   SexId: z.number().int(),
-//   SexCode: z.string().nullable().optional(),
-//   DisplayName: z.string().nullable().optional(),
-// });
-// const MeasurementSystemSchema = z.object({
-//   MeasurementSystemId: z.number().int(),
-//   MeasurementSystemCode: z.string().nullable().optional(),
-//   DisplayName: z.string().nullable().optional(),
-// });
-// const UnitSchema = z.object({
-//   UnitId: z.number().int(),
-//   UnitCode: z.string().nullable().optional(),
-//   DisplayName: z.string().nullable().optional(),
-//   UcumCode: z.string().nullable().optional(),
-//   Type: z.string().nullable().optional(),
-// });
-// const HealthConditionSchema = z.object({
-//   HealthConditionId: z.number().int(),
-//   Code: z.string().nullable().optional(),
-//   DisplayName: z.string().nullable().optional(),
-//   IsActive: z.boolean().optional(),
-// });
-
 type AnyRec = Record<string, any>;
 const pick = (o: AnyRec, keys: string[]) => {
   for (const k of keys) if (o[k] !== undefined) return o[k];
@@ -98,7 +66,6 @@ const CreatedUserRes = z.object({
   clerkId: z.string().nullable().optional(),
   email: z.string().nullable().optional(),
   name: z.string(),
-  // birthYear: z.number().int(),
   birthYear: z.number().int().nullable().optional(),
   raceId: z.number().int().nullable().optional(),
   raceCode: z.string().nullable().optional(),
@@ -130,12 +97,8 @@ const CreatedUserRes = z.object({
 });
 export type CreatedUser = z.infer<typeof CreatedUserRes>;
 
-// Generic option type for dropdowns
 export type Option = { id: number; label: string; code?: string | null };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Masters fetchers (use your edge functions; no auth headers per your contract)
-// ─────────────────────────────────────────────────────────────────────────────
 export async function getUnits(): Promise<Option[]> {
   const url = buildUrl("units");
   const { ok, json, status, text } = await fetchJson("GET", url);
@@ -218,11 +181,7 @@ export async function getHealthConditions(): Promise<HealthConditionOption[]> {
     };
   });
 }
-// ─────────────────────────────────────────────────────────────────────────────
-// Create user
-// ─────────────────────────────────────────────────────────────────────────────
 
-// Lightweight register input: only what the first screen collects
 const RegisterLiteSchema = z.object({
   clerkId: z.string().min(1).nullable().optional(),
   email: z.string().email().nullable().optional(),
@@ -238,24 +197,7 @@ const RegisterLitePostSchema = RegisterLiteSchema.transform((v) => ({
   ...(typeof v.roleId === "number" ? { roleId: v.roleId } : {}),
 }));
 
-// export async function createUser(input: unknown): Promise<CreatedUser> {
-//   // Validate full form, transform to post body (omit nulls)
-//   const body: RegisterPostBody = RegisterPostSchema.parse(
-//     RegisterFormSchema.parse(input),
-//   );
-
-//   const url = buildUrl("users_create");
-//   const { ok, status, json, text } = await fetchJson("POST", url, body);
-//   if (!ok || !json) {
-//     throw new Error(
-//       `users_create ${status} ${String((json as any)?.message ?? text ?? "")}`,
-//     );
-//   }
-//   return CreatedUserRes.parse(json);
-// }
-
 export async function createUser(input: unknown): Promise<CreatedUser> {
-  // Validate lightweight register input (no birthYear)
   const body = RegisterLitePostSchema.parse(RegisterLiteSchema.parse(input));
 
   const url = buildUrl("users_create");
@@ -271,7 +213,7 @@ export async function createUser(input: unknown): Promise<CreatedUser> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Profile GET/PATCH (NEW)
+// Profile GET/PATCH
 // ─────────────────────────────────────────────────────────────────────────────
 const RaceZ = z.object({
   RaceId: z.number(),
@@ -340,20 +282,6 @@ export type UserProfile = z.infer<typeof UserProfileZ>;
 const GetProfileResZ = z.object({ ok: z.literal(true), user: UserProfileZ });
 const GetProfileErrZ = z.object({ ok: z.literal(false), error: z.string() });
 
-// export async function getUserProfile(userId: number): Promise<UserProfile> {
-//   const url = buildUrl("users_profile", { userId });
-//   const { ok, json, status, text } = await fetchJson("GET", url);
-//   if (!ok || !json)
-//     throw new Error(`users_profile ${status} ${String(text ?? "")}`);
-//   const parsed = GetProfileResZ.safeParse(json).success
-//     ? GetProfileResZ.parse(json)
-//     : (() => {
-//         const e = GetProfileErrZ.parse(json);
-//         throw new Error(e.error);
-//       })();
-//   return parsed.user;
-// }
-
 export async function getUserProfile(userId: number): Promise<UserProfile> {
   const url = buildUrl("users_profile", { userId });
   const { ok, json, status, text } = await fetchJson("GET", url);
@@ -374,6 +302,9 @@ export async function getUserProfile(userId: number): Promise<UserProfile> {
   throw new Error("users_profile returned unexpected response shape");
 }
 
+// PATCH body used by both onboarding and profile edit flows.
+// Nullable fields below intentionally support clearing existing values
+// when the edit-page UX allows blanks.
 export type PatchUserBody = Partial<{
   ClerkId: string | null;
   Email: string | null;
@@ -413,9 +344,6 @@ export async function patchUser(body: PatchUserBody): Promise<UserProfile> {
   return parsed.user;
 }
 
-/* ────────────────────────────────────────────────────────────────────────────
-   Soft UI validation for edits (used by the store). We validate but DO NOT block.
-──────────────────────────────────────────────────────────────────────────── */
 export const ProfileEditSchema = z.object({
   Name: z.string().min(1, "Name is required").optional(),
   Email: z
@@ -443,9 +371,6 @@ export const ProfileEditSchema = z.object({
 });
 export type ProfileEdit = z.infer<typeof ProfileEditSchema>;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// User profile status (for onboarding flow)
-// ─────────────────────────────────────────────────────────────────────────────
 const UserProfileStatusProfileZ = z.object({
   UserId: z.number(),
   BirthYear: z.number().nullable(),

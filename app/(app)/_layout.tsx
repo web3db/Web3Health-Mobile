@@ -13,12 +13,6 @@ import { Drawer } from "expo-router/drawer";
 import React from "react";
 import { Platform } from "react-native";
 
-// import {
-//   hkBootstrapBackgroundObservers,
-//   hkGetAuthorizationStatus,
-//   hkIsBackgroundObserversActive
-// } from "@/src/services/tracking/healthkit";
-
 let __bgBootedOnce = false;
 let __pushBootedOnce = false;
 
@@ -182,76 +176,6 @@ function BackgroundBootWhenSignedIn() {
     })();
   }, [ready, hcInitialized, hcInitialize]);
 
-  // [HK][BG][BOOT] mount-time bootstrap (iOS)
-  // useEffect(() => {
-  //   if (!ready) return;
-  //   if (Platform.OS !== "ios") return;
-
-  //   (async () => {
-  //     try {
-  //       const stx = await hkGetAuthorizationStatus(); // { available, granted }
-
-  //       if (stx.available !== true) {
-  //         if (__DEV__) console.log("[HK][BG] skipped boot (HK not available)");
-  //         return;
-  //       }
-  //       if (!stx.granted) {
-  //         if (__DEV__)
-  //           console.log("[HK][BG] skipped boot (permissions not granted)");
-  //         return;
-  //       }
-  //       // if (hkIsBackgroundObserversActive()) {
-  //       //   if (__DEV__) console.log("[HK][BG] already active");
-  //       //   return;
-  //       // }
-
-  //       // await hkBootstrapBackgroundObservers();
-  //       if (__DEV__) console.log("[HK][BG] bootstrapped observers (mount)");
-  //     } catch (e: any) {
-  //       console.log("[HK][BG] bootstrap mount error", e?.message ?? e);
-  //     }
-  //   })();
-  // }, [ready]);
-
-  // [HK][BG][BOOT] resume-on-foreground (iOS)
-  // useEffect(() => {
-  //   if (!ready) return;
-  //   if (Platform.OS !== "ios") return;
-
-  //   const last = { state: AppState.currentState };
-
-  //   const sub = AppState.addEventListener("change", async (state) => {
-  //     const prev = last.state;
-  //     last.state = state;
-
-  //     if (
-  //       (prev === "background" || prev === "inactive") &&
-  //       state === "active"
-  //     ) {
-  //       try {
-  //         // ✅ Passive check: does NOT show the permission sheet
-  //         const stx = await hkGetAuthorizationStatus(); // { available, granted }
-
-  //         if (stx.available !== true) return;
-  //         if (!stx.granted) return;
-  //         if (hkIsBackgroundObserversActive()) return;
-
-  //         // await hkBootstrapBackgroundObservers();
-  //         // if (__DEV__)
-  //         //   console.log("[HK][BG] bootstrapped observers (foreground)");
-  //       } catch (e: any) {
-  //         console.log("[HK][BG] bootstrap foreground error", e?.message ?? e);
-  //       }
-  //     }
-  //   });
-
-  //   return () => {
-  //     try {
-  //       sub?.remove?.();
-  //     } catch {}
-  //   };
-  // }, [ready]);
-
   return ready ? <ForegroundTicker /> : null;
 }
 
@@ -285,27 +209,11 @@ export default function AppGroupLayout() {
           options={{ drawerItemStyle: { display: "none" } }}
         />
         <Drawer.Screen
-          name="opportunities/index"
-          options={{ drawerItemStyle: { display: "none" } }}
-        />
-        <Drawer.Screen
-          name="opportunities/[id]"
-          options={{ drawerItemStyle: { display: "none" } }}
-        />
-        <Drawer.Screen
-          name="auth/login"
-          options={{ drawerItemStyle: { display: "none" } }}
-        />
-        <Drawer.Screen
-          name="auth/register"
+          name="opportunities"
           options={{ drawerItemStyle: { display: "none" } }}
         />
         <Drawer.Screen
           name="background"
-          options={{ drawerItemStyle: { display: "none" } }}
-        />
-        <Drawer.Screen
-          name="auth/reset-required"
           options={{ drawerItemStyle: { display: "none" } }}
         />
         <Drawer.Screen

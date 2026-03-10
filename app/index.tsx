@@ -1,3 +1,4 @@
+// app/index.tsx
 import {
   fetchLoginProfileByClerkId,
   type LoginProfileResult,
@@ -8,20 +9,23 @@ import {
   useAuthStore,
 } from "@/src/store/useAuthStore";
 // import { useShareStore } from "@/src/store/useShareStore";
+import { useThemeColors } from "@/src/theme/useThemeColors";
 import { useAuth } from "@clerk/clerk-expo";
 import { Redirect } from "expo-router";
 import React from "react";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 
 export default function Gate() {
-  const { isLoaded, isSignedIn, userId: clerkUserId, signOut } = useAuth();
+  const c = useThemeColors();
+  const { isLoaded, isSignedIn, userId: clerkUserId } = useAuth();
   const userId = useAuthStore(selectUserId);
   const hydrated = useAuthStore(selectHydrated);
 
-  // Local flags so we only run the rehydrate flow once per mount
-  const [attemptedRehydrate, setAttemptedRehydrate] = React.useState(false);
-  const [rehydrating, setRehydrating] = React.useState(false);
-  // Clerk is signed in, but MST_User doesn't exist yet → user must complete Register
-  const [needsRegister, setNeedsRegister] = React.useState(false);
+  const [status, setStatus] = React.useState<
+    "booting" | "checking_profile" | "needs_register" | "error"
+  >("booting");
+  const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
+  const [reloadKey, setReloadKey] = React.useState(0);
   // const [attemptedShareHydrate, setAttemptedShareHydrate] =
   //   React.useState(false);
   // const [shareHydrating, setShareHydrating] = React.useState(false);
@@ -33,186 +37,260 @@ export default function Gate() {
   // - user is signed in
   // - but useAuthStore.userId is still null
   // ────────────────────────────────────────────────────────────────
+
   React.useEffect(() => {
-    if (!isLoaded || !hydrated) return;
-    if (!isSignedIn) return;
-    if (userId != null) return; // already have backend user
-    if (attemptedRehydrate) return;
-
-    setAttemptedRehydrate(true);
-
-    // If Clerk says "signed in" but doesn't give us a userId,
-    // treat it as an inconsistent state → hard reset to login.
-    if (!clerkUserId) {
-      (async () => {
-        try {
-          await signOut();
-        } catch {}
-        useAuthStore.getState().clear();
-      })();
+    if (!isLoaded || !hydrated) {
+      setStatus("booting");
+      setErrorMessage(null);
       return;
     }
 
-    setRehydrating(true);
+    if (!isSignedIn) {
+      setStatus("booting");
+      setErrorMessage(null);
+      return;
+    }
+
+    if (userId != null) {
+      setStatus("booting");
+      setErrorMessage(null);
+      return;
+    }
+
+    if (!clerkUserId) {
+      console.log("[Gate] waiting_for_clerk_user_id");
+      setStatus("booting");
+      setErrorMessage(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    setStatus("checking_profile");
+    setErrorMessage(null);
 
     (async () => {
       try {
+        console.log("[Gate] profile_lookup_start", { clerkUserId });
+
         const result: LoginProfileResult =
           await fetchLoginProfileByClerkId(clerkUserId);
 
+        if (cancelled) return;
+
+        console.log("[Gate] profile_lookup_result", {
+          kind: result.kind,
+          clerkUserId,
+        });
+
         if (result.kind === "ok") {
           const u = result.user;
-          // Hydrate the local auth store with MST_User row
+
           useAuthStore.getState().setAuth({
             userId: u.UserId ?? null,
             email: u.Email ?? null,
             name: u.Name ?? null,
           });
-          setNeedsRegister(false);
+
+          console.log("[Gate] profile_lookup_ok", {
+            clerkUserId,
+            userId: u.UserId ?? null,
+          });
+
+          setStatus("booting");
           return;
         }
 
         if (result.kind === "not_found") {
-          // Expected for first-time users: Clerk is signed in, but backend profile isn't created yet.
-          // Do NOT sign out; route them to registration.
-          setNeedsRegister(true);
+          console.log("[Gate] profile_lookup_not_found_redirect_register", {
+            clerkUserId,
+          });
+          setStatus("needs_register");
           return;
         }
 
-        // result.kind === "error" → reset to login (existing behavior)
-        try {
-          await signOut();
-        } catch {}
-        useAuthStore.getState().clear();
-      } catch {
-        // Network or unexpected error → safest is to reset to login
-        try {
-          await signOut();
-        } catch {}
-        useAuthStore.getState().clear();
-      } finally {
-        setRehydrating(false);
+        console.warn("[Gate] profile_lookup_error_response", { clerkUserId });
+        setErrorMessage(
+          "We could not verify your Web3Health profile right now. Please try again.",
+        );
+        setStatus("error");
+      } catch (e) {
+        if (cancelled) return;
+
+        console.warn("[Gate] profile_lookup_failed", e);
+        setErrorMessage(
+          "We could not load your account right now. Please try again.",
+        );
+        setStatus("error");
       }
     })();
-  }, [
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoaded, hydrated, isSignedIn, clerkUserId, userId, reloadKey]);
+
+  console.log("[Gate] render", {
     isLoaded,
     hydrated,
     isSignedIn,
-    userId,
     clerkUserId,
-    attemptedRehydrate,
-    signOut,
-  ]);
+    userId,
+    status,
+    hasError: !!errorMessage,
+  });
 
-  // ────────────────────────────────────────────────────────────────
-  // Rehydrate share store when:
-  // - Clerk + auth store are hydrated
-  // - user is signed in
-  // - MST_User userId is known (non-null)
-  // This runs once per mount per login.
-  // ────────────────────────────────────────────────────────────────
+  if (!isLoaded || !hydrated) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          paddingHorizontal: 24,
+          backgroundColor: c.bg,
+        }}
+      >
+        <ActivityIndicator />
+        <Text
+          style={{
+            marginTop: 14,
+            color: c.text.primary,
+            fontSize: 16,
+            fontWeight: "700",
+            textAlign: "center",
+          }}
+        >
+          Checking your session
+        </Text>
+        <Text
+          style={{
+            marginTop: 8,
+            color: c.text.secondary,
+            fontSize: 14,
+            textAlign: "center",
+            lineHeight: 20,
+          }}
+        >
+          Please wait while we prepare your account.
+        </Text>
+      </View>
+    );
+  }
 
-  // React.useEffect(() => {
-  //   if (__DEV__) {
-  //     console.log("[Gate] shareHydrate effect check", {
-  //       isLoaded,
-  //       hydrated,
-  //       isSignedIn,
-  //       userId,
-  //       attemptedShareHydrate,
-  //     });
-  //   }
-
-  //   if (!isLoaded || !hydrated) return;
-  //   if (!isSignedIn) return;
-  //   if (userId == null) return; // need MST_User userId
-  //   if (attemptedShareHydrate) return;
-
-  //   setAttemptedShareHydrate(true);
-  //   setShareHydrating(true);
-
-  //   (async () => {
-  //     try {
-  //       if (__DEV__) {
-  //         console.log("[Gate] shareHydrate → fetchUserLoginShareHydration", {
-  //           userId,
-  //         });
-  //       }
-
-  //       const payload = await fetchUserLoginShareHydration(userId);
-
-  //       if (__DEV__) {
-  //         console.log("[Gate] shareHydrate → payload received", {
-  //           userId,
-  //           sessionCount: payload?.sessions?.length ?? 0,
-  //         });
-  //       }
-
-  //       useShareStore.getState().hydrateFromServer(payload);
-
-  //       if (__DEV__) {
-  //         console.log("[Gate] shareHydrate → hydrateFromServer done", {
-  //           userId,
-  //         });
-  //       }
-  //     } catch (e) {
-  //       if (__DEV__) {
-  //         console.warn(
-  //           "[Gate] share-store hydration failed",
-  //           (e as any)?.message ?? e
-  //         );
-  //       }
-  //       // Do NOT sign the user out; app can still run without hydrated share store.
-  //     } finally {
-  //       setShareHydrating(false);
-  //       if (__DEV__) {
-  //         console.log("[Gate] shareHydrate → complete", { userId });
-  //       }
-  //     }
-  //   })();
-  // }, [isLoaded, hydrated, isSignedIn, userId, attemptedShareHydrate]);
-
-  // ────────────────────────────────────────────────────────────────
-  // Rendering logic
-  // ────────────────────────────────────────────────────────────────
-
-  // Still waiting for Clerk or zustand hydration → show nothing
-  if (!isLoaded || !hydrated) return null;
-
-  // Not signed in at all → go to login
   if (!isSignedIn) {
-    if (needsRegister) setNeedsRegister(false);
+    console.log("[Gate] redirect_login");
     return <Redirect href="/auth/login" />;
   }
 
-  // Signed in, but backend user doesn't exist yet → go to register
-  if (needsRegister) {
+  if (userId != null) {
+    console.log("[Gate] redirect_app", { userId });
+    return <Redirect href="/(app)/(tabs)" />;
+  }
+
+  if (status === "needs_register") {
+    console.log("[Gate] redirect_register", { clerkUserId });
     return <Redirect href="/auth/register" />;
   }
 
-  // Signed in, but we don't yet know the MST_User (rehydration in progress)
-  if (userId == null) {
-    // We could show a loader here if you prefer, but null keeps splash minimal.
-    // e.g. return <LoadingScreen message="Checking your profile…" />;
-    return null;
+  if (status === "error") {
+    return (
+      <View
+        style={{
+          flex: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          paddingHorizontal: 24,
+          backgroundColor: c.bg,
+        }}
+      >
+        <Text
+          style={{
+            color: c.text.primary,
+            fontSize: 20,
+            fontWeight: "800",
+            textAlign: "center",
+          }}
+        >
+          We could not load your account
+        </Text>
+
+        <Text
+          style={{
+            marginTop: 10,
+            color: c.text.secondary,
+            fontSize: 14,
+            textAlign: "center",
+            lineHeight: 20,
+          }}
+        >
+          {errorMessage ??
+            "Please try again. You are still signed in, and we will not log you out."}
+        </Text>
+
+        <Pressable
+          onPress={() => {
+            console.log("[Gate] retry_profile_lookup");
+            setReloadKey((prev) => prev + 1);
+          }}
+          style={{
+            marginTop: 18,
+            minWidth: 180,
+            borderRadius: 12,
+            paddingHorizontal: 16,
+            paddingVertical: 12,
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: c.primary,
+          }}
+        >
+          <Text
+            style={{
+              color: "#FFFFFF",
+              fontSize: 15,
+              fontWeight: "700",
+            }}
+          >
+            Try again
+          </Text>
+        </Pressable>
+      </View>
+    );
   }
 
-  // Normal case: signed in + MST_User present → go to app tabs
-  // console.log("Gate", {
-  //   isLoaded,
-  //   isSignedIn,
-  //   hydrated,
-  //   userId,
-  //   rehydrating,
-  //   shareHydrating,
-  // });
-  console.log("Gate", {
-    isLoaded,
-    isSignedIn,
-    hydrated,
-    userId,
-    rehydrating,
-  });
-
-  return <Redirect href="/(app)/(tabs)" />;
+  return (
+    <View
+      style={{
+        flex: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        paddingHorizontal: 24,
+        backgroundColor: c.bg,
+      }}
+    >
+      <ActivityIndicator />
+      <Text
+        style={{
+          marginTop: 14,
+          color: c.text.primary,
+          fontSize: 16,
+          fontWeight: "700",
+          textAlign: "center",
+        }}
+      >
+        Loading your account
+      </Text>
+      <Text
+        style={{
+          marginTop: 8,
+          color: c.text.secondary,
+          fontSize: 14,
+          textAlign: "center",
+          lineHeight: 20,
+        }}
+      >
+        Please wait while we check your Web3Health profile.
+      </Text>
+    </View>
+  );
 }

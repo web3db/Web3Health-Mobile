@@ -1,25 +1,32 @@
 //app/(app)/(tabs)/index.tsx
+import Header from "@/src/components/composite/home/Header";
+import HomeSharingAttentionSection, {
+  type HomeSharingAttentionItem,
+} from "@/src/components/composite/home/HomeSharingAttentionSection";
+import TrackerCarousel from "@/src/components/composite/home/TrackerCarousel";
+import AllRow from "@/src/components/composite/opportunities/AllRow";
 import SettingsCoach from "@/src/components/overlay/SettingsCoach";
+import { useCurrentUserId } from "@/src/hooks/useCurrentUserId";
+import { openAppSettings } from "@/src/services/navigation/linking";
+import { selectIsRegistered, useAuthStore } from "@/src/store/useAuthStore";
+import { useShareStore } from "@/src/store/useShareStore";
+import { useTrackingStore } from "@/src/store/useTrackingStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
+import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-// ===== Tracking =====
-import Header from "@/src/components/composite/home/Header";
-import TrackerCarousel from "@/src/components/composite/home/TrackerCarousel";
-import { openAppSettings } from "@/src/services/navigation/linking";
-import { useTrackingStore } from "@/src/store/useTrackingStore";
-import { useFocusEffect } from "@react-navigation/native";
-// ===== Marketplace rows =====
-import AllRow from "@/src/components/composite/opportunities/AllRow";
-import { selectIsRegistered, useAuthStore } from "@/src/store/useAuthStore";
 
 export default function HomeScreen() {
   const c = useThemeColors();
   const router = useRouter();
   const [showCoach, setShowCoach] = useState(false);
-const isRegistered = useAuthStore(selectIsRegistered);
+  const isRegistered = useAuthStore(selectIsRegistered);
+
+  const userId = useCurrentUserId();
+  const fetchActiveSessions = useShareStore((s) => s.fetchActiveSessions);
+  const activeSessions = useShareStore((s) => s.activeSessions);
 
   const {
     // Android / Health Connect
@@ -60,7 +67,7 @@ const isRegistered = useAuthStore(selectIsRegistered);
         // errors are surfaced via store.hcError / header status
         console.log(
           "[Home] Android init/refresh error",
-          (e as any)?.message ?? e
+          (e as any)?.message ?? e,
         );
       }
     })();
@@ -80,38 +87,23 @@ const isRegistered = useAuthStore(selectIsRegistered);
         console.log("[Home] iOS mount refresh error", (e as any)?.message ?? e);
       }
     })();
-  }, [initHealthKitIfNeeded, refreshHealthKitData]);
+  }, [initHealthKitIfNeeded, refreshHealthKitData, isRegistered]);
+
+  useEffect(() => {
+    if (userId == null) return;
+    (async () => {
+      try {
+        await fetchActiveSessions(userId);
+      } catch (e) {
+        console.log(
+          "[Home] active sessions load error",
+          (e as any)?.message ?? e,
+        );
+      }
+    })();
+  }, [fetchActiveSessions, userId]);
 
   // On focus:
-  // - Android: quick read-only refresh if we already have grants.
-  // - iOS: reconcile after returning from Settings, then refresh data.
-  // old code that made app slow
-  // useFocusEffect(
-  //   useCallback(() => {
-  //     (async () => {
-  //       try {
-  //         if (Platform.OS === "android") {
-  //           const hasAny =
-  //             (useTrackingStore.getState().hcGrantedKeys?.length ?? 0) > 0;
-  //           if (hasAny) await hcRefresh();
-  //           return;
-  //         }
-
-  //         if (Platform.OS === "ios") {
-  //           if (!isRegistered) return;
-  //           // Re-snapshot after potential Settings changes and refresh datasets
-  //           await useTrackingStore.getState().handleHealthSettingsReturn();
-  //           await refreshHealthKitData();
-  //           return;
-  //         }
-  //       } catch (e) {
-  //         console.log("[Home] focus refresh error", (e as any)?.message ?? e);
-  //       }
-  //     })();
-  //   }, [hcRefresh, refreshHealthKitData])
-  // );
-
-    // On focus:
   // - Android: quick read-only refresh if we already have grants.
   // - iOS: foreground health reconciliation is handled by the Header AppState listener.
   useFocusEffect(
@@ -129,9 +121,8 @@ const isRegistered = useAuthStore(selectIsRegistered);
           console.log("[Home] focus refresh error", (e as any)?.message ?? e);
         }
       })();
-    }, [hcRefresh])
+    }, [hcRefresh]),
   );
-
 
   // Map HCDataset -> TrackerCard[] with "true-zero-only" policy
   const cards = useMemo(() => {
@@ -174,7 +165,7 @@ const isRegistered = useAuthStore(selectIsRegistered);
 
       // Only show datasets for granted metrics (defensive; hcDatasets should already match)
       const visible = source.filter((d) =>
-        grantedSet.size > 0 ? grantedSet.has(d.id as any) : true
+        grantedSet.size > 0 ? grantedSet.has(d.id as any) : true,
       );
 
       return visible.map((d) => toCard(d, "healthconnect"));
@@ -209,6 +200,57 @@ const isRegistered = useAuthStore(selectIsRegistered);
     return [];
   }, [hcDatasets, hcGrantedKeys, hkDatasets, hkActiveMetrics]);
 
+  const sharingAttentionItems = useMemo<HomeSharingAttentionItem[]>(() => {
+    if (!activeSessions || activeSessions.length === 0) {
+      return [];
+    }
+
+    const actionable = activeSessions.filter((s) => {
+      const missed = Number(s.missedWindowsCount ?? 0);
+      return missed > 0 || s.uiStatus === "behind";
+    });
+
+    actionable.sort((a, b) => {
+      const aMissed = Number(a.missedWindowsCount ?? 0);
+      const bMissed = Number(b.missedWindowsCount ?? 0);
+      if (bMissed !== aMissed) return bMissed - aMissed;
+
+      if (a.uiStatus !== b.uiStatus) {
+        if (a.uiStatus === "behind") return -1;
+        if (b.uiStatus === "behind") return 1;
+      }
+
+      const aExpected = a.expectedCompletionDate || a.joinTimeLocal || "";
+      const bExpected = b.expectedCompletionDate || b.joinTimeLocal || "";
+      if (aExpected !== bExpected) return aExpected.localeCompare(bExpected);
+
+      const aLast = a.lastSegmentCreatedOn || "";
+      const bLast = b.lastSegmentCreatedOn || "";
+      return aLast.localeCompare(bLast);
+    });
+
+    return actionable.slice(0, 3).map((s) => {
+      const missed = Number(s.missedWindowsCount ?? 0);
+      const state: HomeSharingAttentionItem["state"] =
+        missed > 0 ? "MISSED" : "BEHIND";
+
+      return {
+        id: String(s.sessionId),
+        postingId: s.postingId,
+        title: s.postingTitle || `Study #${s.postingId}`,
+        badgeLabel:
+          missed > 0
+            ? `Missed ${missed} day${missed === 1 ? "" : "s"}`
+            : "Behind",
+        state,
+        subtitle: [s.buyerName, s.rewardLabel].filter(Boolean).join(" • "),
+        meta: `${Number(s.segmentsSent ?? 0)} / ${Number(
+          s.segmentsExpected ?? 0,
+        )} days`,
+      };
+    });
+  }, [activeSessions]);
+
   const hasPerms =
     Platform.OS === "ios"
       ? (hkActiveMetrics?.length ?? 0) > 0 || !!hkHasAnyData
@@ -220,38 +262,6 @@ const isRegistered = useAuthStore(selectIsRegistered);
   // 1) Try to request via HealthKit sheet.
   // 2) Read the latest hkStatus. If "unnecessary", show SettingsCoach to route to Settings.
   // 3) Otherwise, refresh HK datasets.
-
-  //old that made code slow
-//   const onIOSRequestAccess = useCallback(async () => {
-//   try {
-//     await handleHealthPermissionPress();
-
-//     const { hkStatus: latestStatus, hkHasAnyData: latestHasData } =
-//       useTrackingStore.getState();
-
-//     // If the system says "unnecessary" (no more sheets)
-//     // BUT we still have no data, we must route user to Settings.
-//     if (latestStatus === "unnecessary" && !latestHasData) {
-//       setShowCoach(true);
-//     } else {
-//       // Otherwise (either we have data now, or status is still "shouldRequest"/"unknown"),
-//       // just make sure datasets are in sync.
-//       try {
-//         await refreshHealthKitData();
-//       } catch (e) {
-//         console.log(
-//           "[Home] onIOSRequestAccess refresh failed",
-//           (e as any)?.message ?? e
-//         );
-//       }
-//     }
-//   } catch (e) {
-//     console.log(
-//       "[Home] onIOSRequestAccess failed",
-//       (e as any)?.message ?? e
-//     );
-//   }
-// }, [handleHealthPermissionPress, refreshHealthKitData]);
 
   const onIOSRequestAccess = useCallback(async () => {
     try {
@@ -267,10 +277,7 @@ const isRegistered = useAuthStore(selectIsRegistered);
       }
       // Otherwise, the store’s HealthKit pipeline has already refreshed datasets.
     } catch (e) {
-      console.log(
-        "[Home] onIOSRequestAccess failed",
-        (e as any)?.message ?? e
-      );
+      console.log("[Home] onIOSRequestAccess failed", (e as any)?.message ?? e);
     }
   }, [handleHealthPermissionPress]);
 
@@ -306,6 +313,18 @@ const isRegistered = useAuthStore(selectIsRegistered);
       >
         {/* Header shows HC status (connected / needs perms / unavailable / etc.) */}
         <Header />
+
+        <HomeSharingAttentionSection
+          title="Needs attention"
+          items={sharingAttentionItems}
+          onPressItem={(item) =>
+            router.push({
+              pathname: "/(app)/opportunities/[id]",
+              params: { id: String(item.postingId) },
+            })
+          }
+          onPressSeeAll={() => router.push("/(app)/(tabs)/sharing")}
+        />
 
         {/* Tracking (Health Connect-backed) */}
         <View style={{ marginTop: 8 }}>

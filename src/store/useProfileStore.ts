@@ -195,7 +195,11 @@ export const useProfileStore = create<State & Actions>((set, get) => ({
         { ...next, selectedHealthConditionIds: undefined } as any,
       );
       if (shallowSame && hcSame) return s; // no-op
-      return { edits: next };
+
+      return {
+        edits: next,
+        error: null,
+      };
     });
   },
 
@@ -203,6 +207,10 @@ export const useProfileStore = create<State & Actions>((set, get) => ({
     const s = get();
     const p = s.profile;
     if (!p) return false;
+
+    if (s.error) {
+      set({ error: null });
+    }
 
     // 1) Soft validate (do not block); surface warnings to UI
     const parsed = ProfileEditSchema.safeParse(s.edits);

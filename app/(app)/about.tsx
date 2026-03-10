@@ -2,12 +2,14 @@
 import BackButton from "@/src/components/ui/BackButton";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 import Ionicons from "@expo/vector-icons/Ionicons";
+import * as Application from "expo-application";
 import React from "react";
 import { Linking, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function AboutScreen() {
   const c = useThemeColors();
+  const appVersion = Application.nativeApplicationVersion;
 
   const openUrl = (url: string) => {
     Linking.openURL(url).catch(() => {});
@@ -255,6 +257,17 @@ export default function AboutScreen() {
           }}
         >
           About Web3Health Platform
+        </Text>
+
+        <Text
+          style={{
+            color: c.text.muted,
+            fontSize: 13,
+            textAlign: "center",
+            marginBottom: 6,
+          }}
+        >
+          Version {appVersion ?? "Unknown"}
         </Text>
 
         {/* Intro */}

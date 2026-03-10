@@ -2,7 +2,7 @@
   "expo": {
     "name": "Web3Health(Beta Testing)",
     "slug": "Web3Health",
-    "version": "1.2.5",
+    "version": "1.2.7",
     "orientation": "portrait",
     "icon": "./assets/images/Web3Health.png",
     "scheme": "web3health",
@@ -31,7 +31,9 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "com.mohitnaik21.Web3Health",
+      "googleServicesFile": "./google-services.json",
       "permissions": [
+        "android.permission.POST_NOTIFICATIONS",
         "android.permission.health.READ_STEPS",
         "android.permission.health.READ_FLOORS_CLIMBED",
         "android.permission.health.READ_DISTANCE",

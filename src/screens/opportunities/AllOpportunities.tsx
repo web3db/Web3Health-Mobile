@@ -13,7 +13,14 @@ export default function AllOpportunitiesScreen() {
 
   const data = recent.length ? recent : recommended; // simple fallback
   const renderItem = ({ item }: { item: any }) => (
-    <Pressable onPress={() => router.push({ pathname: "/opportunities/[id]", params: { id: String(item.id) } })}>
+    <Pressable
+      onPress={() =>
+        router.push({
+          pathname: "/opportunities/[id]",
+          params: { id: String(item.id) },
+        })
+      }
+    >
       <OpportunityCard item={item} />
     </Pressable>
   );
@@ -27,10 +34,7 @@ export default function AllOpportunitiesScreen() {
         contentContainerStyle={{ padding: 16, gap: 12 }}
         ListHeaderComponent={
           <View style={{ marginBottom: 8 }}>
-            <Text style={{ color: c.text.primary, fontSize: 22, fontWeight: "800" }}>
-              All Opportunities
-            </Text>
-            <Text style={{ color: c.text.secondary, marginTop: 4 }}>
+            <Text style={{ color: c.text.secondary }}>
               Browse the complete list.
             </Text>
           </View>
