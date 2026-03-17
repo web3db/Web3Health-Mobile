@@ -13,7 +13,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 export default function MetricDetails() {
   const { metricId } = useLocalSearchParams<{ metricId?: string | string[] }>();
   const key = decodeURIComponent(
-    Array.isArray(metricId) ? (metricId?.[0] ?? "") : (metricId ?? "")
+    Array.isArray(metricId) ? (metricId?.[0] ?? "") : (metricId ?? ""),
   );
 
   const c = useThemeColors();
@@ -69,7 +69,7 @@ export default function MetricDetails() {
       // - iOS: calls refreshHealthKitData()
       await hcSetWindow(w);
     },
-    [hcSetWindow, hcWindow]
+    [hcSetWindow, hcWindow],
   );
 
   /** ───────────────────────── Availability & gating ───────────────────────── */
@@ -203,7 +203,7 @@ export default function MetricDetails() {
                 label="Grant all"
                 onPress={
                   isAndroid
-                    ? hcRefresh // lightweight no-op; see below, we'll prefer opening HC directly
+                    ? hcOpenSettings
                     : async () => {
                         try {
                           await handleHealthPermissionPress();
@@ -245,7 +245,7 @@ export default function MetricDetails() {
   /** ───────────────────────── Find dataset ───────────────────────── */
   const d = useMemo(
     () => (datasets ?? []).find((x) => x.id === (key as MetricKey)),
-    [datasets, key]
+    [datasets, key],
   );
 
   // Still loading or no datasets yet
@@ -292,7 +292,7 @@ export default function MetricDetails() {
         const raw = Number(b.value ?? 0) || 0;
         return { ...b, value: raw };
       }),
-    [d.buckets]
+    [d.buckets],
   );
 
   const isHourly = hcWindow === "24h";
@@ -313,13 +313,18 @@ export default function MetricDetails() {
 
   const breakdownRows = useMemo(() => {
     const rows = [...numericBuckets].sort(
-      (a, b) => new Date(b.start).getTime() - new Date(a.start).getTime()
+      (a, b) => new Date(b.start).getTime() - new Date(a.start).getTime(),
     );
     return rows;
   }, [numericBuckets]);
 
   const PAGE = 20;
   const [visibleCount, setVisibleCount] = useState(PAGE);
+
+  useEffect(() => {
+    setVisibleCount(PAGE);
+  }, [key, hcWindow]);
+
   const hasMore = breakdownRows.length > visibleCount;
   const showMore = () =>
     setVisibleCount((c) => Math.min(c + PAGE, breakdownRows.length));
@@ -366,24 +371,19 @@ export default function MetricDetails() {
     hcWindow,
     coverageTotal,
   ]);
-
   const isHeartRate = d.id === "heartRate";
   const isSleep = d.id === "sleep";
+  const showHeartRateCards = isHeartRate;
   const unitLabel = d.unit;
 
   let headlineNumber = 0;
 
   if (isHeartRate) {
     const latestValue = d.latest != null ? Number(d.latest) || 0 : 0;
-
-    let hrValue = latestValue > 0 ? latestValue : 0;
-
-    headlineNumber = hrValue > 0 ? Math.round(hrValue) : 0;
+    headlineNumber = latestValue > 0 ? Math.round(latestValue) : 0;
   } else if (isDistanceMetric) {
-    // Distance → total meters as whole number
     headlineNumber = Math.round(Number(d.total || 0) || 0);
   } else {
-    // Steps, floors, activeCalories, sleep etc.
     headlineNumber = Math.round(Number(d.total || 0) || 0);
   }
 
@@ -402,12 +402,32 @@ export default function MetricDetails() {
       : "-";
 
   const freshnessLabel = formatFreshness(d.freshnessISO);
+  const latestReadingLabel = formatLatestReading(d.meta);
 
-  const primaryLabel = isHeartRate
-    ? "Heart rate"
+  const heartRateMinMaxText = (() => {
+    const minBpm = Number(d.meta?.minBpm || 0);
+    const maxBpm = Number(d.meta?.maxBpm || 0);
+    if (minBpm > 0 && maxBpm > 0) {
+      return `${Math.round(minBpm)} / ${Math.round(maxBpm)} bpm`;
+    }
+    return "-";
+  })();
+
+  const primaryLabel = showHeartRateCards
+    ? "Latest heart rate"
     : isSleep
       ? "Total sleep"
       : `Total ${d.label.toLowerCase()}`;
+
+  const thirdCardLabel = showHeartRateCards ? "Min / Max" : "Trend (vs prev.)";
+  const thirdCardValue = showHeartRateCards ? heartRateMinMaxText : trendLabel;
+
+  const fourthCardLabel = showHeartRateCards
+    ? "Latest reading"
+    : "Last updated";
+  const fourthCardValue = showHeartRateCards
+    ? latestReadingLabel
+    : freshnessLabel;
 
   return (
     <>
@@ -519,10 +539,14 @@ export default function MetricDetails() {
                 />
               </View>
               <View style={{ flexBasis: "48%", flexGrow: 1 }}>
-                <Stat label="Trend (vs prev.)" value={trendLabel} highlight />
+                <Stat label={thirdCardLabel} value={thirdCardValue} highlight />
               </View>
               <View style={{ flexBasis: "48%", flexGrow: 1 }}>
-                <Stat label="Last updated" value={freshnessLabel} highlight />
+                <Stat
+                  label={fourthCardLabel}
+                  value={fourthCardValue}
+                  highlight
+                />
               </View>
             </View>
 
@@ -570,8 +594,9 @@ export default function MetricDetails() {
                 marginBottom: 6,
               }}
             >
-              Each row shows the value for one hour/day in your selected time
-              range. Times shown in {tzLabel}.
+              {isHeartRate
+                ? `Each row shows the average bpm for one ${isHourly ? "hour" : "day"} in your selected time range. Times shown in ${tzLabel}.`
+                : `Each row shows the value for one ${isHourly ? "hour" : "day"} in your selected time range. Times shown in ${tzLabel}.`}
             </Text>
             {breakdownRows.slice(0, visibleCount).map((b, i) => {
               const v = Number(b.value || 0) || 0;
@@ -700,6 +725,33 @@ function formatFreshness(iso?: string) {
   } catch {
     return "—";
   }
+}
+
+function formatLatestReading(meta?: Record<string, any>) {
+  const ageSec = Number(meta?.latestAgeSec);
+  const atISO = meta?.latestAtISO as string | undefined;
+
+  if (Number.isFinite(ageSec) && ageSec >= 0) {
+    if (ageSec < 60) return "Just now";
+    if (ageSec < 3600) return `${Math.floor(ageSec / 60)} min ago`;
+    if (ageSec < 86400) return `${Math.floor(ageSec / 3600)} hr ago`;
+  }
+
+  if (atISO) {
+    try {
+      const d = new Date(atISO);
+      return d.toLocaleString([], {
+        month: "short",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return "—";
+    }
+  }
+
+  return "—";
 }
 
 function formatBucketStamp(iso: string, isHourly: boolean) {

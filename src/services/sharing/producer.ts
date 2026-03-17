@@ -126,6 +126,16 @@ export async function buildSegmentPayload(
   const isPositive = (v: unknown) =>
     typeof v === "number" && Number.isFinite(v) && v > 0;
 
+  const hrComputedHasData = (computedJson: any) => {
+    const buckets = Array.isArray(computedJson?.buckets)
+      ? computedJson.buckets
+      : Array.isArray(computedJson?.hourlyBuckets)
+        ? computedJson.hourlyBuckets
+        : [];
+
+    return buckets.some((b: any) => Number(b?.count || 0) > 0);
+  };
+
   for (const [code, metricId] of Object.entries(ctx.metricMap) as Array<
     [MetricCode, number]
   >) {
@@ -162,12 +172,25 @@ export async function buildSegmentPayload(
       (code === "HR" &&
         (isPositive(s.avgValue) ||
           isPositive(s.minValue) ||
-          isPositive(s.maxValue)));
+          isPositive(s.maxValue) ||
+          hrComputedHasData(s.computedJson)));
 
     if (!meaningful) {
       diag.zeroData.push(code);
     } else {
       anyData = true;
+    }
+
+    if (__DEV__ && code === "HR") {
+      console.log(TAG, "HR metric payload", {
+        metricId,
+        avgValue: s.avgValue ?? null,
+        minValue: s.minValue ?? null,
+        maxValue: s.maxValue ?? null,
+        samplesCount: s.samplesCount ?? null,
+        hasComputedBuckets: Array.isArray(s.computedJson?.buckets),
+        hasComputedHourlyBuckets: Array.isArray(s.computedJson?.hourlyBuckets),
+      });
     }
 
     metricsOut.push({
@@ -188,7 +211,8 @@ export async function buildSegmentPayload(
             : code === "HR" &&
                 (isPositive(s.avgValue) ||
                   isPositive(s.minValue) ||
-                  isPositive(s.maxValue))
+                  isPositive(s.maxValue) ||
+                  hrComputedHasData(s.computedJson))
               ? "hrStats"
               : "none",
       },

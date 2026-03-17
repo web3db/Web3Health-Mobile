@@ -57,6 +57,15 @@ export type MetricSummary = {
 
 type Between = { operator: "between"; startTime: string; endTime: string };
 
+type HRComputedBucket = {
+  start: string;
+  end: string;
+  value: number;
+  min?: number;
+  max?: number;
+  count?: number;
+};
+
 // ---------- helpers ----------
 
 const toNum = (v: any, fallback = 0) => {
@@ -711,20 +720,57 @@ export async function summarizeWindow(
       }
 
       case "HR": {
-        const { avgBpm, minBpm, maxBpm, points } =
+        const { avgBpm, minBpm, maxBpm } =
           await hcReadHeartRateInWindow(winAndroid);
 
-        const buckets = await hcReadHourlyBucketsInWindow(
+        const rawBuckets = await hcReadHourlyBucketsInWindow(
           "heartRate",
           winAndroid,
           bucketMinutes,
         );
 
-        const count = Array.isArray(points) ? points.length : null;
+        const hrBuckets: HRComputedBucket[] = (rawBuckets ?? []).map(
+          (b: any) => ({
+            start: b.start,
+            end: b.end,
+            value: Number(b.value || 0),
+            min: Number(b.min || 0),
+            max: Number(b.max || 0),
+            count: Number(b.count || 0),
+          }),
+        );
 
-        const empty = !avgBpm && !minBpm && !maxBpm && (!count || count <= 0);
+        const samplesCount = hrBuckets.reduce(
+          (sum, b) => sum + Math.max(0, Number(b.count || 0)),
+          0,
+        );
 
-        if (opts?.probeOnly && empty) return null;
+        const bucketsWithData = hrBuckets.filter(
+          (b) => Number(b.count || 0) > 0,
+        ).length;
+
+        const hasAny =
+          (avgBpm != null && Number.isFinite(avgBpm) && avgBpm > 0) ||
+          (minBpm != null && Number.isFinite(minBpm) && minBpm > 0) ||
+          (maxBpm != null && Number.isFinite(maxBpm) && maxBpm > 0) ||
+          samplesCount > 0 ||
+          bucketsWithData > 0;
+
+        if (opts?.probeOnly && !hasAny) return null;
+
+        if (__DEV__) {
+          console.log(TAG, "HR android summary", {
+            fromUtcISO,
+            toUtcISO,
+            bucketMinutes,
+            avgBpm,
+            minBpm,
+            maxBpm,
+            samplesCount,
+            bucketsWithData,
+            bucketCount: hrBuckets.length,
+          });
+        }
 
         const ms: MetricSummary = {
           metricCode: "HR",
@@ -732,10 +778,17 @@ export async function summarizeWindow(
           avgValue: avgBpm ?? null,
           minValue: minBpm ?? null,
           maxValue: maxBpm ?? null,
-          samplesCount: count,
+          samplesCount,
           computedJson: useHourlyShape
-            ? { source: "healthconnect", hourlyBuckets: buckets }
-            : { source: "healthconnect", bucketMinutes, buckets },
+            ? {
+                source: "healthconnect",
+                hourlyBuckets: hrBuckets,
+              }
+            : {
+                source: "healthconnect",
+                bucketMinutes,
+                buckets: hrBuckets,
+              },
         };
 
         return ms;
@@ -858,15 +911,36 @@ async function probeMetricHasDataInWindow(
             : { hasData: false, reason: "NO_DATA" };
         }
         case "HR": {
-          const { avgBpm, minBpm, maxBpm, points } =
+          const { avgBpm, minBpm, maxBpm } =
             await hcReadHeartRateInWindow(winAndroid);
 
-          const count = Array.isArray(points) ? points.length : 0;
+          const rawBuckets = await hcReadHourlyBucketsInWindow(
+            "heartRate",
+            winAndroid,
+            60,
+          );
+
+          const hrBuckets: HRComputedBucket[] = (rawBuckets ?? []).map(
+            (b: any) => ({
+              start: b.start,
+              end: b.end,
+              value: Number(b.value || 0),
+              min: Number(b.min || 0),
+              max: Number(b.max || 0),
+              count: Number(b.count || 0),
+            }),
+          );
+
+          const samplesCount = hrBuckets.reduce(
+            (sum, b) => sum + Math.max(0, Number(b.count || 0)),
+            0,
+          );
+
           const hasAny =
             (avgBpm != null && Number.isFinite(avgBpm) && avgBpm > 0) ||
             (minBpm != null && Number.isFinite(minBpm) && minBpm > 0) ||
             (maxBpm != null && Number.isFinite(maxBpm) && maxBpm > 0) ||
-            count > 0;
+            samplesCount > 0;
 
           return hasAny
             ? { hasData: true }

@@ -82,7 +82,8 @@ type MetricKey =
   | "heartRate"
   | "weight"
   | "sleep"
-  | "respiratoryRate";
+  | "respiratoryRate"
+  | "historyAccess";
 
 /** ───────────────────────── Window & Series types (parity with HK) ───────────────────────── */
 export type Window = { fromUtc: string; toUtc: string };
@@ -146,6 +147,17 @@ const METRICS: Record<MetricKey, MetricDef> = {
     recordType: "RespiratoryRate" as any, // RNHC supports this record; some older versions type it loosely
     // no aggregateKey (point samples)
     permission: { accessType: "read", recordType: "RespiratoryRate" as any },
+  },
+  historyAccess: {
+    label: "Historical data access",
+    recordType: "ReadHealthDataHistory" as any,
+    // Maps to PERMISSION_READ_HEALTH_DATA_HISTORY via PermissionUtils.kt:
+    // if (accessType == "read" && recordType == "ReadHealthDataHistory")
+    // Unlocks reading data beyond the default ~30-day rolling window.
+    permission: {
+      accessType: "read",
+      recordType: "ReadHealthDataHistory",
+    } as any,
   },
 };
 
@@ -566,6 +578,128 @@ export async function readSleepHourlyBuckets24(): Promise<Bucket[]> {
 
 /** ───────────────────────── Heart Rate ───────────────────────── */
 
+type HeartRateAggregateKey =
+  | "BPM_AVG"
+  | "BPM_MIN"
+  | "BPM_MAX"
+  | "MEASUREMENTS_COUNT";
+
+export type HeartRateBucket = {
+  start: string;
+  end: string;
+  value: number;
+  min?: number;
+  max?: number;
+  count?: number;
+};
+function unwrapHeartRateAggregateNumber(raw: any): number {
+  if (raw == null) return 0;
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : 0;
+
+  const n = Number(
+    raw?.value ??
+      raw?.inBeatsPerMinute?.value ??
+      raw?.inBeatsPerMinute ??
+      raw?.beatsPerMinute ??
+      0,
+  );
+  return Number.isFinite(n) ? n : 0;
+}
+
+function heartRateAggValue(result: any, key: HeartRateAggregateKey): number {
+  return unwrapHeartRateAggregateNumber(result?.[key]);
+}
+
+function summarizeHeartRateBuckets(
+  label: string,
+  buckets: HeartRateBucket[],
+): void {
+  const values = buckets.map((b) => Number(b.value || 0)).filter((v) => v > 0);
+  const counts = buckets.map((b) => Number(b.count || 0));
+  const nonZero = counts.filter((c) => c > 0).length;
+  const min = values.length ? Math.min(...values) : 0;
+  const max = values.length ? Math.max(...values) : 0;
+
+  log(
+    label,
+    "buckets=",
+    buckets.length,
+    "nonZero=",
+    nonZero,
+    "min=",
+    min,
+    "max=",
+    max,
+  );
+}
+
+async function aggregateHeartRateBuckets(
+  win: Window,
+  duration: "HOURS" | "DAYS" | "MINUTES",
+  length: number,
+): Promise<HeartRateBucket[]> {
+  const bucketMinutes =
+    duration === "MINUTES" ? length : duration === "HOURS" ? 60 : 24 * 60;
+  const edges =
+    duration === "DAYS"
+      ? makeEdgesForWindow(win, "day")
+      : duration === "HOURS"
+        ? makeEdgesForWindow(win, "hour")
+        : makeMinuteEdgesForWindow(win, length);
+
+  if (edges.length === 0) return [];
+
+  const rows = await aggregateGroupByDuration({
+    recordType: "HeartRate" as any,
+    timeRangeFilter: toBetween(win),
+    timeRangeSlicer: { duration, length },
+  });
+
+  // Health Connect returns DAYS rows with UTC-midnight startTime.
+  // Our edges are local-midnight aligned. Normalise both sides to a
+  // date-string key (YYYY-MM-DD in local time) so they always match
+  // regardless of timezone offset — no manual math, just key alignment.
+  const toDateKey = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+  const byBucket = new Map<string | number, any>();
+  for (const row of rows ?? []) {
+    const t0 = new Date(row.startTime);
+    const key =
+      duration === "DAYS"
+        ? toDateKey(t0)
+        : duration === "HOURS"
+          ? hourBucketKeyMs(t0)
+          : bucketKeyMs(t0, bucketMinutes);
+    byBucket.set(key, row);
+  }
+
+  return edges.map(({ start, end }) => {
+    const key =
+      duration === "DAYS"
+        ? toDateKey(start)
+        : duration === "HOURS"
+          ? hourBucketKeyMs(start)
+          : bucketKeyMs(start, bucketMinutes);
+
+    const row = byBucket.get(key);
+    const result = (row as any)?.result ?? row;
+
+    const avg = heartRateAggValue(result, "BPM_AVG");
+    const min = heartRateAggValue(result, "BPM_MIN");
+    const max = heartRateAggValue(result, "BPM_MAX");
+    const count = heartRateAggValue(result, "MEASUREMENTS_COUNT");
+
+    return {
+      start: start.toISOString(),
+      end: end.toISOString(),
+      value: count > 0 ? Math.round(avg) : 0,
+      min: count > 0 ? Math.round(min) : 0,
+      max: count > 0 ? Math.round(max) : 0,
+      count: Math.max(0, Math.round(count)),
+    };
+  });
+}
 /** Heart-rate → 24 hourly buckets of avg BPM, newest last. */
 // export async function readHeartRateHourly24(): Promise<Bucket[]> {
 //   const end = new Date();
@@ -624,7 +758,7 @@ export async function readSleepHourlyBuckets24(): Promise<Bucket[]> {
 //   return buckets;
 // }
 
-export async function readHeartRateHourly24(): Promise<Bucket[]> {
+export async function readHeartRateHourly24(): Promise<HeartRateBucket[]> {
   const end = new Date();
   end.setSeconds(0, 0);
   const start = new Date(end);
@@ -636,10 +770,13 @@ export async function readHeartRateHourly24(): Promise<Bucket[]> {
   };
   const rows = await hcReadHeartRateHourlyBucketsInWindow(win);
 
-  const buckets: Bucket[] = rows.map((b) => ({
+  const buckets: HeartRateBucket[] = rows.map((b) => ({
     start: b.start,
     end: b.end,
     value: b.value,
+    min: b.min,
+    max: b.max,
+    count: b.count,
   }));
 
   log(
@@ -667,7 +804,10 @@ async function latestHeartRateSample(): Promise<{
       : undefined;
     const bpm = Number(lastSample?.beatsPerMinute);
     const atISO = lastSample?.time ?? rec?.endTime ?? rec?.startTime;
-    return { bpm: Number.isFinite(bpm) ? bpm : null, atISO };
+
+    const result = { bpm: Number.isFinite(bpm) ? bpm : null, atISO };
+    log("[HR][latestRaw]", result);
+    return result;
   } catch (e) {
     logErr("latestHeartRateSample() error", e);
     return { bpm: null, atISO: undefined };
@@ -677,57 +817,57 @@ async function latestHeartRateSample(): Promise<{
 /** Heart-rate → N daily buckets (avg BPM per local day), newest last. */
 export async function readHeartRateDailyBuckets(
   days: 7 | 30 | 90,
-): Promise<Bucket[]> {
-  const range = lastNDays(days);
-  const out = await readRecords("HeartRate", {
-    timeRangeFilter: range,
-    pageSize: 2000,
-    ascendingOrder: true,
-  });
+): Promise<HeartRateBucket[]> {
+  const end = localMidnight();
+  end.setDate(end.getDate() + 1);
 
-  const recs = (out.records ?? []) as any[];
-  const edges = makeDailyEdges(days);
-  const sums = new Array(edges.length).fill(0);
-  const counts = new Array(edges.length).fill(0);
+  const start = new Date(end);
+  start.setDate(start.getDate() - days);
 
-  // Each HeartRate record has samples: [{ time, beatsPerMinute }, ...]
-  for (const r of recs) {
-    const samples = Array.isArray(r?.samples) ? r.samples : [];
-    for (const s of samples) {
-      const t = new Date(s.time).getTime();
-      const bpm = Number(s.beatsPerMinute);
-      if (!Number.isFinite(bpm)) continue;
-      // bin sample into its day bucket
-      for (let i = 0; i < edges.length; i++) {
-        const S = edges[i].start.getTime(),
-          E = edges[i].end.getTime();
-        if (t >= S && t < E) {
-          sums[i] += bpm;
-          counts[i] += 1;
-          break;
+  const win: Window = {
+    fromUtc: start.toISOString(),
+    toUtc: end.toISOString(),
+  };
+
+  try {
+    const buckets = await aggregateHeartRateBuckets(win, "DAYS", 1);
+
+    try {
+      const latest = await latestHeartRateSample();
+      const latestBpm = Number(latest?.bpm || 0);
+      const latestAt = latest?.atISO ? new Date(latest.atISO) : null;
+
+      if (
+        latestBpm > 0 &&
+        latestAt &&
+        Number.isFinite(latestAt.getTime()) &&
+        buckets.length > 0
+      ) {
+        const lastIdx = buckets.length - 1;
+        const bucketStart = new Date(buckets[lastIdx].start).getTime();
+        const bucketEnd = new Date(buckets[lastIdx].end).getTime();
+        const latestMs = latestAt.getTime();
+
+        if (
+          latestMs >= bucketStart &&
+          latestMs < bucketEnd &&
+          Number(buckets[lastIdx].value || 0) <= 0
+        ) {
+          buckets[lastIdx] = {
+            ...buckets[lastIdx],
+            value: Math.round(latestBpm),
+          };
         }
       }
-    }
+    } catch {}
+
+    summarizeHeartRateBuckets(`[HR][daily][agg] days=${days}`, buckets);
+    return buckets;
+  } catch (e) {
+    logErr("[HR][daily][agg] failed", e, { days, win });
+    return [];
   }
-
-  const buckets: Bucket[] = edges.map(({ start, end }, i) => ({
-    start: start.toISOString(),
-    end: end.toISOString(),
-    value: counts[i] > 0 ? Math.round(sums[i] / counts[i]) : 0,
-  }));
-
-  log(
-    "[HR][daily]",
-    "days=",
-    days,
-    "bucketLen=",
-    buckets.length,
-    "nonZero=",
-    buckets.filter((b) => b.value > 0).length,
-  );
-  return buckets;
 }
-
 /** Latest heart-rate BPM today */
 async function latestHeartRateBpm(): Promise<number | null> {
   try {
@@ -1115,11 +1255,6 @@ export async function read7dBuckets(
 
   const m = METRICS[metric];
   try {
-    const endLocal = new Date();
-    endLocal.setSeconds(0, 0);
-    const startLocal = new Date(endLocal);
-    startLocal.setDate(endLocal.getDate() - 7);
-
     const rows = await aggregateGroupByDuration({
       recordType: m.recordType,
       timeRangeFilter: lastNDaysLocal(7),
@@ -1297,13 +1432,6 @@ export async function read24hBuckets(
   try {
     const m = METRICS[metric];
 
-    // Anchor to the current minute boundary
-    const endLocal = new Date();
-    endLocal.setSeconds(0, 0);
-    const startLocal = new Date(endLocal);
-    startLocal.setHours(endLocal.getHours() - 24);
-
-    // Shift the *range* into UTC so 1-hour slices align to local clock hours
     const rows = await aggregateGroupByDuration({
       recordType: m.recordType,
       timeRangeFilter: last24hLocal(),
@@ -1348,10 +1476,6 @@ export async function read30dBuckets(
 ): Promise<Bucket[]> {
   try {
     const m = METRICS[metric];
-    const endLocal = new Date();
-    endLocal.setSeconds(0, 0);
-    const startLocal = new Date(endLocal);
-    startLocal.setDate(endLocal.getDate() - 30);
 
     const rows = await aggregateGroupByDuration({
       recordType: m.recordType,
@@ -1393,10 +1517,6 @@ export async function read90dBuckets(
 ): Promise<Bucket[]> {
   try {
     const m = METRICS[metric];
-    const endLocal = new Date();
-    endLocal.setSeconds(0, 0);
-    const startLocal = new Date(endLocal);
-    startLocal.setDate(endLocal.getDate() - 90);
 
     const rows = await aggregateGroupByDuration({
       recordType: m.recordType,
@@ -1647,59 +1767,74 @@ export async function hcReadHeartRateInWindow(win: Window): Promise<{
   if (Platform.OS !== "android") return {};
   if (!(await hasReadPermission("heartRate"))) return {};
 
-  const range = toBetween(win);
   const interval = pickStatsInterval(win);
-  const edges = makeEdgesForWindow(win, interval);
+  const duration = interval === "hour" ? "HOURS" : "DAYS";
 
   try {
-    const out = await readRecords("HeartRate", {
-      timeRangeFilter: range,
-      pageSize: 2000,
-      ascendingOrder: true,
+    const res = await aggregateRecord({
+      recordType: "HeartRate" as any,
+      timeRangeFilter: toBetween(win),
     });
-    const recs = (out.records ?? []) as any[];
 
-    const sums = new Array(edges.length).fill(0);
-    const counts = new Array(edges.length).fill(0);
-    const allVals: number[] = [];
+    // aggregateRecord in v3 returns fields directly on the response object,
+    // not nested under .result — try both shapes for safety.
+    const result = (res as any)?.result ?? res;
+    const avg = heartRateAggValue(result, "BPM_AVG");
+    const min = heartRateAggValue(result, "BPM_MIN");
+    const max = heartRateAggValue(result, "BPM_MAX");
+    const count = heartRateAggValue(result, "MEASUREMENTS_COUNT");
 
-    for (const r of recs) {
-      const samples = Array.isArray(r?.samples) ? r.samples : [];
-      for (const s of samples) {
-        const t = new Date(s.time).getTime();
-        const bpm = Number(s.beatsPerMinute);
-        if (!Number.isFinite(bpm) || bpm <= 0) continue;
-        allVals.push(Math.round(bpm));
-        for (let i = 0; i < edges.length; i++) {
-          const S = edges[i].start.getTime(),
-            E = edges[i].end.getTime();
-          if (t >= S && t < E) {
-            sums[i] += bpm;
-            counts[i] += 1;
-            break;
-          }
-        }
-      }
+    log(
+      "[HR][windowStats][aggregateRecord]",
+      "from=",
+      win.fromUtc,
+      "to=",
+      win.toUtc,
+      "avg=",
+      avg,
+      "min=",
+      min,
+      "max=",
+      max,
+      "count=",
+      count,
+      "rawResult=",
+      result,
+    );
+
+    if (!(min > 0 && max > 0)) {
+      // aggregateRecord returned no usable min/max for this window.
+      // This is the source of truth — we do NOT fall back to raw records.
+      // Log it so we can diagnose without masking the real problem.
+      logErr("[HR][windowStats] aggregateRecord returned no min/max", null, {
+        win,
+        avg,
+        min,
+        max,
+        count,
+        rawResult: result,
+      });
     }
 
-    if (allVals.length === 0) return { points: [] };
+    const buckets = await aggregateHeartRateBuckets(win, duration, 1);
+    summarizeHeartRateBuckets("[HR][windowStats][agg]", buckets);
 
-    const avg = Math.round(allVals.reduce((a, b) => a + b, 0) / allVals.length);
-    const min = Math.min(...allVals);
-    const max = Math.max(...allVals);
-
-    const points: SeriesPoint[] = edges.map((e, i) => ({
-      ts: e.end.toISOString(),
-      value: counts[i] > 0 ? Math.round(sums[i] / counts[i]) : 0,
+    const points: SeriesPoint[] = buckets.map((b) => ({
+      ts: b.end,
+      value: b.value,
     }));
 
-    return { avgBpm: avg, minBpm: min, maxBpm: max, points };
+    return {
+      avgBpm: avg > 0 ? Math.round(avg) : undefined,
+      minBpm: min > 0 ? Math.round(min) : undefined,
+      maxBpm: max > 0 ? Math.round(max) : undefined,
+      points,
+    };
   } catch (e) {
-    logErr("[HC] hcReadHeartRateInWindow failed", e);
+    logErr("[HC] hcReadHeartRateInWindow failed", e, { win, interval });
     return {};
   }
 }
-
 /** ───────────────────────── Window sleep-minutes reader ───────────────────────── */
 export async function hcReadSleepMinutesInWindow(
   win: Window,
@@ -1938,13 +2073,6 @@ function toHCRecordType(
   return m.recordType;
 }
 
-function toHCAggregateKey(
-  metric: "steps" | "floors" | "distance" | "activeCalories",
-) {
-  const m = METRICS[metric];
-  return m.aggregateKey!;
-}
-
 /**
  * Sum-style metrics → hourly buckets in a window.
  * Uses Health Connect aggregateGroupByDuration (hour slices).
@@ -1992,111 +2120,51 @@ export async function hcReadQuantityHourlyBucketsInWindow(
 /**
  * Heart rate → hourly buckets (avg BPM) in a window.
  *
- * NOTE: Unlike sum-style records, Health Connect (via this RN library) does not
- * reliably expose a stats-collection API for HeartRate equivalent to HealthKit’s
- * statistics queries. So we bin HeartRate samples here (still keeping the summarizer clean).
+ * Uses aggregateGroupByDuration so we read one aggregated row per hour bucket.
  */
 export async function hcReadHeartRateHourlyBucketsInWindow(
   win: Window,
-): Promise<HourlyBucket[]> {
+): Promise<HeartRateBucket[]> {
   if (Platform.OS !== "android") return [];
   if (!(await hasReadPermission("heartRate"))) return [];
 
-  const edges = makeHourlyEdgesForWindow(win);
-  if (edges.length === 0) return [];
-
   try {
-    const out = await readRecords("HeartRate", {
-      timeRangeFilter: toBetween(win),
-      pageSize: 2000,
-      ascendingOrder: true,
-    });
-
-    const sums = new Array(edges.length).fill(0);
-    const counts = new Array(edges.length).fill(0);
-
-    const recs = (out.records ?? []) as any[];
-    for (const r of recs) {
-      const samples = Array.isArray(r?.samples) ? r.samples : [];
-      for (const s of samples) {
-        const t = new Date(s.time).getTime();
-        const bpm = Number(s.beatsPerMinute);
-        if (!Number.isFinite(bpm) || bpm <= 0) continue;
-
-        for (let i = 0; i < edges.length; i++) {
-          const S = edges[i].start.getTime();
-          const E = edges[i].end.getTime();
-          if (t >= S && t < E) {
-            sums[i] += bpm;
-            counts[i] += 1;
-            break;
-          }
-        }
-      }
-    }
-
-    return edges.map(({ start, end }, i) => ({
-      start: start.toISOString(),
-      end: end.toISOString(),
-      value: counts[i] > 0 ? Math.round(sums[i] / counts[i]) : 0,
-    }));
+    const buckets = await aggregateHeartRateBuckets(win, "HOURS", 1);
+    summarizeHeartRateBuckets("[HR][hourlyBuckets][agg]", buckets);
+    return buckets;
   } catch (e) {
-    logErr("[HC] hcReadHeartRateHourlyBucketsInWindow failed", e);
+    logErr("[HC] hcReadHeartRateHourlyBucketsInWindow failed", e, { win });
     return [];
   }
 }
-
 /**
- * Heart rate → 5-minute buckets (avg BPM) in a window (granularity plan).
- * This bins samples; does not rely on aggregateGroupByDuration for HeartRate.
+ * Heart rate → 5-minute buckets (avg BPM) in a window.
+ * Uses aggregateGroupByDuration with minute slicing.
  */
+
 export async function hcReadHeartRateMinuteBucketsInWindow(
   win: Window,
   bucketMinutes: number = 5,
-): Promise<MinuteBucket[]> {
+): Promise<HeartRateBucket[]> {
   if (Platform.OS !== "android") return [];
   if (!(await hasReadPermission("heartRate"))) return [];
 
-  const edges = makeMinuteEdgesForWindow(win, bucketMinutes);
-  if (edges.length === 0) return [];
-
   try {
-    const out = await readRecords("HeartRate", {
-      timeRangeFilter: toBetween(win),
-      pageSize: 2000,
-      ascendingOrder: true,
-    });
-
-    const sums = new Array(edges.length).fill(0);
-    const counts = new Array(edges.length).fill(0);
-
-    const recs = (out.records ?? []) as any[];
-    for (const r of recs) {
-      const samples = Array.isArray(r?.samples) ? r.samples : [];
-      for (const s of samples) {
-        const t = new Date(s.time).getTime();
-        const bpm = Number(s.beatsPerMinute);
-        if (!Number.isFinite(bpm) || bpm <= 0) continue;
-
-        for (let i = 0; i < edges.length; i++) {
-          const S = edges[i].start.getTime();
-          const E = edges[i].end.getTime();
-          if (t >= S && t < E) {
-            sums[i] += bpm;
-            counts[i] += 1;
-            break;
-          }
-        }
-      }
-    }
-
-    return edges.map(({ start, end }, i) => ({
-      start: start.toISOString(),
-      end: end.toISOString(),
-      value: counts[i] > 0 ? Math.round(sums[i] / counts[i]) : 0,
-    }));
+    const buckets = await aggregateHeartRateBuckets(
+      win,
+      "MINUTES",
+      bucketMinutes,
+    );
+    summarizeHeartRateBuckets(
+      `[HR][minuteBuckets][agg] bucketMinutes=${bucketMinutes}`,
+      buckets,
+    );
+    return buckets;
   } catch (e) {
-    logErr("[HC] hcReadHeartRateMinuteBucketsInWindow failed", e);
+    logErr("[HC] hcReadHeartRateMinuteBucketsInWindow failed", e, {
+      win,
+      bucketMinutes,
+    });
     return [];
   }
 }
