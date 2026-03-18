@@ -4,6 +4,7 @@ import SharingOverviewCard from "@/src/components/composite/sharing/SharingOverv
 import { useCurrentUserId } from "@/src/hooks/useCurrentUserId";
 import { useShareStore } from "@/src/store/useShareStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
+import { useFocusEffect } from "@react-navigation/native";
 import { useCallback, useEffect, useState } from "react";
 import { RefreshControl, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -44,6 +45,16 @@ export default function SharingScreen() {
     load();
   }, [load]);
 
+  // Re-fetch dashboard, active sessions, and rewards every time this screen
+  // comes into focus. Without this, syncing on the opportunity detail screen updates
+  // the store but this screen never re-fetches — so ActiveSharesList stays stale
+  // until the user manually pulls to refresh.
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load]),
+  );
+
   // Only show "Nothing shared yet" if we know the user, fetch is not in-flight,
   // and there is no dashboard, no rewards, and no active sessions.
   const hasAnySharingData =
@@ -52,7 +63,6 @@ export default function SharingScreen() {
     (activeSessions != null && activeSessions.length > 0);
 
   const showEmpty = userId != null && !loading && !hasAnySharingData;
-
 
   return (
     <SafeAreaView
@@ -93,7 +103,6 @@ export default function SharingScreen() {
             <SharingOverviewCard />
             <ActiveSharesList />
             {rewards ? <EarningsCard /> : null}
-  
           </>
         )}
       </ScrollView>

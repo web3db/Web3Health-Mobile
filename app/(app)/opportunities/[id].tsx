@@ -1248,6 +1248,9 @@ export default function OpportunityDetails() {
     return {};
   }, [postingId, shareCtx, item]);
 
+  //  After catchUpNextOne() the store updates snapshot internally  but the useFocusEffect subscriber only re-triggers refreshSessionLookup when status/sent/due
+  // values diff — which may not happen fast enough. We force both calls here in finally so
+  // the "Your sharing status" card updates immediately without needing to navigate away.
   const doCatchUpOne = useCallback(async () => {
     try {
       if (postingId) setActivePosting(postingId);
@@ -1264,9 +1267,25 @@ export default function OpportunityDetails() {
       await catchUpNextOne();
     } catch (e) {
       if (__DEV__) console.warn("[OppDetails] catch-up error", e);
+    } finally {
+      if (userId != null && postingId) {
+        await useShareStore.getState().fetchSessionSnapshot(userId, postingId);
+      }
+      refreshSessionLookup();
     }
-  }, [catchUpNextOne, postingId, setActivePosting, ensurePostingMetricMap]);
+  }, [
+    catchUpNextOne,
+    postingId,
+    setActivePosting,
+    ensurePostingMetricMap,
+    userId,
+    refreshSessionLookup,
+  ]);
 
+  // After syncNow() the store updates snapshot internally as fire-and-forget,
+  // but the useFocusEffect subscriber only re-triggers refreshSessionLookup when status/sent/due
+  // values diff — which may not happen fast enough. We force both calls here in finally so
+  // the "Your sharing status" card updates immediately without needing to navigate away.
   const doSyncNow = useCallback(async () => {
     try {
       if (postingId) setActivePosting(postingId);
@@ -1283,8 +1302,20 @@ export default function OpportunityDetails() {
       await syncNow();
     } catch (e) {
       if (__DEV__) console.warn("[OppDetails] syncNow error", e);
+    } finally {
+      if (userId != null && postingId) {
+        await useShareStore.getState().fetchSessionSnapshot(userId, postingId);
+      }
+      refreshSessionLookup();
     }
-  }, [syncNow, postingId, setActivePosting, ensurePostingMetricMap]);
+  }, [
+    syncNow,
+    postingId,
+    setActivePosting,
+    ensurePostingMetricMap,
+    userId,
+    refreshSessionLookup,
+  ]);
 
   const simAllRemaining = useCallback(async () => {
     if (!testFlags.TEST_MODE) return;
