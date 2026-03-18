@@ -27,6 +27,7 @@ import {
   requestAllReadPermissions as hcRequestAllReadPermissions,
   openHealthConnectSettings,
   type Bucket as HCBucket,
+  type HeartRateBucket as HCHRBucket,
 } from "@/src/services/tracking/healthconnect";
 
 // iOS / HealthKit:
@@ -204,7 +205,7 @@ function pctChange(newV: number, oldV: number) {
 
 function trendFrom7dDaily(
   buckets: { value: number }[],
-  thresholdPct = 5
+  thresholdPct = 5,
 ): { dir: TrendDir; pct: number | null } {
   if (!Array.isArray(buckets) || buckets.length < 6)
     return { dir: "flat", pct: null };
@@ -273,7 +274,7 @@ function toCumulativeForwardFill(buckets: NumBucket[]) {
  */
 function trendFromNDaysDaily(
   buckets: { value: number }[],
-  thresholdPct = 5
+  thresholdPct = 5,
 ): { dir: TrendDir; pct: number | null } {
   if (!Array.isArray(buckets) || buckets.length < 14)
     return { dir: "flat", pct: null };
@@ -300,7 +301,7 @@ function trendFromNDaysDaily(
 function computeTrendForWindow(
   window: WindowKey,
   metric: MetricKey,
-  buckets: { value: number }[]
+  buckets: { value: number }[],
 ): { dir: TrendDir; pct: number | null } | undefined {
   const bucketable = metric !== "heartRate" && metric !== "sleep";
   if (!bucketable) return undefined;
@@ -367,12 +368,12 @@ export const useTrackingStore = create<Store>((set, get) => ({
             status: "granted",
             lastPromptedAt: new Date().toISOString(),
           }
-        : p
+        : p,
     );
     const assets: Asset[] = get().assets.map((a) =>
       target.has(a.id) && a.state === "permission_needed"
         ? { ...a, state: "ok" }
-        : a
+        : a,
     );
     set({ permissions: updated, assets });
   },
@@ -614,7 +615,7 @@ export const useTrackingStore = create<Store>((set, get) => ({
 
             const sumFromRaw = uiBuckets.reduce(
               (s, b) => s + (Number(b.value) || 0),
-              0
+              0,
             );
 
             total = sumFromRaw;
@@ -659,7 +660,7 @@ export const useTrackingStore = create<Store>((set, get) => ({
               trend,
               meta: {
                 coverageCount: uiBuckets.filter(
-                  (b) => (Number(b.value) || 0) > 0
+                  (b) => (Number(b.value) || 0) > 0,
                 ).length,
                 coverageTotal,
               },
@@ -672,83 +673,144 @@ export const useTrackingStore = create<Store>((set, get) => ({
         // ---- Heart rate ----
         if (m === "heartRate") {
           try {
-            let ui: DatasetBucket[] = [];
+            const hrBuckets: HCHRBucket[] =
+              hcWindow === "24h"
+                ? await hcReadHeartRateHourly24()
+                : await hcReadHeartRateDailyBuckets(
+                    (hcWindow === "7d" ? 7 : hcWindow === "30d" ? 30 : 90) as
+                      | 7
+                      | 30
+                      | 90,
+                  );
 
-            if (hcWindow === "24h") {
-              const hrBuckets = await hcReadHeartRateHourly24();
-              ui = hrBuckets.map((b) => ({
-                start: b.start,
-                end: b.end,
-                value: Number(b.value || 0), // 0 = no sample
-              }));
-            } else {
-              const days = hcWindow === "7d" ? 7 : hcWindow === "30d" ? 30 : 90;
-              const hrDaily = await hcReadHeartRateDailyBuckets(
-                days as 7 | 30 | 90
+            const ui: DatasetBucket[] = hrBuckets.map((b) => ({
+              start: b.start,
+              end: b.end,
+              value: Number(b.value || 0),
+            }));
+
+            // Derive min/max/latest/coverage in a single reduce — no extra IPC calls
+            const { minBpm, maxBpm, latest, coverageCount, measurementsCount } =
+              hrBuckets.reduce(
+                (acc, b) => {
+                  const bpm = Number(b.value || 0);
+                  const count = Number(b.count || 0);
+                  return {
+                    minBpm:
+                      bpm > 0
+                        ? acc.minBpm === undefined
+                          ? bpm
+                          : Math.min(acc.minBpm, bpm)
+                        : acc.minBpm,
+                    maxBpm:
+                      bpm > 0
+                        ? acc.maxBpm === undefined
+                          ? bpm
+                          : Math.max(acc.maxBpm, bpm)
+                        : acc.maxBpm,
+                    latest: bpm > 0 ? bpm : acc.latest,
+                    coverageCount: acc.coverageCount + (count > 0 ? 1 : 0),
+                    measurementsCount: acc.measurementsCount + count,
+                  };
+                },
+                {
+                  minBpm: undefined as number | undefined,
+                  maxBpm: undefined as number | undefined,
+                  latest: null as number | null,
+                  coverageCount: 0,
+                  measurementsCount: 0,
+                },
               );
-              ui = hrDaily.map((b) => ({
-                start: b.start,
-                end: b.end,
-                value: Number(b.value || 0),
-              }));
-            }
 
-            const values = ui
-              .map((b) => Number(b.value || 0))
-              .filter((n) => n > 0);
-            const minBpm = values.length ? Math.min(...values) : undefined;
-            const maxBpm = values.length ? Math.max(...values) : undefined;
-
-            let latest: number | null = null;
+            // Keep this call — latest reading ≠ last bucket daily average
+            let latest2: number | null = null;
             let latestAgeSec: number | undefined;
+            let latestAtISO: string | undefined;
 
             try {
               const { bpm, atISO } = await hcReadHeartRateLatest();
               if (Number.isFinite(bpm as any) && (bpm as any) > 0) {
-                latest = bpm!;
+                latest2 = bpm!;
+                latestAtISO = atISO;
                 if (atISO) {
-                  const t = new Date(atISO).getTime();
-                  latestAgeSec = Math.round((Date.now() - t) / 1000);
+                  latestAgeSec = Math.round(
+                    (Date.now() - new Date(atISO).getTime()) / 1000,
+                  );
                 }
               }
             } catch {
-              latest = ui.length ? ui[ui.length - 1].value : null;
+              latest2 = null;
             }
 
-            if (latest == null || latest <= 0) {
-              for (let i = ui.length - 1; i >= 0; i--) {
-                const v = Number(ui[i].value || 0);
-                if (v > 0) {
-                  latest = v;
-                  break;
-                }
-              }
-              if (latest == null) latest = null;
-            }
+            // latest2 = actual most recent reading (always preferred)
+            // latest  = last non-zero bucket average (fallback only)
+            const resolvedLatest =
+              typeof latest2 === "number" &&
+              Number.isFinite(latest2) &&
+              latest2 > 0
+                ? latest2
+                : typeof latest === "number" &&
+                    Number.isFinite(latest) &&
+                    latest > 0
+                  ? latest
+                  : null;
+
+            log(
+              "[HC] hr resolvedLatest",
+              "latest2=",
+              latest2,
+              "latestFromBuckets=",
+              latest,
+              "resolved=",
+              resolvedLatest,
+            );
+
+            const coverageTotal =
+              hcWindow === "24h"
+                ? 24
+                : hcWindow === "7d"
+                  ? 7
+                  : hcWindow === "30d"
+                    ? 30
+                    : 90;
+
+            log(
+              "[HC] hr dataset",
+              "window=",
+              hcWindow,
+              "bucketCount=",
+              ui.length,
+              "coverageCount=",
+              coverageCount,
+              "minBpm=",
+              minBpm,
+              "maxBpm=",
+              maxBpm,
+              "latest=",
+              resolvedLatest,
+              "latestAgeSec=",
+              latestAgeSec,
+              "measurementsCount=",
+              measurementsCount,
+            );
 
             datasets.push({
               id: m,
               label: LABEL[m],
               unit: UNIT[m],
               buckets: ui,
-              total: 0, // HR total is not meaningful
-              latest,
+              total: 0,
+              latest: resolvedLatest,
               freshnessISO: fetchedAtISO,
-              trend: computeTrendForWindow(hcWindow, m, ui),
+              trend: undefined,
               meta: {
                 minBpm,
                 maxBpm,
                 latestAgeSec,
-                coverageCount: ui.filter((b) => (Number(b.value) || 0) > 0)
-                  .length,
-                coverageTotal:
-                  hcWindow === "24h"
-                    ? 24
-                    : hcWindow === "7d"
-                      ? 7
-                      : hcWindow === "30d"
-                        ? 30
-                        : 90,
+                latestAtISO,
+                measurementsCount,
+                coverageCount,
+                coverageTotal,
               },
             });
           } catch (e) {
@@ -767,7 +829,6 @@ export const useTrackingStore = create<Store>((set, get) => ({
 
           continue;
         }
-
         // ---- Sleep ----
         if (m === "sleep") {
           let total = 0;
@@ -824,7 +885,7 @@ export const useTrackingStore = create<Store>((set, get) => ({
             const days = hcWindow === "7d" ? 7 : hcWindow === "30d" ? 30 : 90;
             try {
               const sleepBuckets = await hcReadSleepDailyBuckets(
-                days as 7 | 30 | 90
+                days as 7 | 30 | 90,
               );
               const ui = sleepBuckets.map((b) => ({
                 start: b.start,
@@ -895,7 +956,6 @@ export const useTrackingStore = create<Store>((set, get) => ({
       }
     }
   },
-
 
   hcSetWindow: async (w: WindowKey) => {
     const cur = get().hcWindow;
@@ -1010,7 +1070,7 @@ export const useTrackingStore = create<Store>((set, get) => ({
 
           const total = uiBuckets.reduce(
             (sum, b) => sum + (Number(b.value) || 0),
-            0
+            0,
           );
 
           datasets.push({
@@ -1033,9 +1093,16 @@ export const useTrackingStore = create<Store>((set, get) => ({
             // 24h:
             // - latest = hkReadHeartRateLatest() over last 24h
             // - buckets = hourly averages via hkReadHeartRateHourly24()
-            const latest = await hkReadHeartRateLatest();
-            const numeric = typeof latest === "number" ? Number(latest) : NaN;
-            const hasLatest = Number.isFinite(numeric) && numeric > 0;
+            const latestResult = await hkReadHeartRateLatest();
+            const latestBpm = latestResult?.bpm ?? null;
+            const latestAtISO = latestResult?.atISO;
+            const hasLatest = typeof latestBpm === "number" && latestBpm > 0;
+            const latestAgeSec =
+              hasLatest && latestAtISO
+                ? Math.round(
+                    (Date.now() - new Date(latestAtISO).getTime()) / 1000,
+                  )
+                : undefined;
 
             const hrBuckets: HKBucket[] = await hkReadHeartRateHourly24();
             const uiBuckets: DatasetBucket[] = (hrBuckets || []).map((b) => ({
@@ -1045,8 +1112,26 @@ export const useTrackingStore = create<Store>((set, get) => ({
             }));
 
             const hoursWithData = uiBuckets.filter(
-              (b) => Number(b.value) > 0
+              (b) => Number(b.value) > 0,
             ).length;
+
+            // Get min/max for the 24h window via stats query (no raw data)
+            const now = new Date();
+            const from24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            let minBpm: number | undefined;
+            let maxBpm: number | undefined;
+            try {
+              const windowStats = await hkReadHeartRateInWindow({
+                fromUtc: from24h.toISOString(),
+                toUtc: now.toISOString(),
+              });
+              if (windowStats.minBpm && windowStats.minBpm > 0)
+                minBpm = Math.round(windowStats.minBpm);
+              if (windowStats.maxBpm && windowStats.maxBpm > 0)
+                maxBpm = Math.round(windowStats.maxBpm);
+            } catch {
+              // non-fatal; cards just show "-"
+            }
 
             datasets.push({
               id: m,
@@ -1055,11 +1140,17 @@ export const useTrackingStore = create<Store>((set, get) => ({
               buckets: uiBuckets,
               // total is not meaningful for heart rate; use latest + buckets instead.
               total: 0,
-              latest: hasLatest ? numeric : null,
+              latest: hasLatest ? latestBpm : null,
               freshnessISO: new Date().toISOString(),
               meta: {
                 ...(hoursWithData ? { hoursWithData } : {}),
                 hoursTotal: uiBuckets.length,
+                minBpm,
+                maxBpm,
+                latestAtISO,
+                latestAgeSec,
+                coverageCount: hoursWithData,
+                coverageTotal: 24,
               },
             });
           } else {
@@ -1078,6 +1169,8 @@ export const useTrackingStore = create<Store>((set, get) => ({
             }));
 
             let latest: number | null = null;
+            let minBpm: number | undefined;
+            let maxBpm: number | undefined;
 
             if (uiBuckets.length > 0) {
               const fromUtc = uiBuckets[0].start;
@@ -1093,6 +1186,27 @@ export const useTrackingStore = create<Store>((set, get) => ({
               if (Number.isFinite(avg) && avg > 0) {
                 latest = Math.round(avg);
               }
+              if (stats.minBpm && stats.minBpm > 0)
+                minBpm = Math.round(stats.minBpm);
+              if (stats.maxBpm && stats.maxBpm > 0)
+                maxBpm = Math.round(stats.maxBpm);
+            }
+
+            // Get latest reading timestamp from hkReadHeartRateLatest
+            let latestAtISO: string | undefined;
+            let latestAgeSec: number | undefined;
+            try {
+              const latestResult = await hkReadHeartRateLatest();
+              if (latestResult?.bpm && latestResult.bpm > 0) {
+                latestAtISO = latestResult.atISO;
+                if (latestAtISO) {
+                  latestAgeSec = Math.round(
+                    (Date.now() - new Date(latestAtISO).getTime()) / 1000,
+                  );
+                }
+              }
+            } catch {
+              // non-fatal
             }
 
             datasets.push({
@@ -1104,6 +1218,15 @@ export const useTrackingStore = create<Store>((set, get) => ({
               total: 0,
               latest,
               freshnessISO: new Date().toISOString(),
+              meta: {
+                minBpm,
+                maxBpm,
+                latestAtISO,
+                latestAgeSec,
+                coverageCount: uiBuckets.filter((b) => Number(b.value) > 0)
+                  .length,
+                coverageTotal: days,
+              },
             });
           }
 
@@ -1124,11 +1247,11 @@ export const useTrackingStore = create<Store>((set, get) => ({
 
             const total = uiBuckets.reduce(
               (sum, b) => sum + (Number(b.value) || 0),
-              0
+              0,
             );
 
             const coverageCount = uiBuckets.filter(
-              (b) => Number(b.value) > 0
+              (b) => Number(b.value) > 0,
             ).length;
 
             datasets.push({
@@ -1157,7 +1280,7 @@ export const useTrackingStore = create<Store>((set, get) => ({
 
             const total = uiBuckets.reduce(
               (sum, b) => sum + (Number(b.value) || 0),
-              0
+              0,
             );
 
             datasets.push({

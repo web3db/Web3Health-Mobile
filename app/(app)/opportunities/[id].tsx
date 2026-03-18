@@ -117,6 +117,18 @@ function showMissingPermissionsAlert(missing: MetricCode[]) {
   );
 }
 
+/**
+ * Compute remaining calendar days from now until applyCloseAt.
+ * Returns null if applyCloseAt is missing/invalid.
+ */
+function computeDaysUntilClose(applyCloseAt?: string | null): number | null {
+  if (!applyCloseAt) return null;
+  const closeMs = Date.parse(applyCloseAt);
+  if (!Number.isFinite(closeMs)) return null;
+  const diffMs = closeMs - Date.now();
+  return Math.floor(diffMs / (24 * 60 * 60 * 1000));
+}
+
 // Normalize names → MetricCode
 function normalizeMetricCode(raw?: string | null): MetricCode | undefined {
   if (!raw) return;
@@ -803,7 +815,21 @@ export default function OpportunityDetails() {
             { text: "Cancel", style: "cancel" },
             {
               text: "Go to profile",
-              onPress: () => router.push("/(app)/onboarding/profile"),
+              onPress: () => {
+                if (!postingId) {
+                  router.push("/(app)/onboarding/profile");
+                  return;
+                }
+
+                router.push({
+                  pathname: "/(app)/onboarding/profile",
+                  params: {
+                    returnTo: "/(app)/opportunities/[id]",
+                    returnId: String(postingId),
+                    resumeApply: "1",
+                  },
+                });
+              },
             },
           ],
         );
@@ -819,6 +845,52 @@ export default function OpportunityDetails() {
       return;
     }
 
+    // ── Days-remaining gate ──────────────────────────────────────────
+    // Hard block: if the posting requires more sharing days than remain
+    // before the apply window closes, the user can never finish in time.
+    const requiredDays = Number(item.dataCoverageDaysRequired ?? 0);
+    const daysUntilClose = computeDaysUntilClose(item.applyCloseAt);
+
+    if (__DEV__) {
+      console.log("[OppDetails][DaysGate]", {
+        applyCloseAt: item.applyCloseAt ?? null,
+        requiredDays,
+        daysUntilClose,
+        willBlock:
+          requiredDays > 0 &&
+          daysUntilClose != null &&
+          daysUntilClose < requiredDays,
+      });
+    }
+
+    if (
+      requiredDays > 0 &&
+      daysUntilClose != null &&
+      daysUntilClose < requiredDays
+    ) {
+      if (__DEV__) {
+        console.log("[OppDetails][DaysGate] BLOCKED — not enough days", {
+          requiredDays,
+          daysUntilClose,
+          shortBy: requiredDays - daysUntilClose,
+        });
+      }
+      Alert.alert(
+        "Not enough time to complete",
+        `This study requires ${requiredDays} day${requiredDays === 1 ? "" : "s"} of data sharing, ` +
+          `but the application closes in ${Math.max(daysUntilClose, 0)} day${daysUntilClose === 1 ? "" : "s"}. ` +
+          `You won't be able to finish the application in time.`,
+      );
+      return;
+    }
+
+    if (__DEV__ && daysUntilClose == null) {
+      console.log(
+        "[OppDetails][DaysGate] SKIPPED — no applyCloseAt on posting",
+      );
+    }
+    // ─────────────────────────────────────────────────────────────────
+
     const metricMap = buildMetricMapStrict(item) as Partial<
       Record<MetricCode, number>
     >;
@@ -827,7 +899,7 @@ export default function OpportunityDetails() {
       console.log("[OppDetails] No resolvable metrics for posting", { item });
       Alert.alert(
         "Unsupported",
-        "This posting’s metrics cannot be resolved yet. Please try again later.",
+        "This posting's metrics cannot be resolved yet. Please try again later.",
       );
       return;
     }
@@ -966,6 +1038,16 @@ export default function OpportunityDetails() {
     "the study team";
 
   const coverageDays = Number(item?.dataCoverageDaysRequired ?? 5);
+
+  const daysLeftToApply = computeDaysUntilClose(item?.applyCloseAt);
+
+  if (__DEV__) {
+    console.log("[OppDetails][DaysChip]", {
+      applyCloseAt: item?.applyCloseAt ?? null,
+      daysLeftToApply,
+      dataCoverageDaysRequired: item?.dataCoverageDaysRequired ?? null,
+    });
+  }
 
   const applyDisclosureLine =
     `By applying, you agree to share the requested health metrics for ${coverageDays} day` +
@@ -1166,6 +1248,9 @@ export default function OpportunityDetails() {
     return {};
   }, [postingId, shareCtx, item]);
 
+  //  After catchUpNextOne() the store updates snapshot internally  but the useFocusEffect subscriber only re-triggers refreshSessionLookup when status/sent/due
+  // values diff — which may not happen fast enough. We force both calls here in finally so
+  // the "Your sharing status" card updates immediately without needing to navigate away.
   const doCatchUpOne = useCallback(async () => {
     try {
       if (postingId) setActivePosting(postingId);
@@ -1182,9 +1267,25 @@ export default function OpportunityDetails() {
       await catchUpNextOne();
     } catch (e) {
       if (__DEV__) console.warn("[OppDetails] catch-up error", e);
+    } finally {
+      if (userId != null && postingId) {
+        await useShareStore.getState().fetchSessionSnapshot(userId, postingId);
+      }
+      refreshSessionLookup();
     }
-  }, [catchUpNextOne, postingId, setActivePosting, ensurePostingMetricMap]);
+  }, [
+    catchUpNextOne,
+    postingId,
+    setActivePosting,
+    ensurePostingMetricMap,
+    userId,
+    refreshSessionLookup,
+  ]);
 
+  // After syncNow() the store updates snapshot internally as fire-and-forget,
+  // but the useFocusEffect subscriber only re-triggers refreshSessionLookup when status/sent/due
+  // values diff — which may not happen fast enough. We force both calls here in finally so
+  // the "Your sharing status" card updates immediately without needing to navigate away.
   const doSyncNow = useCallback(async () => {
     try {
       if (postingId) setActivePosting(postingId);
@@ -1201,8 +1302,20 @@ export default function OpportunityDetails() {
       await syncNow();
     } catch (e) {
       if (__DEV__) console.warn("[OppDetails] syncNow error", e);
+    } finally {
+      if (userId != null && postingId) {
+        await useShareStore.getState().fetchSessionSnapshot(userId, postingId);
+      }
+      refreshSessionLookup();
     }
-  }, [syncNow, postingId, setActivePosting, ensurePostingMetricMap]);
+  }, [
+    syncNow,
+    postingId,
+    setActivePosting,
+    ensurePostingMetricMap,
+    userId,
+    refreshSessionLookup,
+  ]);
 
   const simAllRemaining = useCallback(async () => {
     if (!testFlags.TEST_MODE) return;
@@ -1332,7 +1445,11 @@ export default function OpportunityDetails() {
                   ).toLocaleDateString()}`}
                 />
               ) : null}
-              {typeof item.daysRemaining === "number" ? (
+              {daysLeftToApply != null ? (
+                <Chip
+                  label={`Days left to apply: ${Math.max(daysLeftToApply, 0)}`}
+                />
+              ) : typeof item.daysRemaining === "number" ? (
                 <Chip label={`Days left to apply: ${item.daysRemaining}`} />
               ) : null}
               {typeof item.dataCoverageDaysRequired === "number" ? (

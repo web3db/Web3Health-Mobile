@@ -1,5 +1,5 @@
 // app/(app)/onboarding/profile.tsx
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import React, {
   useCallback,
   useEffect,
@@ -27,18 +27,25 @@ import {
   ProfileEdit,
   ProfileEditSchema,
 } from "@/src/services/profile/api";
+import { useApplyGateStore } from "@/src/store/useApplyGateStore";
 import { useThemeColors } from "@/src/theme/useThemeColors";
 
 type StatusState =
   | { kind: "loading" }
   | { kind: "needsProfile" }
-  | { kind: "done" }
+  | { kind: "redirecting" }
   | { kind: "error"; message: string };
 
 export default function OnboardingProfileScreen() {
   const c = useThemeColors();
   const router = useRouter();
   const userId = useCurrentUserId();
+  const params = useLocalSearchParams<{
+    returnTo?: string | string[];
+    returnId?: string | string[];
+    resumeApply?: string | string[];
+  }>();
+  const resetApplyGate = useApplyGateStore((s) => s.reset);
 
   const [status, setStatus] = useState<StatusState>({ kind: "loading" });
   const [saving, setSaving] = useState(false);
@@ -58,6 +65,32 @@ export default function OnboardingProfileScreen() {
 
   const canLoad = typeof userId === "number";
 
+  const returnTo = Array.isArray(params.returnTo)
+    ? params.returnTo[0]
+    : params.returnTo;
+  const returnId = Array.isArray(params.returnId)
+    ? params.returnId[0]
+    : params.returnId;
+  const resumeApply = Array.isArray(params.resumeApply)
+    ? params.resumeApply[0]
+    : params.resumeApply;
+
+  const navigateAfterCompletion = useCallback(() => {
+    if (
+      resumeApply === "1" &&
+      returnTo === "/(app)/opportunities/[id]" &&
+      returnId
+    ) {
+      router.replace({
+        pathname: "/(app)/opportunities/[id]",
+        params: { id: String(returnId) },
+      });
+      return;
+    }
+
+    router.replace("/");
+  }, [resumeApply, returnId, returnTo, router]);
+
   const loadStatus = useCallback(async () => {
     if (!canLoad) return;
 
@@ -70,16 +103,15 @@ export default function OnboardingProfileScreen() {
         return;
       }
 
-      setStatus({ kind: "done" });
-
-      router.replace("/(app)/(tabs)");
+      setStatus({ kind: "redirecting" });
+      navigateAfterCompletion();
     } catch (e: any) {
       setStatus({
         kind: "error",
         message: e?.message ?? "Failed to check profile status.",
       });
     }
-  }, [canLoad, router, userId]);
+  }, [canLoad, navigateAfterCompletion, userId]);
 
   useEffect(() => {
     loadStatus();
@@ -89,7 +121,6 @@ export default function OnboardingProfileScreen() {
     async (draft: ProfileEdit) => {
       if (!canLoad) return;
 
-      // Soft-validate client-side (you already defined this schema)
       const parsed = ProfileEditSchema.safeParse(draft);
       const values: ProfileEdit = parsed.success ? parsed.data : draft;
 
@@ -126,8 +157,17 @@ export default function OnboardingProfileScreen() {
         }
 
         await patchUser(payload);
+        resetApplyGate();
 
-        await loadStatus();
+        const s = await getUserProfileStatus(userId);
+
+        if (s.needsProfile) {
+          setStatus({ kind: "needsProfile" });
+          return;
+        }
+
+        setStatus({ kind: "redirecting" });
+        navigateAfterCompletion();
       } catch (e: any) {
         Alert.alert(
           "Could not save profile",
@@ -137,7 +177,7 @@ export default function OnboardingProfileScreen() {
         setSaving(false);
       }
     },
-    [canLoad, loadStatus, userId],
+    [canLoad, navigateAfterCompletion, resetApplyGate, userId],
   );
 
   const body = useMemo(() => {
@@ -151,12 +191,14 @@ export default function OnboardingProfileScreen() {
       );
     }
 
-    if (status.kind === "loading") {
+    if (status.kind === "loading" || status.kind === "redirecting") {
       return (
         <View style={{ padding: 24, alignItems: "center" }}>
           <ActivityIndicator />
           <Text style={{ marginTop: 12, color: c.muted }}>
-            Checking profile…
+            {status.kind === "redirecting"
+              ? "Redirecting…"
+              : "Checking profile…"}
           </Text>
         </View>
       );
@@ -190,53 +232,50 @@ export default function OnboardingProfileScreen() {
       );
     }
 
-    if (status.kind === "needsProfile") {
-      return (
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          keyboardVerticalOffset={Platform.OS === "ios" ? 16 : 0}
+    return (
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 16 : 0}
+      >
+        <ScrollView
+          ref={scrollViewRef}
+          contentContainerStyle={{
+            flexGrow: 1,
+            padding: 16,
+            gap: 12,
+            paddingBottom: 180,
+          }}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === "ios" ? "on-drag" : "none"}
+          automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
         >
-          <ScrollView
-            ref={scrollViewRef}
-            contentContainerStyle={{
-              flexGrow: 1,
-              padding: 16,
-              gap: 12,
-              paddingBottom: 180,
+          <Text
+            style={{ color: c.text.primary, fontSize: 22, fontWeight: "700" }}
+            onLayout={() => {
+              scrollToInput(0);
             }}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode={Platform.OS === "ios" ? "on-drag" : "none"}
-            automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
           >
-            <Text
-              style={{ color: c.text.primary, fontSize: 22, fontWeight: "700" }}
-              onLayout={() => {
-                scrollToInput(0);
-              }}
-            >
-              Complete your profile
-            </Text>
+            Complete your profile
+          </Text>
 
-            <CompleteProfileForm onSubmit={onSubmit} disabled={saving} />
+          <CompleteProfileForm onSubmit={onSubmit} disabled={saving} />
 
-            {saving && (
-              <Text style={{ color: c.muted, marginTop: 8 }}>Saving…</Text>
-            )}
-          </ScrollView>
-        </KeyboardAvoidingView>
-      );
-    }
-
-    return null;
+          {saving && (
+            <Text style={{ color: c.muted, marginTop: 8 }}>Saving…</Text>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
   }, [
     canLoad,
     c.muted,
+    c.primary,
     c.text,
     loadStatus,
     onSubmit,
     saving,
-    status,
+    status.kind,
     scrollToInput,
   ]);
 

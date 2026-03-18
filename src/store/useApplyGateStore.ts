@@ -9,101 +9,105 @@ type ApplyGateStatus =
   | { kind: "blocked"; checkedAt: number; missingProfileFields: string[] }
   | { kind: "error"; message: string };
 
-type ApplyGateState = {
-  status: ApplyGateStatus;
-
-  // Cache controls
-  lastUserId?: number;
-  ttlMs: number;
-
-  // State transitions
-  reset: () => void;
-
-  // Core action: check if user can apply
-  ensureCanApply: (userId: number) => Promise<{
-    ok: boolean;
-    needsProfile: boolean;
-    missingProfileFields: string[];
-    error?: string;
-  }>;
+type ApplyGateResult = {
+  ok: boolean;
+  needsProfile: boolean;
+  missingProfileFields: string[];
+  error?: string;
 };
 
-export const useApplyGateStore = create<ApplyGateState>((set, get) => ({
-  status: { kind: "unknown" },
-  lastUserId: undefined,
-  ttlMs: 60_000, // 1 minute cache; adjust if needed
+type ApplyGateState = {
+  status: ApplyGateStatus;
+  lastUserId?: number;
+  ttlMs: number;
+  reset: () => void;
+  invalidateForUser: (userId: number) => void;
+  ensureCanApply: (userId: number) => Promise<ApplyGateResult>;
+};
 
-  reset() {
-    set({ status: { kind: "unknown" }, lastUserId: undefined });
-  },
+export const useApplyGateStore = create<ApplyGateState>((set, get) => {
+  const allowedResult = (): ApplyGateResult => ({
+    ok: true,
+    needsProfile: false,
+    missingProfileFields: [],
+  });
 
-  async ensureCanApply(userId: number) {
-    if (!Number.isFinite(userId)) {
-      const msg = "Invalid userId";
-      set({ status: { kind: "error", message: msg } });
-      return {
-        ok: false,
-        needsProfile: false,
-        missingProfileFields: [],
-        error: msg,
-      };
-    }
+  const blockedResult = (missingProfileFields: string[]): ApplyGateResult => ({
+    ok: false,
+    needsProfile: true,
+    missingProfileFields,
+  });
 
-    const st = get().status;
-    const { ttlMs, lastUserId } = get();
+  const errorResult = (error: string): ApplyGateResult => ({
+    ok: false,
+    needsProfile: false,
+    missingProfileFields: [],
+    error,
+  });
 
-    // If we already checked recently for the same user, reuse decision.
-    if (lastUserId === userId) {
-      if (st.kind === "allowed" && Date.now() - st.checkedAt < ttlMs) {
-        return { ok: true, needsProfile: false, missingProfileFields: [] };
+  return {
+    status: { kind: "unknown" },
+    lastUserId: undefined,
+    ttlMs: 60_000,
+
+    reset() {
+      set({ status: { kind: "unknown" }, lastUserId: undefined });
+    },
+
+    invalidateForUser(userId: number) {
+      const { lastUserId } = get();
+      if (lastUserId !== userId) return;
+      set({ status: { kind: "unknown" }, lastUserId: undefined });
+    },
+
+    async ensureCanApply(userId: number) {
+      if (!Number.isFinite(userId)) {
+        const msg = "Invalid userId";
+        set({ status: { kind: "error", message: msg }, lastUserId: undefined });
+        return errorResult(msg);
       }
-      if (st.kind === "blocked" && Date.now() - st.checkedAt < ttlMs) {
-        return {
-          ok: false,
-          needsProfile: true,
-          missingProfileFields: st.missingProfileFields,
-        };
+
+      const { status, ttlMs, lastUserId } = get();
+      const now = Date.now();
+
+      if (lastUserId === userId) {
+        if (status.kind === "allowed" && now - status.checkedAt < ttlMs) {
+          return allowedResult();
+        }
+
+        if (status.kind === "blocked" && now - status.checkedAt < ttlMs) {
+          return blockedResult(status.missingProfileFields);
+        }
       }
-    }
 
-    set({ status: { kind: "checking" }, lastUserId: userId });
+      set({ status: { kind: "checking" }, lastUserId: userId });
 
-    try {
-      const res = await getUserProfileStatus(userId);
+      try {
+        const res = await getUserProfileStatus(userId);
 
-      if (res.needsProfile) {
-        const missing = res.missingProfileFields ?? [];
+        if (res.needsProfile) {
+          const missing = res.missingProfileFields ?? [];
+          set({
+            status: {
+              kind: "blocked",
+              checkedAt: now,
+              missingProfileFields: missing,
+            },
+            lastUserId: userId,
+          });
+          return blockedResult(missing);
+        }
+
         set({
-          status: {
-            kind: "blocked",
-            checkedAt: Date.now(),
-            missingProfileFields: missing,
-          },
+          status: { kind: "allowed", checkedAt: now },
           lastUserId: userId,
         });
-
-        return {
-          ok: false,
-          needsProfile: true,
-          missingProfileFields: missing,
-        };
+        return allowedResult();
+      } catch (e: any) {
+        const msg = e?.message ?? "Failed to check profile status";
+        set({ status: { kind: "error", message: msg }, lastUserId: userId });
+        return errorResult(msg);
       }
-
-      set({
-        status: { kind: "allowed", checkedAt: Date.now() },
-        lastUserId: userId,
-      });
-
-      return { ok: true, needsProfile: false, missingProfileFields: [] };
-    } catch (e: any) {
-      const msg = e?.message ?? "Failed to check profile status";
-      set({ status: { kind: "error", message: msg }, lastUserId: userId });
-      return {
-        ok: false,
-        needsProfile: false,
-        missingProfileFields: [],
-        error: msg,
-      };
-    }
-  },
-}));
+    },
+  };
+});
