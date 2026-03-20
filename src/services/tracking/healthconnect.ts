@@ -1733,7 +1733,21 @@ export async function hcReadSumInWindow(
     });
     const key = m.aggregateKey!;
     let sum = unwrapAggregateValue(metric as any, (res as any)?.result?.[key]);
-
+    const willFallback = !Number.isFinite(sum) || sum <= 0;
+    log(
+      "[SumInWindow]",
+      metric,
+      "window=",
+      win.fromUtc,
+      "→",
+      win.toUtc,
+      "aggResult=",
+      sum,
+      "willFallback=",
+      willFallback,
+      "rawResult=",
+      (res as any)?.result,
+    );
     if (!Number.isFinite(sum) || sum <= 0) {
       if (metric === "steps") sum = await sumStepsFromRecords(range);
       else if (metric === "floors") sum = await sumFloorsFromRecords(range);
