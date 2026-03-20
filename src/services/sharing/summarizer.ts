@@ -620,17 +620,27 @@ export async function summarizeWindow(
 
     switch (metric) {
       case "STEPS": {
-        const { sum } = await hcReadSumInWindow("steps", winAndroid);
         const buckets = await hcReadHourlyBucketsInWindow(
           "steps",
           winAndroid,
           bucketMinutes,
         );
+        const sum = buckets.reduce((acc, b) => acc + (b.value || 0), 0);
+
+        if (__DEV__) {
+          console.log(TAG, "STEPS android", {
+            fromUtcISO,
+            toUtcISO,
+            bucketMinutes,
+            bucketCount: buckets.length,
+            totalFromBuckets: sum,
+          });
+        }
 
         const ms: MetricSummary = {
           metricCode: "STEPS",
           unitCode: "COUNT",
-          totalValue: sum,
+          totalValue: Math.round(sum),
           computedJson: useHourlyShape
             ? { source: "healthconnect", hourlyBuckets: buckets }
             : { source: "healthconnect", bucketMinutes, buckets },
@@ -640,17 +650,17 @@ export async function summarizeWindow(
       }
 
       case "FLOORS": {
-        const { sum } = await hcReadSumInWindow("floors", winAndroid);
         const buckets = await hcReadHourlyBucketsInWindow(
           "floors",
           winAndroid,
           bucketMinutes,
         );
+        const sum = buckets.reduce((acc, b) => acc + (b.value || 0), 0);
 
         const ms: MetricSummary = {
           metricCode: "FLOORS",
           unitCode: "COUNT",
-          totalValue: sum,
+          totalValue: Math.round(sum),
           computedJson: useHourlyShape
             ? { source: "healthconnect", hourlyBuckets: buckets }
             : { source: "healthconnect", bucketMinutes, buckets },
@@ -660,17 +670,17 @@ export async function summarizeWindow(
       }
 
       case "DISTANCE": {
-        const { sum } = await hcReadSumInWindow("distance", winAndroid);
         const buckets = await hcReadHourlyBucketsInWindow(
           "distance",
           winAndroid,
           bucketMinutes,
         );
+        const sum = buckets.reduce((acc, b) => acc + (b.value || 0), 0);
 
         const ms: MetricSummary = {
           metricCode: "DISTANCE",
           unitCode: "M",
-          totalValue: sum,
+          totalValue: Math.round(sum),
           computedJson: useHourlyShape
             ? { source: "healthconnect", hourlyBuckets: buckets }
             : { source: "healthconnect", bucketMinutes, buckets },
@@ -680,17 +690,17 @@ export async function summarizeWindow(
       }
 
       case "KCAL": {
-        const { sum } = await hcReadSumInWindow("activeCalories", winAndroid);
         const buckets = await hcReadHourlyBucketsInWindow(
           "activeCalories",
           winAndroid,
           bucketMinutes,
         );
+        const sum = buckets.reduce((acc, b) => acc + (b.value || 0), 0);
 
         const ms: MetricSummary = {
           metricCode: "KCAL",
           unitCode: "KCAL",
-          totalValue: sum,
+          totalValue: Math.round(sum),
           computedJson: useHourlyShape
             ? { source: "healthconnect", hourlyBuckets: buckets }
             : { source: "healthconnect", bucketMinutes, buckets },
